@@ -1,0 +1,50 @@
+{
+  "positions": {
+    "TestMint1": {
+      "position": "TestMint1",
+      "pool": "gmgn",
+      "pool_name": "TEST",
+      "bin_range": {},
+      "amount_sol": 0.5,
+      "amount_x": 0,
+      "initial_value_usd": 75,
+      "signal_snapshot": null,
+      "deployed_at": "2026-05-04T12:24:26.019Z",
+      "out_of_range_since": null,
+      "last_claim_at": null,
+      "total_fees_claimed_usd": 0,
+      "rebalance_count": 0,
+      "closed": true,
+      "closed_at": "2026-05-04T12:24:26.020Z",
+      "notes": [
+        "Closed at 2026-05-04T12:24:26.020Z: test"
+      ],
+      "peak_pnl_pct": 0,
+      "pending_peak_pnl_pct": null,
+      "pending_peak_started_at": null,
+      "pending_trailing_current_pnl_pct": null,
+      "pending_trailing_peak_pnl_pct": null,
+      "pending_trailing_drop_pct": null,
+      "pending_trailing_started_at": null,
+      "confirmed_trailing_exit_reason": null,
+      "confirmed_trailing_exit_until": null,
+      "trailing_active": false
+    }
+  },
+  "recentEvents": [
+    {
+      "ts": "2026-05-04T12:24:26.020Z",
+      "action": "deploy",
+      "position": "TestMint1",
+      "pool_name": "TEST"
+    },
+    {
+      "ts": "2026-05-04T12:24:26.020Z",
+      "action": "close",
+      "position": "TestMint1",
+      "pool_name": "TEST",
+      "reason": "test"
+    }
+  ],
+  "lastUpdated": "2026-05-04T12:24:26.340Z"
+}

@@ -1,0 +1,42 @@
+[2026-05-03T16:10:48.764Z] [STARTUP] Ponyou AI Agent starting...
+[2026-05-03T16:10:48.766Z] [STARTUP] Mode: DRY RUN
+[2026-05-03T16:10:48.766Z] [STARTUP] Model: hermes-3-405b
+[2026-05-03T16:17:37.674Z] [STARTUP] Ponyou AI Agent starting...
+[2026-05-03T16:17:37.675Z] [STARTUP] Mode: DRY RUN
+[2026-05-03T16:17:37.675Z] [STARTUP] Model: hermes-3-405b
+[2026-05-03T16:20:00.836Z] [CRON] Starting management cycle
+[2026-05-03T16:20:00.836Z] [CRON_ERROR] syncOpenPositions is not defined
+[2026-05-03T16:30:00.477Z] [CRON] Starting management cycle
+[2026-05-03T16:30:00.477Z] [CRON_ERROR] syncOpenPositions is not defined
+[2026-05-03T16:30:00.478Z] [CRON] Starting screening cycle
+[2026-05-03T16:30:00.584Z] [DISCOVERY_ERROR] GMGN Rank API error: 403
+[2026-05-03T16:30:00.584Z] [CRON] No candidates passed the 4-Filter Protocol.
+[2026-05-03T16:40:00.088Z] [CRON] Starting management cycle
+[2026-05-03T16:40:00.089Z] [CRON_ERROR] syncOpenPositions is not defined
+[2026-05-03T16:50:00.704Z] [CRON] Starting management cycle
+[2026-05-03T16:50:00.704Z] [CRON_ERROR] syncOpenPositions is not defined
+[2026-05-03T17:00:00.302Z] [CRON] Starting management cycle
+[2026-05-03T17:00:00.302Z] [CRON_ERROR] syncOpenPositions is not defined
+[2026-05-03T17:00:00.303Z] [CRON] Starting screening cycle
+[2026-05-03T17:00:00.361Z] [DISCOVERY_ERROR] GMGN Rank API error: 403
+[2026-05-03T17:00:00.361Z] [CRON] No candidates passed the 4-Filter Protocol.
+[2026-05-03T17:10:00.932Z] [CRON] Starting management cycle
+[2026-05-03T17:10:00.932Z] [CRON_ERROR] syncOpenPositions is not defined
+[2026-05-03T17:20:00.532Z] [CRON] Starting management cycle
+[2026-05-03T17:20:00.532Z] [CRON_ERROR] syncOpenPositions is not defined
+[2026-05-03T17:21:24.844Z] [SHUTDOWN] SIGTERM
+[2026-05-03T17:39:15.771Z] [STARTUP] Ponyou AI Agent starting...
+[2026-05-03T17:39:15.773Z] [STARTUP] Mode: DRY RUN
+[2026-05-03T17:39:15.773Z] [STARTUP] Model: hermes-3-405b
+[2026-05-03T17:40:00.826Z] [CRON] Starting management cycle
+[2026-05-03T17:40:00.827Z] [CRON] No open token positions.
+[2026-05-03T17:40:04.083Z] [STARTUP] Ponyou AI Agent starting...
+[2026-05-03T17:40:04.084Z] [STARTUP] Mode: DRY RUN
+[2026-05-03T17:40:04.084Z] [STARTUP] Model: hermes-3-405b
+[2026-05-03T17:40:04.267Z] [DISCOVERY_ERROR] GMGN Rank API error: 403
+[2026-05-03T17:43:32.688Z] [SHUTDOWN] SIGTERM
+[2026-05-03T17:47:42.377Z] [STARTUP] Ponyou AI Agent starting...
+[2026-05-03T17:47:42.378Z] [STARTUP] Mode: DRY RUN
+[2026-05-03T17:47:42.378Z] [STARTUP] Model: hermes-3-405b
+[2026-05-03T17:50:00.534Z] [CRON] Starting management cycle
+[2026-05-03T17:50:00.535Z] [CRON] No open token positions.
