@@ -1,0 +1,43 @@
+[2026-05-04T12:18:22.442Z] [TEST] Logger test message
+[2026-05-04T12:18:44.673Z] [STATE] Tracked new position: DummyMint1234567890 in pool gmgn
+[2026-05-04T12:18:44.676Z] [STATE] Position DummyMint1234567890 marked closed: Test close
+[2026-05-04T12:18:53.148Z] [DISCOVERY_ERROR] GMGN Rank API error: 403
+[2026-05-04T12:19:17.439Z] [CONFIG] Agent self-tuned: {"minTvl":15000,"maxTvl":200000} — Test threshold update
+[2026-05-04T12:22:06.110Z] [CONFIG] Agent self-tuned: {"minTvl":12000} — Test
+[2026-05-04T12:23:15.936Z] [STARTUP] Ponyou AI Agent starting...
+[2026-05-04T12:23:15.937Z] [STARTUP] Mode: DRY RUN
+[2026-05-04T12:23:15.937Z] [STARTUP] Model: minimax/minimax-m2.7
+[2026-05-04T12:23:15.937Z] [CRON] Starting management cycle
+[2026-05-04T12:23:15.938Z] [CRON] No open token positions.
+[2026-05-04T12:23:19.732Z] [STARTUP] Ponyou AI Agent starting...
+[2026-05-04T12:23:19.733Z] [STARTUP] Mode: DRY RUN
+[2026-05-04T12:23:19.734Z] [STARTUP] Model: minimax/minimax-m2.7
+[2026-05-04T12:23:19.734Z] [CRON] Starting screening cycle
+[2026-05-04T12:23:19.834Z] [DISCOVERY_ERROR] GMGN Rank API error: 403
+[2026-05-04T12:23:19.834Z] [CRON] No candidates passed the 4-Filter Protocol.
+[2026-05-04T12:23:33.917Z] [STATE] Tracked new position: MemeMint111 in pool gmgn
+[2026-05-04T12:23:33.918Z] [STATE] Position MemeMint111 not on-chain yet — within grace period, skipping auto-close
+[2026-05-04T12:24:26.020Z] [STATE] Tracked new position: TestMint1 in pool gmgn
+[2026-05-04T12:24:26.020Z] [STATE] Position TestMint1 marked closed: test
+[2026-05-04T12:24:26.279Z] [CONFIG] Agent self-tuned: {"minTvl":15000} — test
+[2026-05-04T12:24:26.419Z] [DISCOVERY_ERROR] GMGN Rank API error: 403
+[2026-05-04T12:24:26.423Z] [CONFIG] Agent self-tuned: {"minTvl":10000} — restore
+[2026-05-04T12:53:57.146Z] [PLAN] Trading plan initialized: $10 → 30d @ 25%/day
+[2026-05-04T12:53:57.148Z] [PLAN] Daily target reached! +26.00% — paused for 60min
+[2026-05-04T13:40:34.410Z] [PLAN] Trading plan initialized: $10 → 30d @ 25%/day
+[2026-05-04T13:40:34.412Z] [PLAN] PROFIT MODE AKTIF — P&L: +10.00% | Tidak ada batas trade
+[2026-05-04T13:40:34.414Z] [PLAN] Daily target tercapai! +26.00% — pause 60min
+[2026-05-04T13:40:34.415Z] [PLAN] Trading plan initialized: $10 → 30d @ 25%/day
+[2026-05-04T13:40:34.415Z] [PLAN] Daily stop-loss hit! -12.00% — memicu learning mode
+[2026-05-04T13:40:55.256Z] [LEARNING] LEARNING MODE AKTIF — Trigger: STOP_LOSS, Jeda: 60min
+[2026-05-04T13:41:55.488Z] [LEARNING] Learning mode sudah aktif, skip aktivasi ulang
+[2026-05-04T13:54:33.392Z] [STARTUP] Ponyou AI Agent starting...
+[2026-05-04T13:54:33.394Z] [STARTUP] Mode: DRY RUN
+[2026-05-04T13:54:33.394Z] [STARTUP] Model: minimax/minimax-m2.7
+[2026-05-04T13:54:33.401Z] [CRON] Jobs started: mgmt=10m screen=30m vault=6h report=0:05UTC
+[2026-05-04T13:54:59.318Z] [SHUTDOWN] SIGINT
+[2026-05-04T13:55:08.135Z] [STARTUP] Ponyou AI Agent starting...
+[2026-05-04T13:55:08.137Z] [STARTUP] Mode: DRY RUN
+[2026-05-04T13:55:08.137Z] [STARTUP] Model: minimax/minimax-m2.7
+[2026-05-04T13:55:08.144Z] [CRON] Jobs started: mgmt=10m screen=30m vault=6h report=0:05UTC
+[2026-05-04T13:55:15.095Z] [SHUTDOWN] SIGINT

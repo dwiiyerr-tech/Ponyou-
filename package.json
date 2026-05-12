@@ -1,0 +1,25 @@
+{
+  "name": "ponyou",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AI Agent for automated memecoin trading on Solana",
+  "main": "index.js",
+  "scripts": {
+    "setup": "node setup.js",
+    "quick-setup": "npm install && [ -f .env ] || cp .env.example .env && [ -f user-config.json ] || echo '{}' > user-config.json",
+    "start": "node index.js",
+    "dev": "DRY_RUN=true node index.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.0",
+    "bn.js": "^5.2.1",
+    "bs58": "^5.0.0",
+    "dotenv": "^17.3.1",
+    "jsonrepair": "^3.13.3",
+    "node-cron": "^3.0.3",
+    "openai": "^4.73.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
