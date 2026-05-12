@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Ponyou AI Agent 🐴
 
 **Autonomous AI trading agent for Solana memecoins, powered by LLMs.**
@@ -55,3 +56,6 @@ npm start     # Live trading mode
 ## Disclaimer
 
 Memecoin trading is extremely risky. Ponyou is provided as-is. Use at your own risk.
+=======
+# Ponyou-
+>>>>>>> 9facbedba574c6746d569cb8bf85eb485e64e9df
