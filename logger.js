@@ -35,7 +35,7 @@ export function log(category, message) {
   }
 
   // File output (daily rotation)
-  const dateStr = timestamp.split("T")[0];
+  const dateStr = (timestamp || new Date().toISOString()).split("T")[0];
   const logFile = path.join(LOG_DIR, `agent-${dateStr}.log`);
   fs.appendFileSync(logFile, line + "\n");
 }
@@ -75,7 +75,7 @@ export function logAction(action) {
   console.log(`[${action.tool}] ${status}${hint}${dur}`);
 
   // File: full JSON for audit trail
-  const dateStr = timestamp.split("T")[0];
+  const dateStr = (timestamp || new Date().toISOString()).split("T")[0];
   const actionsFile = path.join(LOG_DIR, `actions-${dateStr}.jsonl`);
   fs.appendFileSync(actionsFile, JSON.stringify(entry) + "\n");
 }

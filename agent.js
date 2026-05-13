@@ -143,8 +143,6 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       const ACTION_INTENTS = /\b(buy|sell|deploy|close|swap|block|blacklist)\b/i;
       let toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
 
-      if (step === 0 && onThinkingStart) await onThinkingStart();
-
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           response = await client.chat.completions.create({
