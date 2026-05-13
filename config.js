@@ -220,6 +220,32 @@ export function computeDeployAmount(walletSol) {
 }
 
 /**
+ * Compute volatility-adjusted position size.
+ * Reduces position size for high-volatility tokens to manage risk.
+ *
+ * Formula: size = base × (1 - 0.5 × volatility_percentile / 100)
+ *
+ * Examples:
+ *   Volatility 0% (stable): factor=1.0, size=0.5 SOL (full)
+ *   Volatility 50% (medium): factor=0.75, size=0.375 SOL
+ *   Volatility 100% (extreme): factor=0.5, size=0.25 SOL (half)
+ */
+export function computeVolatilityAdjustedSize(baseSize, volatilityPercentile = 0) {
+  if (!config.indicators?.volatilityAdjustmentEnabled && volatilityPercentile === 0) {
+    return baseSize; // No adjustment if disabled or no volatility data
+  }
+
+  // Volatility factor: high vol = smaller position
+  const volFactor = 1 - (0.5 * Math.max(0, Math.min(100, volatilityPercentile)) / 100);
+
+  const adjustedSize = baseSize * volFactor;
+  const floor = config.management.deployAmountSol || 0.1;
+  const ceil = config.risk.maxDeployAmount || 50;
+
+  return parseFloat(Math.max(floor, Math.min(ceil, adjustedSize)).toFixed(2));
+}
+
+/**
  * Reload user-config.json and apply updated screening thresholds to the
  * in-memory config object. Called after threshold evolution so the next
  * agent cycle uses the evolved values without a restart.
