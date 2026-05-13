@@ -382,6 +382,8 @@ export async function executeTool(name, args) {
 async function runSafetyChecks(name, args) {
   switch (name) {
     case "gmgn_swap": {
+      // Demo mode: balance check is handled inside executeDemoBuy
+      if (process.env.DEMO_MODE === "true") return { pass: true };
       if (process.env.DRY_RUN !== "true") {
         const balance = await getWalletBalances();
         const gasReserve = config.management.gasReserve;

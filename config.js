@@ -156,6 +156,15 @@ export const config = {
     weightCeiling:  u.darwinCeiling     ?? 2.5,
     minSamples:     u.darwinMinSamples  ?? 10,
   },
+
+  // ─── Demo Mode ──────────────────────────
+  demo: {
+    enabled:                  u.demoEnabled          ?? (process.env.DEMO_MODE === "true"),
+    initialSolBalance:        u.demoInitialSol        ?? parseFloat(process.env.DEMO_INITIAL_SOL || "5.0"),
+    solPriceUsd:              u.demoSolPrice          ?? 150.0,
+    simulatePriceVolatility:  u.demoSimulateVolatility ?? true,
+  },
+
 // ─── Common Token Mints ────────────────
 tokens: {
   SOL:  "So11111111111111111111111111111111111111112",

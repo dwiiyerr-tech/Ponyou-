@@ -2,6 +2,7 @@ import { Connection, PublicKey, VersionedTransaction, Keypair } from "@solana/we
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { executeDemoBuy, executeDemoSell } from "../demo/virtualWallet.js";
 
 const GMGN_BASE = "https://gmgn.ai";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -391,6 +392,33 @@ export async function swapToken({
   amount,
   slippage = 0.5,
 }) {
+  if (process.env.DEMO_MODE === "true") {
+    const isBuy = token_in === "SOL" || token_in === SOL_MINT;
+    if (isBuy) {
+      // Fetch real current price for accurate PnL simulation later
+      let priceUsd = 0;
+      try {
+        const priceRes = await fetch(`https://api.jup.ag/price/v2?ids=${token_out}`);
+        if (priceRes.ok) {
+          const priceData = await priceRes.json();
+          priceUsd = priceData?.data?.[token_out]?.price || 0;
+        }
+      } catch { /* use 0 if price fetch fails */ }
+      return executeDemoBuy({ mint: token_out, symbol: null, amount_sol: amount, price_usd: priceUsd, slippage });
+    } else {
+      // Fetch real current price for accurate PnL
+      let currentPriceUsd = null;
+      try {
+        const priceRes = await fetch(`https://api.jup.ag/price/v2?ids=${token_in}`);
+        if (priceRes.ok) {
+          const priceData = await priceRes.json();
+          currentPriceUsd = priceData?.data?.[token_in]?.price || null;
+        }
+      } catch { /* use last known price */ }
+      return executeDemoSell({ mint: token_in, current_price_usd: currentPriceUsd, slippage });
+    }
+  }
+
   if (process.env.DRY_RUN === "true") {
     return {
       dry_run: true,

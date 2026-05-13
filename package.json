@@ -8,7 +8,9 @@
     "setup": "node setup.js",
     "quick-setup": "npm install && [ -f .env ] || cp .env.example .env && [ -f user-config.json ] || echo '{}' > user-config.json",
     "start": "node index.js",
-    "dev": "DRY_RUN=true node index.js"
+    "dev": "DRY_RUN=true node index.js",
+    "demo": "DEMO_MODE=true node index.js",
+    "demo:reset": "node -e \"import('./demo/virtualWallet.js').then(m => m.resetDemoWallet())\" && DEMO_MODE=true node index.js"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.0",

@@ -46,9 +46,20 @@ import {
   generateDailyReport, formatReportTelegram, wasTodayReported,
 } from "./daily-report.js";
 import { getTokenInfo } from "./tools/token.js";
+import { initDemoWallet, getDemoStats } from "./demo/virtualWallet.js";
 
 log("startup", "Ponyou AI Agent starting...");
-log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
+
+const _isDemo  = process.env.DEMO_MODE === "true";
+const _isDryRun = !_isDemo && process.env.DRY_RUN === "true";
+
+if (_isDemo) {
+  log("startup", "Mode: DEMO — Virtual trading with simulated SOL balance");
+  log("startup", `Demo initial balance: ${config.demo.initialSolBalance} SOL @ $${config.demo.solPriceUsd}`);
+  initDemoWallet(config.demo.initialSolBalance, config.demo.solPriceUsd);
+} else {
+  log("startup", `Mode: ${_isDryRun ? "DRY RUN" : "LIVE"}`);
+}
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
 
 // ─── Init Active Strategy ────────────────────────────────────
@@ -858,13 +869,25 @@ if (isTTY) {
   const vaultDue = isVaultDue();
 
   console.log(`\n╔══════════════════════════════════════════════════════════╗`);
-  console.log(`║           Ponyou AI Agent — Ready (v2.2)                 ║`);
-  console.log(`║  Plan: Day ${String(plan?.day||1).padStart(2,"0")}/${plan?.days_total||30} | Target +${plan?.daily_target_pct||25}%/hari           ║`);
-  console.log(`║  Modal: $${String((plan?.today_start_usd||config.pilot.initialCapitalUsd).toFixed(2)).padStart(7)} → $${String((plan?.today_target_usd||0).toFixed(2)).padStart(7)} today    ║`);
-  console.log(`║  Market: ${market.condition.padEnd(8)} | Stop-Loss: ${config.pilot.dailyStopLossPct}%/hari      ║`);
-  console.log(`║  Vault: ${vault.configured ? `${vault.vault_pct}% tiap ${vault.interval_days}hr | ${vaultDue.days_remaining?.toFixed(1)}hr lagi` : "belum dikonfigurasi".padEnd(30)} ║`);
+  if (_isDemo) {
+    const ds = getDemoStats();
+    console.log(`║        Ponyou AI Agent — DEMO MODE (v2.3)                ║`);
+    console.log(`║  🎮 Virtual Trading — Tidak ada uang asli digunakan      ║`);
+    console.log(`║  Virtual SOL: ${String(ds.sol_balance?.toFixed(4)||config.demo.initialSolBalance).padEnd(8)} @ $${String(config.demo.solPriceUsd).padEnd(6)}/SOL          ║`);
+    console.log(`║  Trades: ${String(ds.total_trades||0).padEnd(4)} | Win Rate: ${String(ds.win_rate_pct||0).padEnd(5)}% | PnL: $${String(ds.total_pnl_usd?.toFixed(2)||"0.00").padEnd(8)}║`);
+  } else {
+    console.log(`║           Ponyou AI Agent — Ready (v2.3)                 ║`);
+    console.log(`║  Plan: Day ${String(plan?.day||1).padStart(2,"0")}/${plan?.days_total||30} | Target +${plan?.daily_target_pct||25}%/hari           ║`);
+    console.log(`║  Modal: $${String((plan?.today_start_usd||config.pilot.initialCapitalUsd).toFixed(2)).padStart(7)} → $${String((plan?.today_target_usd||0).toFixed(2)).padStart(7)} today    ║`);
+    console.log(`║  Market: ${market.condition.padEnd(8)} | Stop-Loss: ${config.pilot.dailyStopLossPct}%/hari      ║`);
+    console.log(`║  Vault: ${vault.configured ? `${vault.vault_pct}% tiap ${vault.interval_days}hr | ${vaultDue.days_remaining?.toFixed(1)}hr lagi` : "belum dikonfigurasi".padEnd(30)} ║`);
+  }
   console.log(`╚══════════════════════════════════════════════════════════╝\n`);
-  console.log(`Perintah CLI: /pilot check, /auto on|off, /off (shutdown), /smart (scan smart money)\n`);
+  if (_isDemo) {
+    console.log(`Perintah CLI: /demo stats, /demo reset, /strategy, /auto on|off, /off\n`);
+  } else {
+    console.log(`Perintah CLI: /pilot check, /auto on|off, /off (shutdown), /smart (scan smart money)\n`);
+  }
 
   launchCron();
 
@@ -883,14 +906,45 @@ if (isTTY) {
     if (text === "/status") {
       const plan = getPlanSummary();
       const market = getMarketIntelligence();
-      const msg = [
+      const statusLines = [
         `📊 <b>Ponyou Status</b>`,
         `Plan: Day ${plan.day}/${plan.days_total}`,
         `PnL Today: ${plan.today_pnl_pct.toFixed(2)}%`,
         `Market: ${market.condition}`,
         `Strategy: <b>${getActiveStrategyName()}</b> — ${getActiveStrategy().name}`,
-      ].join("\n");
-      await sendHTML(msg);
+      ];
+      if (_isDemo) {
+        const ds = getDemoStats();
+        statusLines.push(`\n🎮 <b>DEMO MODE</b>`);
+        statusLines.push(`Virtual SOL: ${ds.sol_balance?.toFixed(4)} SOL`);
+        statusLines.push(`Trades: ${ds.total_trades} | Win Rate: ${ds.win_rate_pct}%`);
+        statusLines.push(`PnL: $${ds.total_pnl_usd?.toFixed(4)}`);
+      }
+      await sendHTML(statusLines.join("\n"));
+      return;
+    }
+
+    if (text === "/demo") {
+      if (!_isDemo) {
+        await sendHTML("⚠️ Agent tidak berjalan dalam DEMO_MODE.\nJalankan: <code>npm run demo</code>");
+        return;
+      }
+      const ds = getDemoStats();
+      const demoMsg = [
+        `🎮 <b>Demo Mode Stats</b>`,
+        `Virtual SOL: ${ds.sol_balance?.toFixed(4)} SOL ($${(ds.sol_balance * (ds.sol_price || 150)).toFixed(2)})`,
+        `Open Positions: ${ds.open_positions}`,
+        `Total Trades: ${ds.total_trades} (W:${ds.win_count} L:${ds.loss_count})`,
+        `Win Rate: ${ds.win_rate_pct}%`,
+        `Total PnL: $${ds.total_pnl_usd?.toFixed(4)}`,
+      ];
+      if (ds.recent_trades?.length) {
+        demoMsg.push("\n<b>Recent Trades:</b>");
+        for (const t of ds.recent_trades) {
+          demoMsg.push(`${t.win ? "✅" : "❌"} ${t.symbol}: ${t.pnl_pct >= 0 ? "+" : ""}${t.pnl_pct?.toFixed(2)}%`);
+        }
+      }
+      await sendHTML(demoMsg.join("\n"));
       return;
     }
 
@@ -1006,6 +1060,43 @@ if (isTTY) {
           console.log(`\n✅ Strategy: ${target} — ${s.name}: ${s.description}\n`);
         } else {
           console.log(`❌ Unknown strategy. Options: ${names.join(", ")}\n`);
+        }
+        rl.prompt();
+        return;
+      }
+
+      if (cmd === "demo") {
+        const action = args[0]?.toLowerCase();
+        if (!_isDemo && action !== "stats") {
+          console.log("⚠️  Agent tidak berjalan dalam DEMO_MODE. Jalankan: npm run demo\n");
+          rl.prompt();
+          return;
+        }
+        if (action === "stats" || !action) {
+          const stats = getDemoStats();
+          if (!stats.initialized) {
+            console.log("Demo wallet belum diinisialisasi.\n");
+          } else {
+            console.log("\n─── Demo Stats ───");
+            console.log(`Virtual SOL: ${stats.sol_balance.toFixed(4)} SOL ($${(stats.sol_balance * (stats.sol_price || 150)).toFixed(2)})`);
+            console.log(`Open Positions: ${stats.open_positions}`);
+            console.log(`Total Trades: ${stats.total_trades} (W:${stats.win_count} L:${stats.loss_count})`);
+            console.log(`Win Rate: ${stats.win_rate_pct}%`);
+            console.log(`Total PnL: $${stats.total_pnl_usd.toFixed(4)}`);
+            if (stats.recent_trades?.length) {
+              console.log(`\nRecent Trades:`);
+              for (const t of stats.recent_trades) {
+                console.log(`  ${t.win ? "✅" : "❌"} ${t.symbol}: ${t.pnl_pct >= 0 ? "+" : ""}${t.pnl_pct.toFixed(2)}%`);
+              }
+            }
+            console.log("──────────────────\n");
+          }
+        } else if (action === "reset") {
+          const { resetDemoWallet } = await import("./demo/virtualWallet.js");
+          resetDemoWallet(config.demo.initialSolBalance, config.demo.solPriceUsd);
+          console.log(`✅ Demo wallet direset: ${config.demo.initialSolBalance} SOL virtual.\n`);
+        } else {
+          console.log("Usage: /demo stats | /demo reset\n");
         }
         rl.prompt();
         return;

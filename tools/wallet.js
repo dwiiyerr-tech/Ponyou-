@@ -8,6 +8,7 @@ import {
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { getDemoBalance, executeDemoBuy, executeDemoSell } from "../demo/virtualWallet.js";
 
 let _connection = null;
 let _wallet = null;
@@ -57,6 +58,11 @@ function getJupiterReferralParams() {
  * Returns USD-denominated values provided by Helius.
  */
 export async function getWalletBalances() {
+  // Demo mode: return virtual balance, no real API call needed
+  if (process.env.DEMO_MODE === "true") {
+    return getDemoBalance();
+  }
+
   let walletAddress;
   try {
     walletAddress = getWallet().publicKey.toString();
@@ -149,6 +155,15 @@ export async function swapToken({
 }) {
   input_mint  = normalizeMint(input_mint);
   output_mint = normalizeMint(output_mint);
+
+  if (process.env.DEMO_MODE === "true") {
+    const isBuy = input_mint === SOL_MINT || input_mint === "SOL";
+    if (isBuy) {
+      return executeDemoBuy({ mint: output_mint, symbol: null, amount_sol: amount, price_usd: 0 });
+    } else {
+      return executeDemoSell({ mint: input_mint });
+    }
+  }
 
   if (process.env.DRY_RUN === "true") {
     return {
