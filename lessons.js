@@ -383,3 +383,87 @@ export function isTokenBlacklisted(mint) {
   const mem = loadRugMemory();
   return mem.blacklisted_tokens.includes(mint);
 }
+
+// ─── Darwin Signal Weighting ──────────────────────────────────
+
+const DARWIN_FILE = "./darwin-weights.json";
+
+function loadDarwinWeights() {
+  if (!fs.existsSync(DARWIN_FILE)) {
+    return {
+      signals: {
+        buy_vol: { weight: 1.0, success_count: 0, failure_count: 0 },
+        hot_level: { weight: 1.0, success_count: 0, failure_count: 0 },
+        swaps: { weight: 1.0, success_count: 0, failure_count: 0 },
+        volume: { weight: 1.0, success_count: 0, failure_count: 0 },
+        holders: { weight: 1.0, success_count: 0, failure_count: 0 },
+      },
+      last_updated: new Date().toISOString(),
+    };
+  }
+  try {
+    return JSON.parse(fs.readFileSync(DARWIN_FILE, "utf8"));
+  } catch {
+    return loadDarwinWeights.__proto__.constructor(); // Fallback
+  }
+}
+
+function saveDarwinWeights(data) {
+  data.last_updated = new Date().toISOString();
+  fs.writeFileSync(DARWIN_FILE, JSON.stringify(data, null, 2));
+}
+
+/**
+ * Update signal weights based on trade outcome.
+ * Called when a trade closes: boost winning signals, decay losing signals.
+ */
+export function updateDarwinWeights(signalsTriggered = [], tradePnl = 0, config = {}) {
+  const { boostFactor = 1.05, decayFactor = 0.95, weightFloor = 0.3, weightCeiling = 2.5 } = config;
+  const data = loadDarwinWeights();
+  const isWin = tradePnl > 0;
+
+  for (let signal of signalsTriggered) {
+    if (!data.signals[signal]) continue;
+
+    if (isWin) {
+      data.signals[signal].success_count++;
+      data.signals[signal].weight *= boostFactor;
+    } else {
+      data.signals[signal].failure_count++;
+      data.signals[signal].weight *= decayFactor;
+    }
+
+    // Clamp to floor/ceiling
+    data.signals[signal].weight = Math.max(
+      weightFloor,
+      Math.min(weightCeiling, data.signals[signal].weight)
+    );
+  }
+
+  saveDarwinWeights(data);
+}
+
+/**
+ * Get current Darwin signal weights for token ranking.
+ */
+export function getDarwinWeights() {
+  const data = loadDarwinWeights();
+  return data.signals;
+}
+
+/**
+ * Get Darwin signal analytics: win rates, weights, etc.
+ */
+export function getDarwinAnalytics() {
+  const data = loadDarwinWeights();
+  return Object.entries(data.signals).map(([signal, stats]) => ({
+    signal,
+    weight: stats.weight,
+    success_count: stats.success_count,
+    failure_count: stats.failure_count,
+    total_uses: stats.success_count + stats.failure_count,
+    win_rate: (stats.success_count + stats.failure_count) > 0
+      ? (stats.success_count / (stats.success_count + stats.failure_count))
+      : 0,
+  })).sort((a, b) => b.weight - a.weight);
+}
