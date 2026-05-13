@@ -9,9 +9,15 @@ const DEFAULT_AGENT_MERIDIAN_API_URL = "https://api.agentmeridian.xyz/api";
 const DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY = "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz";
 const DEFAULT_HIVEMIND_API_KEY = DEFAULT_AGENT_MERIDIAN_PUBLIC_KEY;
 
-const u = fs.existsSync(USER_CONFIG_PATH)
-  ? JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"))
-  : {};
+let u = {};
+if (fs.existsSync(USER_CONFIG_PATH)) {
+  try {
+    u = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+  } catch (err) {
+    console.error(`⚠️  Invalid user-config.json: ${err.message}`);
+    u = {};
+  }
+}
 
 // Apply wallet/RPC from user-config if not already in env
 if (u.rpcUrl)    process.env.RPC_URL            ||= u.rpcUrl;
