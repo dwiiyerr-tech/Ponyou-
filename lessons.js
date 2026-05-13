@@ -43,6 +43,9 @@ export function addLesson(rule, tags = [], opts = {}) {
     role: opts.role || null,
     pinned: !!opts.pinned,
     times_applied: 0,
+    success_count: 0,      // NEW: Track wins with this lesson
+    failure_count: 0,      // NEW: Track losses with this lesson
+    last_used: null,       // NEW: Track last usage
     created_at: new Date().toISOString(),
   });
   saveLessons(data);
@@ -108,9 +111,69 @@ export function getLessonsForPrompt({ agentType, maxItems = 12 } = {}) {
   const lines = combined.map(l => {
     const pin = l.pinned ? "[PINNED] " : "";
     const tags = l.tags.length ? ` [${l.tags.join(",")}]` : "";
-    return `• ${pin}${l.rule}${tags}`;
+    const winRate = l.times_applied > 0 ? ((l.success_count / l.times_applied) * 100).toFixed(0) : "N/A";
+    return `• ${pin}${l.rule}${tags} (${winRate}% WR, ${l.times_applied} uses)`;
   });
   return lines.join("\n");
+}
+
+// ─── Lesson Effectiveness Tracking ────────────────────────────
+
+/**
+ * Record lesson outcome: update success/failure counts.
+ * Called when a trade closes to track if active lessons helped.
+ */
+export function recordLessonOutcome(lessonIds = [], tradePnl = 0) {
+  if (!Array.isArray(lessonIds) || lessonIds.length === 0) return;
+
+  const data = loadLessons();
+  const isWin = tradePnl > 0;
+
+  for (let lessonId of lessonIds) {
+    const lesson = data.lessons.find(l => l.id === Number(lessonId));
+    if (!lesson) continue;
+
+    lesson.times_applied = (lesson.times_applied || 0) + 1;
+    lesson.last_used = new Date().toISOString();
+
+    if (isWin) {
+      lesson.success_count = (lesson.success_count || 0) + 1;
+    } else {
+      lesson.failure_count = (lesson.failure_count || 0) + 1;
+    }
+  }
+
+  // Auto-deprecate ineffective lessons
+  for (let lesson of data.lessons) {
+    if ((lesson.times_applied || 0) > 30) {
+      const winRate = lesson.success_count / lesson.times_applied;
+      if (winRate < 0.4 && !lesson.tags?.includes("pinned")) {
+        lesson.tags = lesson.tags || [];
+        if (!lesson.tags.includes("deprecated")) {
+          lesson.tags.push("deprecated");
+        }
+      }
+    }
+  }
+
+  saveLessons(data);
+}
+
+/**
+ * Get lesson analytics: win rates, usage counts, etc.
+ */
+export function getLessonAnalytics() {
+  const data = loadLessons();
+  return data.lessons.map(l => ({
+    id: l.id,
+    rule: l.rule,
+    times_applied: l.times_applied || 0,
+    success_count: l.success_count || 0,
+    failure_count: l.failure_count || 0,
+    win_rate: (l.times_applied || 0) > 0 ? (l.success_count || 0) / (l.times_applied || 0) : 0,
+    last_used: l.last_used,
+    status: l.tags?.includes("deprecated") ? "deprecated" : "active",
+  })).sort((a, b) => b.win_rate - a.win_rate);
 }
 
 // ─── Performance History ───────────────────────────────────────
