@@ -193,6 +193,7 @@ jupiter: {
     rsiOversold: indicatorUserConfig.rsiOversold ?? 30,
     rsiOverbought: indicatorUserConfig.rsiOverbought ?? 80,
     requireAllIntervals: indicatorUserConfig.requireAllIntervals ?? false,
+    volatilityAdjustmentEnabled: indicatorUserConfig.volatilityAdjustmentEnabled ?? true,
   },
 };
 
