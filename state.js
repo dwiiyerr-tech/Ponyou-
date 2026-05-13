@@ -78,6 +78,8 @@ export function trackPosition({
   organic_score,
   initial_value_usd,
   signal_snapshot = null,
+  active_lessons = [],
+  active_signals = [],
 }) {
   const state = load();
   state.positions[position] = {
@@ -96,6 +98,8 @@ export function trackPosition({
     organic_score,
     initial_value_usd,
     signal_snapshot: signal_snapshot || null,
+    active_lessons: active_lessons || [],
+    active_signals: active_signals || [],
     deployed_at: new Date().toISOString(),
     out_of_range_since: null,
     last_claim_at: null,

@@ -5,13 +5,13 @@ import { agentLoop } from "./agent.js";
 import { log } from "./logger.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { discoverTokens, getSolanaGasFee, swapToken as gmgnSwap, getTokenSecurityDetails, getTokenKlines } from "./tools/gmgn.js";
-import { config, computeDeployAmount } from "./config.js";
-import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory } from "./lessons.js";
+import { config, computeDeployAmount, computeVolatilityAdjustedSize } from "./config.js";
+import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML } from "./telegram.js";
 import { strategy, checkROI, checkTrailingStop, run4FilterProtocol, getMcapTier } from "./strategy.js";
 import { trackPosition, recordClose, getTrackedPosition, getStateSummary, syncOpenPositions } from "./state.js";
-import { calculateRSI, calculateSuperTrend } from "./utils/indicators.js";
+import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
 
 import {
   getTradingPlan, initTradingPlan, checkSessionGate,
@@ -42,6 +42,10 @@ import {
   generateDailyReport, formatReportTelegram, wasTodayReported,
 } from "./daily-report.js";
 import { getTokenInfo } from "./tools/token.js";
+import {
+  analyzeMomentum, checkEntryConfirmation, adjustSizeByRSI,
+  checkTrendBreakExit, getMomentumScore,
+} from "./momentum-analysis.js";
 
 log("startup", "Ponyou AI Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
@@ -449,16 +453,27 @@ export async function runManagementCycle({ silent = false } = {}) {
 
         // Record performance
         const tracked = getTrackedPosition(exit.mint);
+        const tradePnl = exit.pnl_pct || 0;
         recordTradeOutcome({
           mint: exit.mint,
           symbol: exit.symbol,
           entry_usd: tracked?.initial_value_usd,
           exit_usd: tokenData?.usd,
-          pnl_pct: exit.pnl_pct,
+          pnl_pct: tradePnl,
           hold_minutes: tracked ? (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000 : 0,
           exit_reason: exit.reason,
           rug_detected: exit.reason.includes("Rug"),
         });
+
+        // Update lesson effectiveness if lessons were tracked during entry
+        if (tracked?.active_lessons?.length > 0) {
+          recordLessonOutcome(tracked.active_lessons, tradePnl);
+        }
+
+        // Update Darwin signal weights if signals were tracked
+        if (tracked?.active_signals?.length > 0) {
+          updateDarwinWeights(tracked.active_signals, tradePnl, config.darwin);
+        }
 
         // Trigger learning mode jika loss
         if (config.pilot.enabled && exit.is_loss) {
@@ -617,30 +632,44 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const enhancedToken = { ...token, global_fees_sol: globalFees, tier: tierInfo };
 
       const filterResult = await run4FilterProtocol(enhancedToken, security, gasFee);
-      
-      // ─── Technical Indicators (Optional) ────────
+
+      // ─── Technical Indicators & Momentum Analysis ────────
       let technicals = null;
+      let momentumValid = false;
+      let momentumScore = 0;
+      let momentumEntry = { pass: true };
+      let volatilityPercentile = 50;
+      let volatilityAdjustedSize = deployAmount;
+
       if (config.indicators.enabled) {
-        log("screening", `${token.symbol}: Fetching klines for indicators...`);
-        const klineData = await getTokenKlines({ 
-          mint: token.mint, 
+        log("screening", `${token.symbol}: Fetching klines for momentum analysis...`);
+        const klineData = await getTokenKlines({
+          mint: token.mint,
           resolution: config.indicators.intervals[0] === "5_MINUTE" ? "5m" : "1m",
           limit: config.indicators.candles || 100
         });
-        
+
         if (klineData.candles && klineData.candles.length > 5) {
-          const closes = klineData.candles.map(c => c.close);
-          const highs = klineData.candles.map(c => c.high);
-          const lows = klineData.candles.map(c => c.low);
-          
-          const rsi = calculateRSI(closes, config.indicators.rsiLength || 14);
-          const st = calculateSuperTrend(highs, lows, closes);
-          
-          technicals = {
-            rsi: rsi ? parseFloat(rsi.toFixed(2)) : null,
-            supertrend: st ? { trend: st.trend, value: st.value } : null,
-          };
-          log("screening", `${token.symbol}: RSI=${technicals.rsi} ST=${technicals.supertrend?.trend}`);
+          const momentum = analyzeMomentum(klineData.candles);
+
+          if (momentum.valid) {
+            momentumValid = true;
+            momentumScore = getMomentumScore(momentum);
+            momentumEntry = checkEntryConfirmation(momentum);
+
+            technicals = {
+              rsi: momentum.rsi ? parseFloat(momentum.rsi.toFixed(2)) : null,
+              supertrend: momentum.supertrend ? { trend: momentum.trend, value: momentum.supertrend.value } : null,
+              momentum_score: momentumScore,
+              entry_confirmed: momentumEntry.pass,
+            };
+
+            // Calculate volatility and adjust position size
+            volatilityPercentile = calculateVolatilityPercentile(klineData.candles, 14);
+            volatilityAdjustedSize = computeVolatilityAdjustedSize(deployAmount, volatilityPercentile);
+
+            log("screening", `${token.symbol}: RSI=${technicals.rsi} ST=${momentum.trend} MOMENTUM=${momentumScore} VOL=${volatilityPercentile.toFixed(0)}% SIZE=${volatilityAdjustedSize} ENTRY=${momentumEntry.pass}`);
+          }
         }
       }
 
@@ -651,6 +680,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
         market_condition: marketIntel.condition,
         profit_mode: isInProfitMode(),
         technicals,
+        momentum_score: momentumScore,
+        momentum_entry_pass: momentumEntry.pass,
+        volatility_percentile: volatilityPercentile,
+        volatility_adjusted_size: volatilityAdjustedSize,
       });
     }
 
