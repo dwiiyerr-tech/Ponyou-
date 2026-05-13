@@ -8,31 +8,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(__dirname, "user-config.json");
 const ENV_PATH = path.join(__dirname, ".env");
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
 function question(prompt) {
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      resolve(answer.trim());
-    });
-  });
+  return new Promise((resolve) => rl.question(prompt, (a) => resolve(a.trim())));
 }
-
 function prompt(msg, defaultVal = "") {
-  const suffix = defaultVal ? ` [${defaultVal}]` : "";
+  const suffix = defaultVal !== "" && defaultVal !== undefined ? ` [${defaultVal}]` : "";
   return question(`${msg}${suffix}: `);
 }
-
 async function promptYesNo(msg, defaultVal = true) {
   const def = defaultVal ? "Y/n" : "y/N";
   const answer = await question(`${msg} [${def}]: `);
   if (answer === "") return defaultVal;
   return answer.toLowerCase().startsWith("y");
 }
-
 async function promptNumber(msg, defaultVal) {
   const defStr = defaultVal !== undefined ? ` [${defaultVal}]` : "";
   const answer = await question(`${msg}${defStr}: `);
@@ -40,33 +30,24 @@ async function promptNumber(msg, defaultVal) {
   const num = parseFloat(answer);
   return isNaN(num) ? defaultVal : num;
 }
-
-async function promptSelect(msg, options) {
+async function promptSelect(msg, options, defaultIdx = 0) {
   console.log(`\n${msg}:`);
-  options.forEach((opt, i) => {
-    console.log(`  ${i + 1}. ${opt}`);
-  });
-  let choice = await question("Select (1-" + options.length + "): ");
-  choice = parseInt(choice) - 1;
-  return choice >= 0 && choice < options.length ? options[choice] : options[0];
+  options.forEach((opt, i) => console.log(`  ${i + 1}. ${opt}${i === defaultIdx ? " (default)" : ""}`));
+  let choice = await question(`Select (1-${options.length}): `);
+  const idx = parseInt(choice) - 1;
+  return idx >= 0 && idx < options.length ? options[idx] : options[defaultIdx];
 }
 
 function loadConfig() {
   if (fs.existsSync(CONFIG_PATH)) {
-    try {
-      return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
-    } catch {
-      return {};
-    }
+    try { return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); } catch { return {}; }
   }
   return {};
 }
-
 function loadEnv() {
   const env = {};
   if (fs.existsSync(ENV_PATH)) {
-    const content = fs.readFileSync(ENV_PATH, "utf8");
-    content.split("\n").forEach((line) => {
+    fs.readFileSync(ENV_PATH, "utf8").split("\n").forEach((line) => {
       line = line.trim();
       if (!line || line.startsWith("#")) return;
       const [key, ...valParts] = line.split("=");
@@ -75,12 +56,10 @@ function loadEnv() {
   }
   return env;
 }
-
 function saveConfig(cfg) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
   console.log(`✓ Konfigurasi disimpan ke ${CONFIG_PATH}`);
 }
-
 function saveEnv(env) {
   const lines = [
     "# ── Wallet ────────────────────────────────────────────────────────────────────",
@@ -93,7 +72,7 @@ function saveEnv(env) {
     "# Option A: OpenRouter (default)",
     `OPENROUTER_API_KEY=${env.OPENROUTER_API_KEY || ""}`,
     "",
-    "# Option B: LM Studio (local)",
+    "# Option B: LM Studio / Custom endpoint",
     `LLM_BASE_URL=${env.LLM_BASE_URL || ""}`,
     `LLM_API_KEY=${env.LLM_API_KEY || ""}`,
     `LLM_MODEL=${env.LLM_MODEL || ""}`,
@@ -107,556 +86,360 @@ function saveEnv(env) {
     `TELEGRAM_CHAT_ID=${env.TELEGRAM_CHAT_ID || ""}`,
     `TELEGRAM_ALLOWED_USER_IDS=${env.TELEGRAM_ALLOWED_USER_IDS || ""}`,
     "",
-    "# ── Vault / Tabungan ──────────────────────────────────────────────────────────",
+    "# ── Vault / Tabungan Otomatis ─────────────────────────────────────────────────",
     `VAULT_WALLET=${env.VAULT_WALLET || ""}`,
     "",
-    "# ── Misc ──────────────────────────────────────────────────────────────────────",
+    "# ── Mode ───────────────────────────────────────────────────────────────────────",
+    "# DRY_RUN: blokir swap, tetap butuh wallet & Helius key",
     `DRY_RUN=${env.DRY_RUN || "false"}`,
+    "",
+    "# DEMO_MODE: virtual trading tanpa uang asli (tidak butuh wallet/Helius)",
+    `DEMO_MODE=${env.DEMO_MODE || "false"}`,
+    `DEMO_INITIAL_SOL=${env.DEMO_INITIAL_SOL || "5.0"}`,
+    "",
     `LOG_LEVEL=${env.LOG_LEVEL || "info"}`,
   ];
-  fs.writeFileSync(ENV_PATH, lines.join("\n"));
+  fs.writeFileSync(ENV_PATH, lines.join("\n") + "\n");
   console.log(`✓ Environment disimpan ke ${ENV_PATH}`);
+}
+
+// ─── Setup Sections ───────────────────────────────────────────
+
+async function setupMode(cfg, env) {
+  console.log("\n━━━ MODE OPERASI ━━━");
+  console.log("  1. Live    — trading nyata dengan uang asli");
+  console.log("  2. Dry Run — simulasi tanpa eksekusi (butuh wallet & Helius key)");
+  console.log("  3. Demo    — virtual trading tanpa wallet/API key (untuk testing)");
+  const mode = await question("Pilih mode [1/2/3]: ");
+  if (mode === "2") {
+    env.DRY_RUN = "true";
+    env.DEMO_MODE = "false";
+    console.log("→ Mode: DRY RUN");
+  } else if (mode === "3") {
+    env.DEMO_MODE = "true";
+    env.DRY_RUN = "false";
+    env.DEMO_INITIAL_SOL = String(await promptNumber("  Saldo SOL virtual awal", 5.0));
+    console.log(`→ Mode: DEMO (${env.DEMO_INITIAL_SOL} SOL virtual)`);
+  } else {
+    env.DRY_RUN = "false";
+    env.DEMO_MODE = "false";
+    console.log("→ Mode: LIVE");
+  }
 }
 
 async function setupWalletAndRpc(cfg, env) {
   console.log("\n━━━ WALLET & RPC ━━━");
-  cfg.walletKey =
-    (await prompt("Wallet Private Key (base58)", cfg.walletKey)) ||
-    cfg.walletKey;
-  cfg.rpcUrl = (await prompt("RPC URL", cfg.rpcUrl || "https://pump.helius-rpc.com")) || cfg.rpcUrl;
+  if (env.DEMO_MODE === "true") {
+    console.log("ℹ️  Demo mode aktif — wallet & Helius key tidak wajib diisi.");
+  }
+  const walletKey = await prompt("  Wallet Private Key (base58)", cfg.walletKey || env.WALLET_PRIVATE_KEY || "");
+  if (walletKey) { cfg.walletKey = walletKey; env.WALLET_PRIVATE_KEY = walletKey; }
 
-  env.WALLET_PRIVATE_KEY = cfg.walletKey;
-  env.RPC_URL = cfg.rpcUrl;
+  const rpcUrl = await prompt("  RPC URL", cfg.rpcUrl || env.RPC_URL || "https://pump.helius-rpc.com");
+  if (rpcUrl) { cfg.rpcUrl = rpcUrl; env.RPC_URL = rpcUrl; }
+
+  const heliusKey = await prompt("  Helius API Key", env.HELIUS_API_KEY || "");
+  if (heliusKey) env.HELIUS_API_KEY = heliusKey;
+
+  const gmgnKey = await prompt("  GMGN Route Key", env.GMGN_ROUTE_KEY || "");
+  if (gmgnKey) env.GMGN_ROUTE_KEY = gmgnKey;
 }
 
 async function setupLlm(cfg, env) {
   console.log("\n━━━ LLM PROVIDER ━━━");
-  const provider = await promptSelect("Pilih LLM provider", [
-    "OpenRouter (default)",
-    "LM Studio (local)",
+  const provider = await promptSelect("  Pilih LLM provider", [
+    "OpenRouter (default, cloud)",
+    "LM Studio (local, gratis)",
+    "Custom endpoint",
   ]);
 
-  if (provider === "OpenRouter (default)") {
-    env.OPENROUTER_API_KEY = await prompt(
-      "OpenRouter API Key",
-      env.OPENROUTER_API_KEY
-    );
-    cfg.llmModel =
-      (await prompt("Model (default: minimax/minimax-m2.7)", cfg.llmModel)) ||
-      cfg.llmModel ||
-      "minimax/minimax-m2.7";
-    env.LLM_BASE_URL = "";
-    env.LLM_API_KEY = "";
+  if (provider.startsWith("OpenRouter")) {
+    env.OPENROUTER_API_KEY = await prompt("  OpenRouter API Key", env.OPENROUTER_API_KEY || "");
+    cfg.llmModel = (await prompt("  Model", cfg.llmModel || "minimax/minimax-m2.7")) || cfg.llmModel || "minimax/minimax-m2.7";
+    env.LLM_BASE_URL = ""; env.LLM_API_KEY = ""; env.LLM_MODEL = cfg.llmModel;
+  } else if (provider.startsWith("LM Studio")) {
+    env.LLM_BASE_URL = await prompt("  Base URL", env.LLM_BASE_URL || "http://localhost:1234/v1");
+    env.LLM_API_KEY = await prompt("  API Key", env.LLM_API_KEY || "lm-studio");
+    cfg.llmModel = await prompt("  Model name", cfg.llmModel || "");
+    env.LLM_MODEL = cfg.llmModel;
+    env.OPENROUTER_API_KEY = "";
   } else {
-    env.LLM_BASE_URL = await prompt(
-      "LM Studio Base URL",
-      env.LLM_BASE_URL || "http://localhost:1234/v1"
-    );
-    env.LLM_API_KEY = await prompt("LM Studio API Key", env.LLM_API_KEY || "lm-studio");
-    cfg.llmModel = await prompt("Model name", cfg.llmModel);
+    env.LLM_BASE_URL = await prompt("  Base URL", env.LLM_BASE_URL || "");
+    env.LLM_API_KEY = await prompt("  API Key", env.LLM_API_KEY || "");
+    cfg.llmModel = await prompt("  Model name", cfg.llmModel || "");
+    env.LLM_MODEL = cfg.llmModel;
     env.OPENROUTER_API_KEY = "";
   }
+  cfg.managementModel = cfg.llmModel;
+  cfg.screeningModel = cfg.llmModel;
+  cfg.generalModel = cfg.llmModel;
 }
 
-async function setupPilot(cfg) {
-  console.log("\n━━━ PILOT: COMPOUND TRADING PLAN (30 HARI) ━━━");
-  cfg.pilotEnabled = await promptYesNo("Aktifkan pilot mode?", cfg.pilotEnabled);
+async function setupStrategy(cfg) {
+  console.log("\n━━━ STRATEGI TRADING ━━━");
+  console.log("  1. sniper      — Entry cepat token baru. High risk, high reward.");
+  console.log("  2. dip_buy     — Beli saat harga dip jauh dari ATH.");
+  console.log("  3. smart_money — Ikuti wallet smart money. Kualitas tinggi.");
+  console.log("  4. degen       — Aggressive high risk. Untuk market EXTREME.");
+  const stratChoice = await question("  Pilih strategi [1/2/3/4]: ");
+  const stratMap = { "1": "sniper", "2": "dip_buy", "3": "smart_money", "4": "degen" };
+  cfg.strategy = stratMap[stratChoice] || "sniper";
+  console.log(`→ Strategi: ${cfg.strategy}`);
 
-  if (cfg.pilotEnabled) {
-    cfg.pilotCapitalUsd = await promptNumber(
-      "Modal awal (USD)",
-      cfg.pilotCapitalUsd || 10
-    );
-    cfg.dailyTargetPct = await promptNumber(
-      "Target profit harian (%)",
-      cfg.dailyTargetPct || 25
-    );
-    cfg.dailyStopLossPct = await promptNumber(
-      "Stop loss harian (%)",
-      cfg.dailyStopLossPct || -10
-    );
-    cfg.sessionPauseDurationMin = await promptNumber(
-      "Pause duration saat target/loss tercapai (menit)",
-      cfg.sessionPauseDurationMin || 60
-    );
-    cfg.learningModeDurationMin = await promptNumber(
-      "Learning mode duration (menit)",
-      cfg.learningModeDurationMin || 60
-    );
-    cfg.planDays = await promptNumber(
-      "Durasi plan (hari)",
-      cfg.planDays || 30
-    );
-    cfg.autoAdaptToMarket = await promptYesNo(
-      "Auto adapt ke market conditions?",
-      cfg.autoAdaptToMarket !== false
-    );
+  if (cfg.strategy === "dip_buy") {
+    cfg.athFilterPct = await promptNumber("  ATH distance minimum (%) misal -40 = beli jika 40% di bawah ATH", -40);
   }
 }
 
-async function setupVault(cfg) {
-  console.log("\n━━━ VAULT: TABUNGAN OTOMATIS ━━━");
-  cfg.vaultWallet = await prompt("Vault wallet address", cfg.vaultWallet);
-  if (cfg.vaultWallet) {
-    cfg.vaultPct = await promptNumber(
-      "Persentase profit untuk vault (%)",
-      cfg.vaultPct || 35
-    );
-    cfg.vaultIntervalDays = await promptNumber(
-      "Interval transfer (hari)",
-      cfg.vaultIntervalDays || 7
-    );
+async function setupPositionAndSol(cfg) {
+  console.log("\n━━━ WALLET & POSISI ━━━");
+  cfg.deployAmountSol = await promptNumber("  Deploy amount per trade (SOL)", cfg.deployAmountSol ?? 0.5);
+  cfg.maxPositions = await promptNumber("  Max posisi terbuka sekaligus", cfg.maxPositions ?? 3);
+  cfg.minSolToOpen = await promptNumber("  Min SOL di wallet untuk buka posisi", cfg.minSolToOpen ?? 0.55);
+  cfg.gasReserve = await promptNumber("  Cadangan SOL untuk gas", cfg.gasReserve ?? 0.2);
+  cfg.positionSizePct = await promptNumber("  % wallet per posisi (compounding, 0.35 = 35%)", cfg.positionSizePct ?? 0.35);
+  cfg.maxDeployAmount = await promptNumber("  Max deploy amount (USD)", cfg.maxDeployAmount ?? 50);
+}
+
+async function setupExitRules(cfg) {
+  console.log("\n━━━ EXIT RULES (STOPLOSS & TAKE PROFIT) ━━━");
+  cfg.stopLossPct = await promptNumber("  Stop loss (%) misal -15 = keluar jika rugi 15%", cfg.stopLossPct ?? -15);
+  cfg.takeProfitPct = await promptNumber("  Take profit (%) misal 30 = ambil profit di 30%", cfg.takeProfitPct ?? 30);
+  cfg.trailingTakeProfit = await promptYesNo("  Aktifkan trailing take profit?", cfg.trailingTakeProfit !== false);
+  if (cfg.trailingTakeProfit) {
+    cfg.trailingTriggerPct = await promptNumber("  Aktifkan trailing saat profit > X%", cfg.trailingTriggerPct ?? 20);
+    cfg.trailingDropPct = await promptNumber("  Close jika turun X% dari peak", cfg.trailingDropPct ?? 5);
   }
 }
 
-async function setupReport(cfg) {
-  console.log("\n━━━ LAPORAN HARIAN ━━━");
-  cfg.dailyReportEnabled = await promptYesNo(
-    "Aktifkan laporan harian?",
-    cfg.dailyReportEnabled !== false
-  );
-  if (cfg.dailyReportEnabled) {
-    cfg.dailyReportHourUtc = await promptNumber(
-      "Jam UTC trigger report",
-      cfg.dailyReportHourUtc || 0
-    );
-    cfg.dailyReportMinuteUtc = await promptNumber(
-      "Menit trigger report",
-      cfg.dailyReportMinuteUtc || 5
-    );
-  }
-}
+async function setupScanner(cfg) {
+  console.log("\n━━━ SCANNER / SCREENING ━━━");
+  cfg.minMcap = await promptNumber("  Min market cap ($)", cfg.minMcap ?? 150000);
+  cfg.maxMcap = await promptNumber("  Max market cap ($)", cfg.maxMcap ?? 10000000);
+  cfg.minVolume = await promptNumber("  Min volume 24h ($)", cfg.minVolume ?? 500);
+  cfg.minHolders = await promptNumber("  Min jumlah holder", cfg.minHolders ?? 500);
+  cfg.minTvl = await promptNumber("  Min TVL pool ($)", cfg.minTvl ?? 10000);
+  cfg.maxTvl = await promptNumber("  Max TVL pool ($)", cfg.maxTvl ?? 150000);
+  cfg.maxBundlePct = await promptNumber("  Max bundle holder (%)", cfg.maxBundlePct ?? 30);
+  cfg.maxTop10Pct = await promptNumber("  Max top-10 holder konsentrasi (%)", cfg.maxTop10Pct ?? 60);
+  cfg.maxBotHoldersPct = await promptNumber("  Max bot holder (%)", cfg.maxBotHoldersPct ?? 30);
+  cfg.minTokenFeesSol = await promptNumber("  Min global fees SOL (anti wash-trading)", cfg.minTokenFeesSol ?? 30);
+  cfg.minOrganic = await promptNumber("  Min organic score (%)", cfg.minOrganic ?? 60);
 
-async function setupRisk(cfg) {
-  console.log("\n━━━ RISK LIMITS ━━━");
-  cfg.maxPositions = await promptNumber(
-    "Max posisi terbuka",
-    cfg.maxPositions || 3
-  );
-  cfg.maxDeployAmount = await promptNumber(
-    "Max deploy amount (USD)",
-    cfg.maxDeployAmount || 50
-  );
-}
-
-async function setupScreening(cfg) {
-  console.log("\n━━━ SCREENING: POOL SELECTION ━━━");
-  cfg.minTvl = await promptNumber(
-    "Min TVL",
-    cfg.minTvl || 10000
-  );
-  cfg.maxTvl = await promptNumber(
-    "Max TVL",
-    cfg.maxTvl || 150000
-  );
-  cfg.minVolume = await promptNumber(
-    "Min volume (24h)",
-    cfg.minVolume || 500
-  );
-  cfg.minOrganic = await promptNumber(
-    "Min organic pct",
-    cfg.minOrganic || 60
-  );
-  cfg.minHolders = await promptNumber(
-    "Min holders",
-    cfg.minHolders || 500
-  );
-  cfg.minMcap = await promptNumber(
-    "Min market cap",
-    cfg.minMcap || 150000
-  );
-  cfg.maxMcap = await promptNumber(
-    "Max market cap",
-    cfg.maxMcap || 10000000
-  );
-  cfg.timeframe = await prompt(
-    "Timeframe",
-    cfg.timeframe || "5m"
-  );
-  cfg.category = await prompt(
-    "Category",
-    cfg.category || "trending"
-  );
-
-  cfg.excludeHighSupplyConcentration = await promptYesNo(
-    "Exclude high supply concentration?",
-    cfg.excludeHighSupplyConcentration !== false
-  );
-  cfg.useDiscordSignals = await promptYesNo(
-    "Gunakan Discord signals?",
-    cfg.useDiscordSignals
-  );
-  if (cfg.useDiscordSignals) {
-    cfg.discordSignalMode = await promptSelect(
-      "Discord signal mode",
-      ["merge", "only"]
-    );
-  }
-
-  cfg.avoidPvpSymbols = await promptYesNo(
-    "Avoid PVP symbols?",
-    cfg.avoidPvpSymbols !== false
-  );
-  cfg.blockPvpSymbols = await promptYesNo(
-    "Block PVP symbols (hard filter)?",
-    cfg.blockPvpSymbols
-  );
-
-  cfg.maxBundlePct = await promptNumber(
-    "Max bundle %",
-    cfg.maxBundlePct || 30
-  );
-  cfg.maxBotHoldersPct = await promptNumber(
-    "Max bot holders %",
-    cfg.maxBotHoldersPct || 30
-  );
-  cfg.maxTop10Pct = await promptNumber(
-    "Max top 10 holders %",
-    cfg.maxTop10Pct || 60
-  );
-
-  cfg.minTokenFeesSol = await promptNumber(
-    "Min token fees (SOL)",
-    cfg.minTokenFeesSol || 30
-  );
+  console.log("\n  Signal Sources:");
+  cfg.useTrendingSignals = await promptYesNo("  Gunakan trending signal source?", cfg.useTrendingSignals !== false);
+  cfg.useGraduatedSignals = await promptYesNo("  Gunakan graduated (pump.fun) signal source?", cfg.useGraduatedSignals !== false);
 }
 
 async function setupManagement(cfg) {
-  console.log("\n━━━ POSITION MANAGEMENT ━━━");
-  cfg.deployAmountSol = await promptNumber(
-    "Deploy amount (SOL)",
-    cfg.deployAmountSol || 0.5
-  );
-  cfg.minSolToOpen = await promptNumber(
-    "Min SOL to open position",
-    cfg.minSolToOpen || 0.55
-  );
-  cfg.gasReserve = await promptNumber(
-    "Gas reserve (SOL)",
-    cfg.gasReserve || 0.2
-  );
-  cfg.positionSizePct = await promptNumber(
-    "Position size %",
-    cfg.positionSizePct || 0.35
-  );
-
-  cfg.stopLossPct = await promptNumber(
-    "Stop loss %",
-    cfg.stopLossPct || -50
-  );
-  cfg.takeProfitPct = await promptNumber(
-    "Take profit %",
-    cfg.takeProfitPct || 5
-  );
-
-  cfg.trailingTakeProfit = await promptYesNo(
-    "Aktifkan trailing take profit?",
-    cfg.trailingTakeProfit !== false
-  );
-  if (cfg.trailingTakeProfit) {
-    cfg.trailingTriggerPct = await promptNumber(
-      "Trailing trigger %",
-      cfg.trailingTriggerPct || 3
-    );
-    cfg.trailingDropPct = await promptNumber(
-      "Trailing drop %",
-      cfg.trailingDropPct || 1.5
-    );
-  }
-
-  cfg.minClaimAmount = await promptNumber(
-    "Min claim amount",
-    cfg.minClaimAmount || 5
-  );
-  cfg.autoSwapAfterClaim = await promptYesNo(
-    "Auto swap after claim?",
-    cfg.autoSwapAfterClaim
-  );
-
-  cfg.minVolumeToRebalance = await promptNumber(
-    "Min volume to rebalance",
-    cfg.minVolumeToRebalance || 1000
-  );
-  cfg.minFeePerTvl24h = await promptNumber(
-    "Min fee per TVL (24h)",
-    cfg.minFeePerTvl24h || 7
-  );
+  console.log("\n━━━ SCHEDULE MANAGEMENT ━━━");
+  cfg.managementIntervalMin = await promptNumber("  Cek posisi setiap X menit", cfg.managementIntervalMin ?? 10);
+  cfg.screeningIntervalMin = await promptNumber("  Scan token baru setiap X menit", cfg.screeningIntervalMin ?? 30);
 }
 
-async function setupScheduling(cfg) {
-  console.log("\n━━━ SCHEDULING ━━━");
-  cfg.managementIntervalMin = await promptNumber(
-    "Management interval (menit)",
-    cfg.managementIntervalMin || 10
-  );
-  cfg.screeningIntervalMin = await promptNumber(
-    "Screening interval (menit)",
-    cfg.screeningIntervalMin || 30
-  );
-  cfg.healthCheckIntervalMin = await promptNumber(
-    "Health check interval (menit)",
-    cfg.healthCheckIntervalMin || 60
-  );
-}
-
-async function setupLlmSettings(cfg) {
-  console.log("\n━━━ LLM SETTINGS ━━━");
-  cfg.temperature = await promptNumber(
-    "Temperature",
-    cfg.temperature || 0.373
-  );
-  cfg.maxTokens = await promptNumber(
-    "Max tokens",
-    cfg.maxTokens || 4096
-  );
-  cfg.maxSteps = await promptNumber(
-    "Max steps",
-    cfg.maxSteps || 20
-  );
-}
-
-async function setupDarwin(cfg) {
-  console.log("\n━━━ DARWINIAN SIGNAL WEIGHTING ━━━");
-  cfg.darwinEnabled = await promptYesNo(
-    "Aktifkan darwin weighting?",
-    cfg.darwinEnabled !== false
-  );
-  if (cfg.darwinEnabled) {
-    cfg.darwinWindowDays = await promptNumber(
-      "Window (hari)",
-      cfg.darwinWindowDays || 60
-    );
-    cfg.darwinRecalcEvery = await promptNumber(
-      "Recalc every (closes)",
-      cfg.darwinRecalcEvery || 5
-    );
-    cfg.darwinBoost = await promptNumber(
-      "Boost factor",
-      cfg.darwinBoost || 1.05
-    );
-    cfg.darwinDecay = await promptNumber(
-      "Decay factor",
-      cfg.darwinDecay || 0.95
-    );
-    cfg.darwinFloor = await promptNumber(
-      "Weight floor",
-      cfg.darwinFloor || 0.3
-    );
-    cfg.darwinCeiling = await promptNumber(
-      "Weight ceiling",
-      cfg.darwinCeiling || 2.5
-    );
-  }
-}
-
-async function setupIndicators(cfg) {
-  console.log("\n━━━ CHART INDICATORS ━━━");
-  if (!cfg.chartIndicators) cfg.chartIndicators = {};
-
-  cfg.chartIndicators.enabled = await promptYesNo(
-    "Aktifkan indicators?",
-    cfg.chartIndicators.enabled
-  );
-
-  if (cfg.chartIndicators.enabled) {
-    cfg.chartIndicators.entryPreset = await prompt(
-      "Entry preset",
-      cfg.chartIndicators.entryPreset || "supertrend_break"
-    );
-    cfg.chartIndicators.exitPreset = await prompt(
-      "Exit preset",
-      cfg.chartIndicators.exitPreset || "supertrend_break"
-    );
-    cfg.chartIndicators.rsiLength = await promptNumber(
-      "RSI length",
-      cfg.chartIndicators.rsiLength || 2
-    );
-    cfg.chartIndicators.candles = await promptNumber(
-      "Candles count",
-      cfg.chartIndicators.candles || 298
-    );
+async function setupPilot(cfg) {
+  console.log("\n━━━ TRADING PLAN (COMPOUND 30 HARI) ━━━");
+  cfg.pilotEnabled = await promptYesNo("  Aktifkan compound trading plan?", cfg.pilotEnabled !== false);
+  if (cfg.pilotEnabled) {
+    cfg.pilotCapitalUsd = await promptNumber("  Modal awal (USD)", cfg.pilotCapitalUsd ?? 10);
+    cfg.dailyTargetPct = await promptNumber("  Target profit harian (%)", cfg.dailyTargetPct ?? 25);
+    cfg.dailyStopLossPct = await promptNumber("  Stop loss harian (%)", cfg.dailyStopLossPct ?? -10);
+    cfg.planDays = await promptNumber("  Durasi plan (hari)", cfg.planDays ?? 30);
+    cfg.autoAdaptToMarket = await promptYesNo("  Auto adapt ke market conditions?", cfg.autoAdaptToMarket !== false);
   }
 }
 
 async function setupTelegram(env) {
   console.log("\n━━━ TELEGRAM NOTIFICATIONS ━━━");
-  const enable = await promptYesNo("Setup Telegram?", false);
+  const enable = await promptYesNo("  Setup Telegram bot?", !!(env.TELEGRAM_BOT_TOKEN));
   if (enable) {
-    env.TELEGRAM_BOT_TOKEN = await prompt(
-      "Bot token",
-      env.TELEGRAM_BOT_TOKEN
-    );
-    env.TELEGRAM_CHAT_ID = await prompt(
-      "Chat ID",
-      env.TELEGRAM_CHAT_ID
-    );
-    env.TELEGRAM_ALLOWED_USER_IDS = await prompt(
-      "Allowed user IDs (comma-separated)",
-      env.TELEGRAM_ALLOWED_USER_IDS
-    );
+    env.TELEGRAM_BOT_TOKEN = await prompt("  Bot Token", env.TELEGRAM_BOT_TOKEN || "");
+    env.TELEGRAM_CHAT_ID = await prompt("  Chat ID", env.TELEGRAM_CHAT_ID || "");
+    env.TELEGRAM_ALLOWED_USER_IDS = await prompt("  Allowed User IDs (pisahkan koma)", env.TELEGRAM_ALLOWED_USER_IDS || "");
   }
 }
 
-async function setupHivemind(cfg) {
-  console.log("\n━━━ HIVEMIND / AGENT MERIDIAN ━━━");
-  cfg.hiveMindUrl = await prompt(
-    "HiveMind URL",
-    cfg.hiveMindUrl || "https://api.agentmeridian.xyz"
-  );
-  cfg.hiveMindApiKey = await prompt(
-    "HiveMind API Key",
-    cfg.hiveMindApiKey
-  );
-  cfg.agentId = await prompt(
-    "Agent ID",
-    cfg.agentId
-  );
-  cfg.publicApiKey = await prompt(
-    "Public API Key",
-    cfg.publicApiKey
-  );
-  cfg.agentMeridianApiUrl = await prompt(
-    "Agent Meridian API URL",
-    cfg.agentMeridianApiUrl || "https://api.agentmeridian.xyz/api"
-  );
+async function setupVault(cfg, env) {
+  console.log("\n━━━ VAULT: TABUNGAN OTOMATIS ━━━");
+  const enableVault = await promptYesNo("  Aktifkan vault (kirim % profit ke wallet lain)?", !!(cfg.vaultWallet || env.VAULT_WALLET));
+  if (enableVault) {
+    const addr = await prompt("  Vault wallet address", cfg.vaultWallet || env.VAULT_WALLET || "");
+    cfg.vaultWallet = addr; env.VAULT_WALLET = addr;
+    cfg.vaultPct = await promptNumber("  % profit untuk vault", cfg.vaultPct ?? 35);
+    cfg.vaultIntervalDays = await promptNumber("  Interval transfer (hari)", cfg.vaultIntervalDays ?? 7);
+  } else {
+    cfg.vaultWallet = ""; env.VAULT_WALLET = "";
+  }
 }
 
-async function setupAdvanced(cfg, env) {
+async function setupAdvanced(cfg) {
+  const showAdv = await promptYesNo("\n  Tampilkan advanced settings?", false);
+  if (!showAdv) return;
+
   console.log("\n━━━ ADVANCED ━━━");
-  const showAdvanced = await promptYesNo("Show advanced settings?", false);
-  if (!showAdvanced) return;
+  cfg.temperature = await promptNumber("  LLM temperature", cfg.temperature ?? 0.373);
+  cfg.maxSteps = await promptNumber("  LLM max steps per cycle", cfg.maxSteps ?? 20);
+  cfg.maxTokens = await promptNumber("  LLM max tokens", cfg.maxTokens ?? 4096);
 
-  cfg.solMode = await promptYesNo(
-    "Enable SOL mode (report in SOL)?",
-    cfg.solMode
-  );
-  cfg.dryRun = await promptYesNo(
-    "Enable dry run?",
-    cfg.dryRun
-  );
-  env.DRY_RUN = String(cfg.dryRun);
-
-  cfg.repeatDeployCooldownEnabled = await promptYesNo(
-    "Repeat deploy cooldown?",
-    cfg.repeatDeployCooldownEnabled !== false
-  );
-  if (cfg.repeatDeployCooldownEnabled) {
-    cfg.repeatDeployCooldownTriggerCount = await promptNumber(
-      "Cooldown trigger count",
-      cfg.repeatDeployCooldownTriggerCount || 3
-    );
-    cfg.repeatDeployCooldownHours = await promptNumber(
-      "Cooldown hours",
-      cfg.repeatDeployCooldownHours || 12
-    );
+  cfg.darwinEnabled = await promptYesNo("  Aktifkan Darwinian signal weighting?", cfg.darwinEnabled !== false);
+  if (cfg.darwinEnabled) {
+    cfg.darwinWindowDays = await promptNumber("  Darwin window (hari)", cfg.darwinWindowDays ?? 60);
+    cfg.darwinBoost = await promptNumber("  Boost factor (sinyal bagus)", cfg.darwinBoost ?? 1.05);
+    cfg.darwinDecay = await promptNumber("  Decay factor (sinyal buruk)", cfg.darwinDecay ?? 0.95);
   }
 
-  const allowLaunchpads = await prompt(
-    "Allowed launchpads (comma-separated, leave empty for none)",
-    cfg.allowedLaunchpads?.join(",") || ""
-  );
-  cfg.allowedLaunchpads = allowLaunchpads
-    ? allowLaunchpads.split(",").map((x) => x.trim())
-    : [];
+  cfg.chartIndicators = cfg.chartIndicators || {};
+  cfg.chartIndicators.enabled = await promptYesNo("  Aktifkan chart indicators (RSI, SuperTrend)?", cfg.chartIndicators.enabled);
+  if (cfg.chartIndicators.enabled) {
+    cfg.chartIndicators.rsiLength = await promptNumber("  RSI length", cfg.chartIndicators.rsiLength ?? 14);
+    cfg.chartIndicators.candles = await promptNumber("  Jumlah candles", cfg.chartIndicators.candles ?? 100);
+  }
 
-  const blockedLaunchpads = await prompt(
-    "Blocked launchpads (comma-separated, leave empty for none)",
-    cfg.blockedLaunchpads?.join(",") || ""
-  );
-  cfg.blockedLaunchpads = blockedLaunchpads
-    ? blockedLaunchpads.split(",").map((x) => x.trim())
-    : [];
-
-  cfg.lpAgentRelayEnabled = await promptYesNo(
-    "Enable LP agent relay?",
-    cfg.lpAgentRelayEnabled
-  );
+  cfg.dailyReportEnabled = await promptYesNo("  Aktifkan laporan harian?", cfg.dailyReportEnabled !== false);
+  if (cfg.dailyReportEnabled) {
+    cfg.dailyReportHourUtc = await promptNumber("  Jam UTC laporan (0-23)", cfg.dailyReportHourUtc ?? 0);
+  }
 }
+
+function printSummary(cfg, env) {
+  const mode = env.DEMO_MODE === "true" ? `DEMO (${env.DEMO_INITIAL_SOL} SOL virtual)` :
+               env.DRY_RUN === "true" ? "DRY RUN" : "LIVE";
+  console.log("\n┌──────────────────────────────────────────────────┐");
+  console.log("│              RINGKASAN KONFIGURASI               │");
+  console.log("├──────────────────────────────────────────────────┤");
+  console.log(`│  Mode         : ${mode.padEnd(32)}│`);
+  console.log(`│  Strategi     : ${(cfg.strategy || "sniper").padEnd(32)}│`);
+  console.log(`│  Deploy/trade : ${String(cfg.deployAmountSol || 0.5).padEnd(28)} SOL │`);
+  console.log(`│  Max posisi   : ${String(cfg.maxPositions || 3).padEnd(32)}│`);
+  console.log(`│  Stop Loss    : ${String(cfg.stopLossPct || -15).padEnd(30)} % │`);
+  console.log(`│  Take Profit  : ${String(cfg.takeProfitPct || 30).padEnd(30)} % │`);
+  console.log(`│  Screen setiap: ${String(cfg.screeningIntervalMin || 30).padEnd(27)} mnt │`);
+  console.log(`│  Min MCap     : $${String(cfg.minMcap || 150000).padEnd(31)}│`);
+  console.log(`│  Max MCap     : $${String(cfg.maxMcap || 10000000).padEnd(31)}│`);
+  console.log(`│  Telegram     : ${(env.TELEGRAM_BOT_TOKEN ? "✓ configured" : "✗ tidak aktif").padEnd(32)}│`);
+  console.log(`│  Vault        : ${(cfg.vaultWallet ? `✓ ${cfg.vaultPct}% tiap ${cfg.vaultIntervalDays}h` : "✗ tidak aktif").padEnd(32)}│`);
+  console.log("└──────────────────────────────────────────────────┘");
+}
+
+// ─── View / Reset ─────────────────────────────────────────────
 
 async function viewCurrentConfig() {
   const cfg = loadConfig();
-  console.log("\n━━━ CURRENT CONFIGURATION ━━━\n");
+  const env = loadEnv();
+  console.log("\n━━━ user-config.json ━━━\n");
   console.log(JSON.stringify(cfg, null, 2));
+  console.log("\n━━━ .env (keys tersembunyi) ━━━");
+  const safeMask = (v) => v ? v.slice(0, 6) + "..." : "(kosong)";
+  console.log(`  WALLET_PRIVATE_KEY : ${safeMask(env.WALLET_PRIVATE_KEY)}`);
+  console.log(`  HELIUS_API_KEY     : ${safeMask(env.HELIUS_API_KEY)}`);
+  console.log(`  GMGN_ROUTE_KEY     : ${safeMask(env.GMGN_ROUTE_KEY)}`);
+  console.log(`  OPENROUTER_API_KEY : ${safeMask(env.OPENROUTER_API_KEY)}`);
+  console.log(`  TELEGRAM_BOT_TOKEN : ${safeMask(env.TELEGRAM_BOT_TOKEN)}`);
+  console.log(`  DRY_RUN            : ${env.DRY_RUN || "false"}`);
+  console.log(`  DEMO_MODE          : ${env.DEMO_MODE || "false"}`);
 }
 
 async function resetConfig() {
-  const confirm = await promptYesNo(
-    "\n⚠️  Ini akan menghapus user-config.json. Lanjutkan?",
-    false
-  );
+  const confirm = await promptYesNo("\n⚠️  Ini akan menghapus user-config.json. Lanjutkan?", false);
   if (confirm) {
-    if (fs.existsSync(CONFIG_PATH)) {
-      fs.unlinkSync(CONFIG_PATH);
-      console.log("✓ user-config.json dihapus");
-    }
+    if (fs.existsSync(CONFIG_PATH)) { fs.unlinkSync(CONFIG_PATH); console.log("✓ user-config.json dihapus"); }
+    else console.log("Tidak ada config untuk dihapus.");
   }
 }
 
+// ─── Main ─────────────────────────────────────────────────────
+
 async function main() {
-  console.log("\n╔════════════════════════════════════════╗");
-  console.log("║       PONYOU SETUP WIZARD v2.0         ║");
-  console.log("║    Interactive Configuration Tool      ║");
-  console.log("╚════════════════════════════════════════╝\n");
+  console.log("\n╔══════════════════════════════════════════╗");
+  console.log("║       PONYOU SETUP WIZARD v2.3           ║");
+  console.log("║    Interactive Configuration Tool        ║");
+  console.log("╚══════════════════════════════════════════╝\n");
 
   while (true) {
-    console.log("\n┌─ MAIN MENU ─────────────────────────────┐");
-    console.log("│  1. Full Setup (wizard interaktif)     │");
-    console.log("│  2. Quick Setup (essentials only)      │");
-    console.log("│  3. View Current Config                │");
-    console.log("│  4. Reset Config                       │");
-    console.log("│  5. Exit                               │");
-    console.log("└─────────────────────────────────────────┘");
+    console.log("\n┌─ MENU UTAMA ─────────────────────────────────┐");
+    console.log("│  1. Full Setup     — wizard lengkap step-by-step │");
+    console.log("│  2. Quick Setup    — essentials saja (5 menit)   │");
+    console.log("│  3. Ganti Mode     — Live / Dry Run / Demo        │");
+    console.log("│  4. Ganti Strategi — sniper/dip_buy/smart/degen  │");
+    console.log("│  5. View Config    — lihat konfigurasi saat ini   │");
+    console.log("│  6. Reset Config   — hapus user-config.json       │");
+    console.log("│  7. Exit                                          │");
+    console.log("└───────────────────────────────────────────────────┘");
 
-    const choice = await prompt("\nPilih menu");
+    const choice = await question("\nPilih [1-7]: ");
 
     if (choice === "1") {
       const cfg = loadConfig();
       const env = loadEnv();
-
+      await setupMode(cfg, env);
       await setupWalletAndRpc(cfg, env);
       await setupLlm(cfg, env);
-      await setupPilot(cfg);
-      await setupVault(cfg);
-      await setupReport(cfg);
-      await setupRisk(cfg);
-      await setupScreening(cfg);
+      await setupStrategy(cfg);
+      await setupPositionAndSol(cfg);
+      await setupExitRules(cfg);
+      await setupScanner(cfg);
       await setupManagement(cfg);
-      await setupScheduling(cfg);
-      await setupLlmSettings(cfg);
-      await setupDarwin(cfg);
-      await setupIndicators(cfg);
+      await setupPilot(cfg);
       await setupTelegram(env);
-      await setupHivemind(cfg);
-      await setupAdvanced(cfg, env);
+      await setupVault(cfg, env);
+      await setupAdvanced(cfg);
+      printSummary(cfg, env);
+      const ok = await promptYesNo("\nSimpan konfigurasi ini?", true);
+      if (ok) { saveConfig(cfg); saveEnv(env); console.log("\n✅ Setup selesai! Jalankan:"); printRunCommands(env); }
 
-      saveConfig(cfg);
-      saveEnv(env);
-      console.log("\n✓ Setup lengkap!");
     } else if (choice === "2") {
       const cfg = loadConfig();
       const env = loadEnv();
-
+      await setupMode(cfg, env);
       await setupWalletAndRpc(cfg, env);
       await setupLlm(cfg, env);
-      await setupPilot(cfg);
-      await setupRisk(cfg);
+      await setupStrategy(cfg);
+      await setupPositionAndSol(cfg);
+      await setupExitRules(cfg);
+      printSummary(cfg, env);
+      const ok = await promptYesNo("\nSimpan?", true);
+      if (ok) { saveConfig(cfg); saveEnv(env); console.log("\n✅ Quick setup selesai!"); printRunCommands(env); }
 
-      saveConfig(cfg);
-      saveEnv(env);
-      console.log("\n✓ Quick setup selesai!");
     } else if (choice === "3") {
-      await viewCurrentConfig();
+      const cfg = loadConfig();
+      const env = loadEnv();
+      await setupMode(cfg, env);
+      saveEnv(env);
+      console.log("✓ Mode diperbarui.");
+
     } else if (choice === "4") {
-      await resetConfig();
+      const cfg = loadConfig();
+      await setupStrategy(cfg);
+      saveConfig(cfg);
+      console.log("✓ Strategi diperbarui.");
+
     } else if (choice === "5") {
-      console.log("\n👋 Goodbye!");
+      await viewCurrentConfig();
+
+    } else if (choice === "6") {
+      await resetConfig();
+
+    } else if (choice === "7") {
+      console.log("\n👋 Goodbye!\n");
       break;
     } else {
-      console.log("❌ Invalid choice");
+      console.log("❌ Pilihan tidak valid.");
     }
   }
 
   rl.close();
+}
+
+function printRunCommands(env) {
+  if (env.DEMO_MODE === "true") {
+    console.log("   npm run demo        # virtual trading");
+    console.log("   npm run demo:reset  # reset saldo virtual\n");
+  } else if (env.DRY_RUN === "true") {
+    console.log("   npm run dev         # dry run mode\n");
+  } else {
+    console.log("   npm run demo        # test dulu tanpa uang asli");
+    console.log("   npm start           # live trading\n");
+  }
 }
 
 main().catch(console.error);
