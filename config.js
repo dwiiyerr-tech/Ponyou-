@@ -188,6 +188,40 @@ jupiter: {
     rsiOverbought: indicatorUserConfig.rsiOverbought ?? 80,
     requireAllIntervals: indicatorUserConfig.requireAllIntervals ?? false,
   },
+
+  // ─── Strategy Selection ──────────────────
+  // Active strategy: sniper | dip_buy | smart_money | degen
+  strategy: {
+    active: u.activeStrategy ?? process.env.ACTIVE_STRATEGY ?? "sniper",
+  },
+
+  // ─── Signal Sources (Charon-inspired) ────
+  signals: {
+    // Use trending tokens from GMGN as an additional signal source
+    useTrending: u.useTrending ?? true,
+    trendingTimeframe: u.trendingTimeframe ?? "1m",
+    trendingMinVolume: u.trendingMinVolume ?? 50_000,
+    trendingMinSwaps: u.trendingMinSwaps ?? 100,
+
+    // Use pump.fun graduated tokens as a signal source
+    useGraduated: u.useGraduated ?? false,
+    graduatedMinVolume: u.graduatedMinVolume ?? 50_000,
+    graduatedMinMcap: u.graduatedMinMcap ?? 50_000,
+
+    // Optional external signal server (like Charon's serverClient)
+    signalServerUrl: u.signalServerUrl ?? process.env.SIGNAL_SERVER_URL ?? null,
+    signalServerKey: u.signalServerKey ?? process.env.SIGNAL_SERVER_KEY ?? null,
+  },
+
+  // ─── Pipeline LLM Screening (Charon-inspired) ─
+  // When enabled, uses batch LLM pre-screening before main agent loop
+  pipelineLlm: {
+    enabled: u.pipelineLlmEnabled ?? true,
+    // Minimum LLM confidence to pass a candidate to the buy agent
+    minConfidence: u.pipelineLlmMinConfidence ?? 65,
+    // Max candidates to send in one batch
+    batchSize: u.pipelineLlmBatchSize ?? 10,
+  },
 };
 
 /**

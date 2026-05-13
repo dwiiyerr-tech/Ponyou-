@@ -9,7 +9,11 @@ import { config, computeDeployAmount } from "./config.js";
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML } from "./telegram.js";
-import { strategy, checkROI, checkTrailingStop, run4FilterProtocol, getMcapTier } from "./strategy.js";
+import { strategy, checkROI, checkTrailingStop, run4FilterProtocol, getMcapTier, getStrategyNames, setActiveStrategy, getActiveStrategyName, getActiveStrategy } from "./strategy.js";
+import { buildCandidate, filterCandidate } from "./pipeline/candidateBuilder.js";
+import { decideCandidateBatch } from "./pipeline/llm.js";
+import { fetchTrending } from "./signals/trending.js";
+import { fetchGraduated } from "./signals/graduated.js";
 import { trackPosition, recordClose, getTrackedPosition, getStateSummary, syncOpenPositions } from "./state.js";
 import { calculateRSI, calculateSuperTrend } from "./utils/indicators.js";
 
@@ -46,6 +50,13 @@ import { getTokenInfo } from "./tools/token.js";
 log("startup", "Ponyou AI Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
+
+// ─── Init Active Strategy ────────────────────────────────────
+if (config.strategy?.active) {
+  const ok = setActiveStrategy(config.strategy.active);
+  if (ok) log("startup", `Strategy: ${config.strategy.active}`);
+  else log("startup", `Strategy '${config.strategy.active}' not found, using sniper`);
+}
 
 // ─── Auto-init trading plan ───────────────────────────────────
 if (!getTradingPlan() && config.pilot.enabled) {
@@ -567,8 +578,30 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     const deployAmount = computeDeployAmount(balance.sol);
     const gasFee = await getSolanaGasFee();
-    const discovery = await discoverTokens({ timeframe: "1m" });
-    const candidates = discovery.tokens || [];
+
+    // ─── Multi-Source Signal Collection (Charon-inspired) ────────
+    const sigCfg = config.signals;
+    const [discovery, trendingTokens, graduatedTokens] = await Promise.all([
+      discoverTokens({ timeframe: sigCfg.trendingTimeframe || "1m" }),
+      sigCfg.useTrending
+        ? fetchTrending({ timeframe: sigCfg.trendingTimeframe, minVolume: sigCfg.trendingMinVolume, minSwaps: sigCfg.trendingMinSwaps })
+        : Promise.resolve([]),
+      sigCfg.useGraduated
+        ? fetchGraduated({ minVolume: sigCfg.graduatedMinVolume, minMcap: sigCfg.graduatedMinMcap })
+        : Promise.resolve([]),
+    ]);
+
+    // Merge sources, deduplicate by mint, mark signal origin
+    const discoveryTokens = (discovery.tokens || []).map(t => ({ ...t, _source_discovery: true }));
+    const allRaw = [...discoveryTokens, ...trendingTokens, ...graduatedTokens];
+    const seenMints = new Set();
+    const candidates = allRaw.filter(t => {
+      if (!t.mint || seenMints.has(t.mint)) return false;
+      seenMints.add(t.mint);
+      return true;
+    });
+
+    log("cron", `Signals: discovery=${discoveryTokens.length} trending=${trendingTokens.length} graduated=${graduatedTokens.length} → ${candidates.length} unique`);
 
     // ─── Market intelligence ─────────────────────
     const marketSnap = recordMarketSnapshot(candidates);
@@ -593,7 +626,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     // ─── Filter + Rug Memory ─────────────────────
     const scoredCandidates = [];
-    for (const token of candidates.slice(0, 8)) {
+    for (const token of candidates.slice(0, 12)) {
       if (isTokenBlacklisted(token.mint)) continue;
       if (token.creator && isDevBlocked(token.creator)) continue;
 
@@ -617,25 +650,32 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const enhancedToken = { ...token, global_fees_sol: globalFees, tier: tierInfo };
 
       const filterResult = await run4FilterProtocol(enhancedToken, security, gasFee);
-      
+
+      // ─── Strategy-level filter (Charon candidateBuilder) ─────
+      const stratFilter = filterCandidate({ ...enhancedToken });
+      if (!stratFilter.pass) {
+        log("filter", `${token.symbol}: SKIP strategy filter — ${stratFilter.reasons.join(", ")}`);
+        // Still include in scoredCandidates for learning, but mark as failed
+      }
+
       // ─── Technical Indicators (Optional) ────────
       let technicals = null;
       if (config.indicators.enabled) {
         log("screening", `${token.symbol}: Fetching klines for indicators...`);
-        const klineData = await getTokenKlines({ 
-          mint: token.mint, 
+        const klineData = await getTokenKlines({
+          mint: token.mint,
           resolution: config.indicators.intervals[0] === "5_MINUTE" ? "5m" : "1m",
           limit: config.indicators.candles || 100
         });
-        
+
         if (klineData.candles && klineData.candles.length > 5) {
           const closes = klineData.candles.map(c => c.close);
           const highs = klineData.candles.map(c => c.high);
           const lows = klineData.candles.map(c => c.low);
-          
+
           const rsi = calculateRSI(closes, config.indicators.rsiLength || 14);
           const st = calculateSuperTrend(highs, lows, closes);
-          
+
           technicals = {
             rsi: rsi ? parseFloat(rsi.toFixed(2)) : null,
             supertrend: st ? { trend: st.trend, value: st.value } : null,
@@ -644,34 +684,58 @@ export async function runScreeningCycle({ silent = false } = {}) {
         }
       }
 
-      scoredCandidates.push({
-        ...enhancedToken, ...filterResult,
+      // Build enriched candidate using pipeline (Charon-inspired)
+      const enriched = buildCandidate(enhancedToken, security, gasFee, filterResult, {
         rug_score: rugRisk.score,
         rug_reasons: rugRisk.reasons,
         market_condition: marketIntel.condition,
         profit_mode: isInProfitMode(),
         technicals,
       });
+
+      scoredCandidates.push({
+        ...enriched,
+        _strategy_filter: stratFilter,
+      });
     }
 
     // Catat semua candidates (termasuk yang tidak lolos) untuk belajar nanti
     if (scoredCandidates.length > 0) recordObservations(scoredCandidates);
 
-    const passingCandidates = scoredCandidates.filter(c => c.passed);
+    // Must pass both 4-filter protocol AND strategy filter
+    const passingCandidates = scoredCandidates.filter(c => c.passed && c._strategy_filter?.pass !== false);
     const planSummary = getPlanSummary();
 
     if (passingCandidates.length > 0) {
-      log("cron", `${passingCandidates.length} passed — invoking LLM`);
+      log("cron", `${passingCandidates.length} passed — pipeline LLM pre-screening`);
+
+      // ─── Pipeline LLM Pre-Screening (Charon-inspired) ─────────
+      // Batch screen up to 10 candidates, get BUY/WATCH/PASS verdict
+      let bestCandidate = null;
+      if (config.pipelineLlm?.enabled) {
+        const decisions = await decideCandidateBatch(passingCandidates);
+        const buyDecision = decisions.find(d => d.verdict === "BUY" && d.confidence >= (config.pipelineLlm.minConfidence || 65));
+
+        if (buyDecision) {
+          bestCandidate = passingCandidates.find(c => c.mint === buyDecision.mint);
+          log("cron", `Pipeline LLM selected: ${buyDecision.symbol} (confidence: ${buyDecision.confidence}%) — ${buyDecision.reason}`);
+        } else {
+          log("cron", `Pipeline LLM: no BUY selected (${decisions.map(d => `${d.symbol}:${d.verdict}`).join(", ")})`);
+        }
+      }
+
+      const candidatesForAgent = bestCandidate ? [bestCandidate] : passingCandidates;
+
       const { content } = await agentLoop(`
-SCREENING CYCLE
+SCREENING CYCLE — Strategy: ${getActiveStrategyName().toUpperCase()}
 Amount: ${deployAmount} SOL
 Gas: ${gasFee.level}
 Market: ${marketIntel.condition} — ${marketIntel.description}
 ${planSummary ? `Plan: Day ${planSummary.day} | P&L: ${planSummary.today_pnl_pct}% | Target: +${planSummary.daily_target_pct}%${planSummary.profit_mode ? " | 🔥 PROFIT MODE — no trade limit" : ""}` : ""}
 Posisi aktif: ${openTokens.length}/${positionLimit}
 
-CANDIDATES (lolos 4-filter + rug check):
-${JSON.stringify(passingCandidates, null, 2)}
+CANDIDATES (lolos filter + rug check${config.pipelineLlm?.enabled ? " + pipeline LLM" : ""}):
+${JSON.stringify(candidatesForAgent, null, 2)}
 
 Pilih yang TERBAIK dan lakukan gmgn_swap.
 ${planSummary?.profit_mode ? "PROFIT MODE aktif — kamu bisa lebih agresif dalam memilih." : ""}
@@ -680,7 +744,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — kamu bisa lebih agresif dala
         onToolFinish: async ({ name, result }) => {
           await liveMessage?.toolFinish(name, result, !result?.error);
           if (name === "gmgn_swap" && (result.success || result.dry_run)) {
-            const token = passingCandidates.find(c =>
+            const token = candidatesForAgent.find(c =>
               c.mint === result.token_out || c.mint === result.would_swap?.token_out
             );
             if (token) {
@@ -698,7 +762,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — kamu bisa lebih agresif dala
       });
       screenReport = content;
     } else {
-      screenReport = `No candidates passed (market: ${marketIntel.condition}).`;
+      screenReport = `No candidates passed (market: ${marketIntel.condition}, strategy: ${getActiveStrategyName()}).`;
     }
   } catch (e) {
     log("cron_error", e.message);
@@ -824,8 +888,32 @@ if (isTTY) {
         `Plan: Day ${plan.day}/${plan.days_total}`,
         `PnL Today: ${plan.today_pnl_pct.toFixed(2)}%`,
         `Market: ${market.condition}`,
+        `Strategy: <b>${getActiveStrategyName()}</b> — ${getActiveStrategy().name}`,
       ].join("\n");
       await sendHTML(msg);
+      return;
+    }
+
+    if (text === "/strategy" || text.startsWith("/strategy ")) {
+      const parts = text.split(" ");
+      const targetStrategy = parts[1]?.toLowerCase();
+      const names = getStrategyNames();
+      if (!targetStrategy) {
+        const active = getActiveStrategyName();
+        const list = names.map(n => `${n === active ? "✅" : "◻️"} <b>${n}</b>: ${getActiveStrategy()?.description || ""}`).join("\n");
+        await sendHTML(`🎯 <b>Strategi Tersedia</b>\n\n${names.map(n => {
+          const s = { sniper: "Entry cepat token baru", dip_buy: "Beli saat dip dari ATH", smart_money: "Ikuti smart money wallets", degen: "High risk aggressive" };
+          return `${n === active ? "✅" : "◻️"} <b>${n}</b>: ${s[n] || ""}`;
+        }).join("\n")}\n\nGunakan: /strategy <nama>`);
+        return;
+      }
+      if (setActiveStrategy(targetStrategy)) {
+        const s = getActiveStrategy();
+        await sendHTML(`✅ Strategi diubah ke <b>${targetStrategy}</b>\n${s.name}: ${s.description}`);
+        log("strategy", `Telegram: strategy changed to ${targetStrategy}`);
+      } else {
+        await sendHTML(`❌ Strategi tidak ditemukan. Pilihan: ${names.join(", ")}`);
+      }
       return;
     }
 
@@ -897,6 +985,27 @@ if (isTTY) {
           console.log("────────────────────\n");
         } else {
           console.log("Usage: /pilot check");
+        }
+        rl.prompt();
+        return;
+      }
+
+      if (cmd === "strategy") {
+        const target = args[0]?.toLowerCase();
+        const names = getStrategyNames();
+        if (!target) {
+          const active = getActiveStrategyName();
+          console.log("\n─── Strategies ───");
+          for (const n of names) {
+            const s = { sniper: "Fast entry, high risk", dip_buy: "Buy dips below ATH", smart_money: "Follow smart wallets", degen: "Aggressive high risk" };
+            console.log(`${n === active ? "✅" : "  "} ${n}: ${s[n] || ""}`);
+          }
+          console.log(`\nUsage: /strategy <name>\n`);
+        } else if (setActiveStrategy(target)) {
+          const s = getActiveStrategy();
+          console.log(`\n✅ Strategy: ${target} — ${s.name}: ${s.description}\n`);
+        } else {
+          console.log(`❌ Unknown strategy. Options: ${names.join(", ")}\n`);
         }
         rl.prompt();
         return;
