@@ -64,6 +64,15 @@ import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 import { compressToolOutput } from "./compressor.js";
 
+// TUI bridge — optional, no-ops when TUI is not running
+let _tuiEvents = null;
+async function getTui() {
+  if (_tuiEvents === null) {
+    try { _tuiEvents = await import("./tui-events.js"); } catch { _tuiEvents = false; }
+  }
+  return _tuiEvents || null;
+}
+
 // Supports OpenRouter (default) or any OpenAI-compatible local server
 const client = new OpenAI({
   baseURL: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
@@ -118,6 +127,7 @@ function isToolChoiceRequiredError(error) {
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null, options = {}) {
   const { interactive = false, onToolStart = null, onToolFinish = null, onThinkingStart = null } = options;
   const [portfolio, positions] = await Promise.all([getWalletBalances(), []]); // simplified positions for now
+  getTui().then(t => t?.emitBalance?.(portfolio)).catch(() => {});
   const stateSummary = getStateSummary();
   const lessons = getLessonsForPrompt({ agentType });
   const perfSummary = getPerformanceSummary();
@@ -135,6 +145,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
 
   for (let step = 0; step < maxSteps; step++) {
     log("agent", `Step ${step + 1}/${maxSteps}`);
+    getTui().then(t => t?.emitStep?.(step + 1, maxSteps)).catch(() => {});
 
     try {
       const activeModel = model || DEFAULT_MODEL;

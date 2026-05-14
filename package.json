@@ -10,10 +10,15 @@
     "start": "node index.js",
     "dev": "DRY_RUN=true node index.js",
     "demo": "DEMO_MODE=true node index.js",
-    "demo:reset": "node -e \"import('./demo/virtualWallet.js').then(m => m.resetDemoWallet())\" && DEMO_MODE=true node index.js"
+    "demo:reset": "node -e \"import('./demo/virtualWallet.js').then(m => m.resetDemoWallet())\" && DEMO_MODE=true node index.js",
+    "tui": "node tui.js",
+    "tui:demo": "DEMO_MODE=true node tui.js",
+    "tui:dry": "DRY_RUN=true node tui.js"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.0",
+    "blessed": "^0.1.81",
+    "blessed-contrib": "^4.11.0",
     "bn.js": "^5.2.1",
     "bs58": "^5.0.0",
     "dotenv": "^17.3.1",

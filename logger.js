@@ -2,6 +2,18 @@ import fs from "fs";
 import path from "path";
 import { sendMessage, isEnabled as telegramEnabled } from "./telegram.js";
 
+// Lazy-import TUI bridge so logger works without TUI running
+let _tuiEmit = null;
+async function getTuiEmit() {
+  if (_tuiEmit === null) {
+    try {
+      const m = await import("./tui-events.js");
+      _tuiEmit = m.emitLog;
+    } catch { _tuiEmit = false; }
+  }
+  return _tuiEmit || null;
+}
+
 const LOG_DIR = "./logs";
 const LOG_LEVEL = process.env.LOG_LEVEL || "info";
 
@@ -26,8 +38,11 @@ export function log(category, message) {
   const timestamp = new Date().toISOString();
   const line = `[${timestamp}] [${category.toUpperCase()}] ${message}`;
 
-  // Console output
-  console.log(line);
+  // TUI bridge (non-blocking)
+  getTuiEmit().then(fn => fn?.(category, message)).catch(() => {});
+
+  // Console output (suppressed when TUI is active)
+  if (process.env.TUI_MODE !== "1") console.log(line);
 
   // Send error to telegram
   if (level === "error" && telegramEnabled()) {
