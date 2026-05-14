@@ -209,7 +209,7 @@ async function runLossAnalysis() {
   markAnalysisRun();
   log("learning", "Menjalankan analisis loss LLM...");
 
-  const recentTrades = getPerformanceSummary ? [] : [];
+  const recentTrades = getPerformanceSummary ? getPerformanceSummary() : [];
   const marketCond = getMarketIntelligence().condition;
   const prompt = buildLossAnalysisPrompt(lossContext, recentTrades, marketCond);
 

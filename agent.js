@@ -62,6 +62,7 @@ import { log } from "./logger.js";
 import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
+import { compressToolOutput } from "./compressor.js";
 
 // Supports OpenRouter (default) or any OpenAI-compatible local server
 const client = new OpenAI({
@@ -115,7 +116,7 @@ function isToolChoiceRequiredError(error) {
  * Core ReAct agent loop.
  */
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null, options = {}) {
-  const { interactive = false, onToolStart = null, onToolFinish = null } = options;
+  const { interactive = false, onToolStart = null, onToolFinish = null, onThinkingStart = null } = options;
   const [portfolio, positions] = await Promise.all([getWalletBalances(), []]); // simplified positions for now
   const stateSummary = getStateSummary();
   const lessons = getLessonsForPrompt({ agentType });

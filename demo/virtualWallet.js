@@ -64,7 +64,7 @@ export function initDemoWallet(initialSol = 5.0, solPriceUsd = 150.0) {
     total_trades: 0,
     win_count: 0,
     loss_count: 0,
-    total_pnl_pct: 0,
+    win_rate_pct: 0,
     total_pnl_usd: 0,
     trade_history: [],
     createdAt: new Date().toISOString(),
@@ -228,7 +228,7 @@ export function executeDemoSell({ mint, current_price_usd = null, slippage = 0.0
   state.total_pnl_usd = parseFloat((state.total_pnl_usd + pnlUsd).toFixed(4));
 
   const totalTraded = state.total_trades;
-  state.total_pnl_pct = totalTraded > 0
+  state.win_rate_pct = totalTraded > 0
     ? parseFloat(((state.win_count / totalTraded) * 100).toFixed(1))
     : 0;
 

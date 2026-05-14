@@ -409,7 +409,7 @@ export function updatePnlAndCheckExits(position_address, positionData, mgmtConfi
 
   // ── Trailing TP ────────────────────────────────────────────────
   if (!pnl_pct_suspicious && pos.trailing_active) {
-    const dropFromPeak = pos.peak_pnl_pct - currentPnlPct;
+    const dropFromPeak = (pos.peak_pnl_pct ?? 0) - currentPnlPct;
     if (dropFromPeak >= mgmtConfig.trailingDropPct) {
       return {
         action: "TRAILING_TP",

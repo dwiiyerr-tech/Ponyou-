@@ -366,7 +366,7 @@ export async function executeTool(name, args) {
         inputSymbol: args.token_in === "SOL" ? "SOL" : args.token_in?.slice(0, 8), 
         outputSymbol: args.token_out === "SOL" ? "SOL" : args.token_out?.slice(0, 8), 
         amountIn: args.amount, 
-        amountOut: result.amount_out, 
+        amountOut: result.amount ?? result.amount_out,
         tx: result.hash 
       }).catch(() => {});
     }

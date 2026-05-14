@@ -159,7 +159,13 @@ export async function swapToken({
   if (process.env.DEMO_MODE === "true") {
     const isBuy = input_mint === SOL_MINT || input_mint === "SOL";
     if (isBuy) {
-      return executeDemoBuy({ mint: output_mint, symbol: null, amount_sol: amount, price_usd: 0 });
+      let price_usd = 0;
+      try {
+        const priceRes = await fetch(`https://api.jup.ag/price/v2?ids=${output_mint}`);
+        const priceData = await priceRes.json();
+        price_usd = priceData?.data?.[output_mint]?.price ?? 0;
+      } catch (_) {}
+      return executeDemoBuy({ mint: output_mint, symbol: null, amount_sol: amount, price_usd });
     } else {
       return executeDemoSell({ mint: input_mint });
     }
