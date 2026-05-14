@@ -26,12 +26,25 @@ import { agentLoop } from "./agent.js";
 
 // ─── Screen ───────────────────────────────────────────────────
 
-const screen = blessed.screen({
-  smartCSR: true,
-  title: "PONYOU",
-  fullUnicode: true,
-  dockBorders: true,
-});
+// Verify terminal is interactive before creating blessed screen
+if (!process.stdout.isTTY) {
+  console.error("PONYOU TUI requires an interactive terminal (TTY). Use: npm run start");
+  process.exit(1);
+}
+
+let screen;
+try {
+  screen = blessed.screen({
+    smartCSR: true,
+    title: "PONYOU",
+    fullUnicode: true,
+    dockBorders: true,
+  });
+} catch (err) {
+  console.error(`Failed to initialize TUI: ${err.message}`);
+  console.error("Falling back to: npm run start");
+  process.exit(1);
+}
 
 // ─── Grid ─────────────────────────────────────────────────────
 
@@ -338,13 +351,17 @@ function renderTicker() {
 // ─── Full Render ──────────────────────────────────────────────
 
 function render() {
-  renderTitle();
-  renderInfo();
-  renderPositions();
-  renderEquity();
-  renderCandidates();
-  renderTicker();
-  screen.render();
+  try {
+    renderTitle();
+    renderInfo();
+    renderPositions();
+    renderEquity();
+    renderCandidates();
+    renderTicker();
+    screen.render();
+  } catch (_) {
+    // Swallow render errors — keep TUI alive even if a widget misbehaves
+  }
 }
 
 // ─── Log Formatting ───────────────────────────────────────────

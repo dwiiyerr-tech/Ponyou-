@@ -641,73 +641,76 @@ export async function runScreeningCycle({ silent = false } = {}) {
       if (isTokenBlacklisted(token.mint)) continue;
       if (token.creator && isDevBlocked(token.creator)) continue;
 
-      const security = await getTokenSecurityDetails({ mint: token.mint });
-      const rugRisk = scoreRugRisk({
-        mint: token.mint,
-        creator: token.creator || security?.security?.creator,
-        launchpad: token.launchpad,
-        rug_signals: security?.rug_signals || {},
-      });
-
-      if (rugRisk.score >= 60) {
-        log("filter", `${token.symbol}: SKIP rug score ${rugRisk.score}`);
-        continue;
-      }
-
-      // Fetch global fees for wash trading detection
-      const tokenInfo = await getTokenInfo({ query: token.mint });
-      const globalFees = tokenInfo.results?.[0]?.global_fees_sol || 0;
-      const tierInfo = getMcapTier(token.mcap);
-      const enhancedToken = { ...token, global_fees_sol: globalFees, tier: tierInfo };
-
-      const filterResult = await run4FilterProtocol(enhancedToken, security, gasFee);
-
-      // ─── Strategy-level filter (Charon candidateBuilder) ─────
-      const stratFilter = filterCandidate({ ...enhancedToken });
-      if (!stratFilter.pass) {
-        log("filter", `${token.symbol}: SKIP strategy filter — ${stratFilter.reasons.join(", ")}`);
-        // Still include in scoredCandidates for learning, but mark as failed
-      }
-
-      // ─── Technical Indicators (Optional) ────────
-      let technicals = null;
-      if (config.indicators.enabled) {
-        log("screening", `${token.symbol}: Fetching klines for indicators...`);
-        const klineData = await getTokenKlines({
+      try {
+        const security = await getTokenSecurityDetails({ mint: token.mint });
+        const rugRisk = scoreRugRisk({
           mint: token.mint,
-          resolution: config.indicators.intervals[0] === "5_MINUTE" ? "5m" : "1m",
-          limit: config.indicators.candles || 100
+          creator: token.creator || security?.security?.creator,
+          launchpad: token.launchpad,
+          rug_signals: security?.rug_signals || {},
         });
 
-        if (klineData.candles && klineData.candles.length > 5) {
-          const closes = klineData.candles.map(c => c.close);
-          const highs = klineData.candles.map(c => c.high);
-          const lows = klineData.candles.map(c => c.low);
-
-          const rsi = calculateRSI(closes, config.indicators.rsiLength || 14);
-          const st = calculateSuperTrend(highs, lows, closes);
-
-          technicals = {
-            rsi: rsi ? parseFloat(rsi.toFixed(2)) : null,
-            supertrend: st ? { trend: st.trend, value: st.value } : null,
-          };
-          log("screening", `${token.symbol}: RSI=${technicals.rsi} ST=${technicals.supertrend?.trend}`);
+        if (rugRisk.score >= 60) {
+          log("filter", `${token.symbol}: SKIP rug score ${rugRisk.score}`);
+          continue;
         }
+
+        // Fetch global fees for wash trading detection
+        const tokenInfo = await getTokenInfo({ query: token.mint });
+        const globalFees = tokenInfo.results?.[0]?.global_fees_sol || 0;
+        const tierInfo = getMcapTier(token.mcap);
+        const enhancedToken = { ...token, global_fees_sol: globalFees, tier: tierInfo };
+
+        const filterResult = await run4FilterProtocol(enhancedToken, security, gasFee);
+
+        // ─── Strategy-level filter (Charon candidateBuilder) ─────
+        const stratFilter = filterCandidate({ ...enhancedToken });
+        if (!stratFilter.pass) {
+          log("filter", `${token.symbol}: SKIP strategy filter — ${stratFilter.reasons.join(", ")}`);
+        }
+
+        // ─── Technical Indicators (Optional) ────────
+        let technicals = null;
+        if (config.indicators.enabled) {
+          log("screening", `${token.symbol}: Fetching klines for indicators...`);
+          const klineData = await getTokenKlines({
+            mint: token.mint,
+            resolution: config.indicators.intervals[0] === "5_MINUTE" ? "5m" : "1m",
+            limit: config.indicators.candles || 100
+          });
+
+          if (klineData.candles && klineData.candles.length > 5) {
+            const closes = klineData.candles.map(c => c.close);
+            const highs = klineData.candles.map(c => c.high);
+            const lows = klineData.candles.map(c => c.low);
+
+            const rsi = calculateRSI(closes, config.indicators.rsiLength || 14);
+            const st = calculateSuperTrend(highs, lows, closes);
+
+            technicals = {
+              rsi: rsi ? parseFloat(rsi.toFixed(2)) : null,
+              supertrend: st ? { trend: st.trend, value: st.value } : null,
+            };
+            log("screening", `${token.symbol}: RSI=${technicals.rsi} ST=${technicals.supertrend?.trend}`);
+          }
+        }
+
+        // Build enriched candidate using pipeline (Charon-inspired)
+        const enriched = buildCandidate(enhancedToken, security, gasFee, filterResult, {
+          rug_score: rugRisk.score,
+          rug_reasons: rugRisk.reasons,
+          market_condition: marketIntel.condition,
+          profit_mode: isInProfitMode(),
+          technicals,
+        });
+
+        scoredCandidates.push({
+          ...enriched,
+          _strategy_filter: stratFilter,
+        });
+      } catch (err) {
+        log("screening_warn", `${token.symbol || token.mint?.slice(0, 8)}: skipped due to error — ${err.message}`);
       }
-
-      // Build enriched candidate using pipeline (Charon-inspired)
-      const enriched = buildCandidate(enhancedToken, security, gasFee, filterResult, {
-        rug_score: rugRisk.score,
-        rug_reasons: rugRisk.reasons,
-        market_condition: marketIntel.condition,
-        profit_mode: isInProfitMode(),
-        technicals,
-      });
-
-      scoredCandidates.push({
-        ...enriched,
-        _strategy_filter: stratFilter,
-      });
     }
 
     // Catat semua candidates (termasuk yang tidak lolos) untuk belajar nanti
