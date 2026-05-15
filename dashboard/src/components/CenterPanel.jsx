@@ -18,24 +18,41 @@ function classifyLog(item) {
     return { cls: item.success ? 'log-ok' : 'log-neg', tag: item.success ? 'OK' : 'ERR' };
   }
 
-  if (c === 'ERROR')                           return { cls: 'log-neg',   tag: 'ERR' };
-  if (c === 'WARN' || c === 'WARNING')         return { cls: 'log-warn',  tag: 'WARN' };
-  if (c === 'SCREENER')                        return { cls: 'log-api',   tag: 'API' };
-  if (c === 'MANAGER')                         return { cls: 'log-tool',  tag: 'TOOL' };
-  if (c === 'DARWIN')                          return { cls: 'log-tool',  tag: 'TOOL' };
-  if (c === 'MAIN' || c === 'LOOP' || c === 'SYSTEM') return { cls: 'log-sys', tag: 'SYS' };
-  if (c === 'SESSION' || c === 'GATE')         return { cls: 'log-sys',   tag: 'SYS' };
-  if (c.includes('TRADE') || c.includes('SWAP')) return { cls: 'log-trade', tag: 'TRADE' };
+  // Errors
+  if (c === 'ERROR' || c.endsWith('_ERROR'))   return { cls: 'log-neg',   tag: 'ERR' };
+
+  // Warnings
+  if (c === 'WARN' || c === 'WARNING' || c.endsWith('_WARN'))
+                                               return { cls: 'log-warn',  tag: 'WARN' };
+
+  // Trade / swap
+  if (c === 'SWAP' || c === 'STRATEGY' || c.includes('TRADE') || c.includes('SWAP'))
+                                               return { cls: 'log-trade', tag: 'TRADE' };
+
+  // API / scanning
+  if (c === 'SCREENING' || c === 'SCREENER' || c === 'DISCOVERY')
+                                               return { cls: 'log-api',   tag: 'API' };
+
+  // Tool / learning / memory
+  if (c === 'MANAGER' || c === 'DARWIN' || c === 'LEARNING' || c === 'LESSON')
+                                               return { cls: 'log-tool',  tag: 'TOOL' };
+
+  // System / infra
+  if (c === 'STARTUP' || c === 'SHUTDOWN' || c === 'CRON' || c === 'AGENT' ||
+      c === 'LLM'     || c === 'REPORT'   || c === 'PLAN'  || c === 'MARKET' ||
+      c === 'MAIN'    || c === 'LOOP'     || c === 'SYSTEM' ||
+      c === 'SESSION' || c === 'GATE')         return { cls: 'log-sys',   tag: 'SYS' };
+
   if (c === 'DEBUG')                           return { cls: 'log-muted', tag: 'DBG' };
 
-  // Message-based heuristics
-  if (msg.includes('swap') || msg.includes('deploy') || msg.includes('pnl'))
+  // Message-based heuristics (fallback only)
+  if (msg.includes('swap') || msg.includes('deploy') || msg.includes('exit'))
     return { cls: 'log-trade', tag: 'TRADE' };
-  if (msg.includes('gmgn') || msg.includes('api') || msg.includes('fetch'))
+  if (msg.includes('discover') || msg.includes('fetch') || msg.includes('screen'))
     return { cls: 'log-api', tag: 'API' };
   if (msg.includes('lesson') || msg.includes('darwin') || msg.includes('config'))
     return { cls: 'log-tool', tag: 'TOOL' };
-  if (msg.includes('session') || msg.includes('market') || msg.includes('condition'))
+  if (msg.includes('session') || msg.includes('market') || msg.includes('cron'))
     return { cls: 'log-sys', tag: 'SYS' };
   if (msg.includes('success') || msg.includes('✓') || msg.includes('profit'))
     return { cls: 'log-ok', tag: 'OK' };
