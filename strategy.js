@@ -123,24 +123,26 @@ export function checkTrailingStop(currentPnlPct, peakPnlPct) {
  */
 export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
   let flags = [];
+  const gasLevel = gasFee?.level ?? "unknown";
+  const holders = securityDetails?.holders ?? [];
 
   // Filter 1: Global Gas Fee
-  if (gasFee.level === "extreme" || gasFee.level === "high") {
-    flags.push(`Gas Fee: ${gasFee.level} level (Bots/Traffic)`);
+  if (gasLevel === "extreme" || gasLevel === "high") {
+    flags.push(`Gas Fee: ${gasLevel} level (Bots/Traffic)`);
   }
 
   // Filter 2: Holder Age (Funded Wallet)
-  const freshlyFunded = securityDetails.holders.filter(h => {
+  const freshlyFunded = holders.filter(h => {
     if (!h.funded_at) return false;
     const ageHours = (Date.now() / 1000 - h.funded_at) / 3600;
     return ageHours < strategy.filters.minHolderAgeHours;
   });
-  if (freshlyFunded.length >= 3) { // Threshold for "many" top holders
+  if (freshlyFunded.length >= 3) {
     flags.push(`Holder Age: ${freshlyFunded.length} top holders funded < 24h ago`);
   }
 
   // Filter 3: Top Holder Balance
-  const dustHolders = securityDetails.holders.filter(h => !h.is_contract && h.sol_balance < strategy.filters.minTopHolderSol);
+  const dustHolders = holders.filter(h => !h.is_contract && h.sol_balance < strategy.filters.minTopHolderSol);
   if (dustHolders.length >= 3) {
     flags.push(`Top Holder Balance: ${dustHolders.length} dust wallets (< 0.2 SOL)`);
   }
