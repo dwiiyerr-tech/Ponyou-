@@ -151,6 +151,11 @@ export const config = {
     generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "minimax/minimax-m2.5",
   },
 
+  // ─── LLM Provider Configuration ─────────────────
+  llmProvider: u.llmProvider ?? process.env.LLM_PROVIDER ?? "openrouter",
+  llmModel: u.llmModel ?? process.env.LLM_MODEL ?? "openrouter/auto",
+  llmBaseUrl: u.llmBaseUrl ?? process.env.LLM_BASE_URL ?? null,
+
   // ─── Darwinian Signal Weighting ───────
   darwin: {
     enabled:        u.darwinEnabled     ?? true,

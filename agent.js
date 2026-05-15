@@ -3,6 +3,12 @@ import { jsonrepair } from "jsonrepair";
 import { buildSystemPrompt } from "./prompt.js";
 import { executeTool } from "./tools/executor.js";
 import { tools } from "./tools/definitions.js";
+import {
+  detectProvider,
+  createLLMClient,
+  getProviderFeatures,
+  handleProviderError,
+} from "./llm-provider.js";
 
 const MANAGER_TOOLS  = new Set(["gmgn_swap", "get_token_info", "get_token_security_details", "get_wallet_balance"]);
 const SCREENER_TOOLS = new Set(["gmgn_swap", "discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info", "get_wallet_balance"]);
@@ -63,14 +69,26 @@ import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 
-// Supports OpenRouter (default) or any OpenAI-compatible local server
-const client = new OpenAI({
-  baseURL: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
-  apiKey: process.env.LLM_API_KEY || process.env.OPENROUTER_API_KEY,
-  timeout: 5 * 60 * 1000,
-});
+// Multi-provider LLM client (OpenRouter, OpenAI, Claude, LM Studio, Groq, etc.)
+let client = null;
+let currentProvider = null;
 
-const DEFAULT_MODEL = process.env.LLM_MODEL || "openrouter/healer-alpha";
+function initLLMClient(config) {
+  currentProvider = detectProvider(config);
+  try {
+    client = createLLMClient(config);
+    log("agent", `LLM Client initialized: ${currentProvider}`);
+  } catch (error) {
+    log("agent_error", `Failed to initialize LLM client: ${error.message}`);
+    throw error;
+  }
+}
+
+// Initialize on module load
+initLLMClient(config);
+
+const DEFAULT_MODEL =
+  process.env.LLM_MODEL || config.llmModel || "openrouter/auto";
 
 const MUTATING_TOOL_INTENTS = /\b(buy|sell|deploy|close|exit|swap|block|blacklist|set |change |update |self.?update|git pull)\b/i;
 const LIVE_DATA_TOOL_INTENTS = /\b(balance|wallet|position|portfolio|screen|candidate|find|search|research|analyze|token holders|performance|stats|report|list lessons)\b/i;
@@ -154,17 +172,40 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           });
         } catch (error) {
-          if (providerMode === "system" && isSystemRoleError(error)) {
+          const errorInfo = handleProviderError(error, currentProvider);
+
+          // Handle system role rejection
+          if (
+            errorInfo.type === "system_role_unsupported" &&
+            providerMode === "system"
+          ) {
             providerMode = "user_embedded";
             messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
-            log("agent", "Provider rejected system role");
-            attempt -= 1; continue;
+            log("agent", `Provider "${currentProvider}" doesn't support system role, switching to user_embedded`);
+            attempt -= 1;
+            continue;
           }
-          if (toolChoice === "required" && isToolChoiceRequiredError(error)) {
+
+          // Handle tool_choice unsupported
+          if (
+            errorInfo.type === "tool_choice_unsupported" &&
+            toolChoice === "required"
+          ) {
             toolChoice = "auto";
-            log("agent", "Provider rejected tool_choice=required");
-            attempt -= 1; continue;
+            log("agent", `Provider "${currentProvider}" doesn't support tool_choice=required, falling back to auto`);
+            attempt -= 1;
+            continue;
           }
+
+          // Handle retryable errors
+          if (errorInfo.shouldRetry && attempt < 2) {
+            const delay = errorInfo.delay || 5000;
+            log("agent", `${errorInfo.type} from ${currentProvider}, retrying in ${delay}ms...`);
+            await new Promise((r) => setTimeout(r, delay));
+            attempt -= 1;
+            continue;
+          }
+
           throw error;
         }
         if (response.choices?.length) break;
