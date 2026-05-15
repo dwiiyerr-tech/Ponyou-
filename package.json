@@ -8,12 +8,16 @@
     "setup": "node setup.js",
     "quick-setup": "npm install && [ -f .env ] || cp .env.example .env && [ -f user-config.json ] || echo '{}' > user-config.json",
     "start": "node index.js",
-    "dev": "DRY_RUN=true node index.js"
+    "dev": "DRY_RUN=true node index.js",
+    "ui": "node ponyou-launcher.js",
+    "dashboard": "node ponyou-dashboard.js",
+    "dry": "node dry-run.mjs"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.0",
     "bn.js": "^5.2.1",
     "bs58": "^5.0.0",
+    "chalk": "^5.6.2",
     "dotenv": "^17.3.1",
     "jsonrepair": "^3.13.3",
     "node-cron": "^3.0.3",
