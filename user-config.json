@@ -5,18 +5,15 @@
   "llmApiKey": "",
   "llmModel": "minimax/minimax-m2.7",
   "dryRun": true,
-
   "deployAmountSol": 0.5,
   "maxPositions": 3,
   "minSolToOpen": 0.55,
   "maxDeployAmount": 50,
   "gasReserve": 0.2,
   "positionSizePct": 0.35,
-
   "strategy": "instant_scalping",
-
-  "timeframe": "5m",
-  "category": "trending",
+  "timeframe": "",
+  "category": "",
   "excludeHighSupplyConcentration": true,
   "minTvl": 10000,
   "maxTvl": 150000,
@@ -39,7 +36,6 @@
   "minTokenAgeHours": null,
   "maxTokenAgeHours": null,
   "athFilterPct": null,
-
   "minClaimAmount": 5,
   "autoSwapAfterClaim": false,
   "stopLossPct": -50,
@@ -49,18 +45,15 @@
   "trailingDropPct": 1.5,
   "pnlSanityMaxDiffPct": 5,
   "solMode": false,
-
   "managementIntervalMin": 10,
   "screeningIntervalMin": 30,
   "healthCheckIntervalMin": 60,
-
   "temperature": 0.373,
   "maxTokens": 4096,
   "maxSteps": 20,
   "managementModel": "minimax/minimax-m2.7",
   "screeningModel": "minimax/minimax-m2.7",
   "generalModel": "minimax/minimax-m2.7",
-
   "darwinEnabled": true,
   "darwinWindowDays": 60,
   "darwinRecalcEvery": 5,
@@ -69,17 +62,37 @@
   "darwinFloor": 0.3,
   "darwinCeiling": 2.5,
   "darwinMinSamples": 10,
-
   "chartIndicators": {
     "enabled": true,
-    "entryPreset": "supertrend_break",
-    "exitPreset": "supertrend_break",
+    "entryPreset": "",
+    "exitPreset": "",
     "rsiLength": 2,
-    "intervals": ["5_MINUTE"],
+    "intervals": [
+      "5_MINUTE"
+    ],
     "candles": 298,
     "rsiOversold": 30,
     "rsiOverbought": 80,
     "requireAllIntervals": false
   },
-  "telegramChatId": ""
+  "telegramChatId": "",
+  "pilotEnabled": true,
+  "pilotCapitalUsd": 10,
+  "dailyTargetPct": 25,
+  "dailyStopLossPct": -10,
+  "sessionPauseDurationMin": 60,
+  "learningModeDurationMin": 60,
+  "planDays": 30,
+  "autoAdaptToMarket": true,
+  "vaultWallet": "",
+  "dailyReportEnabled": true,
+  "dailyReportHourUtc": 0,
+  "dailyReportMinuteUtc": 5,
+  "minVolumeToRebalance": 1000,
+  "minFeePerTvl24h": 7,
+  "hiveMindUrl": "",
+  "hiveMindApiKey": "",
+  "agentId": "",
+  "publicApiKey": "",
+  "agentMeridianApiUrl": ""
 }

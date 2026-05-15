@@ -4,7 +4,6 @@
  */
 
 import OpenAI from "openai";
-import Anthropic from "@anthropic-ai/sdk";
 import { log } from "./logger.js";
 
 // Provider configurations
@@ -179,7 +178,7 @@ export function getProviderConfig(provider = "openrouter") {
 /**
  * Create LLM client with provider-specific handling
  */
-export function createLLMClient(config) {
+export async function createLLMClient(config) {
   const provider = detectProvider(config);
   const providerConfig = getProviderConfig(provider);
 
@@ -196,6 +195,7 @@ export function createLLMClient(config) {
       );
     }
 
+    const { default: Anthropic } = await import("@anthropic-ai/sdk");
     return new Anthropic({ apiKey });
   }
 

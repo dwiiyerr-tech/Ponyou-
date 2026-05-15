@@ -9,6 +9,7 @@ import {
   getProviderFeatures,
   handleProviderError,
 } from "./llm-provider.js";
+import { compressToolOutput } from "./compressor.js";
 
 const MANAGER_TOOLS  = new Set(["gmgn_swap", "get_token_info", "get_token_security_details", "get_wallet_balance"]);
 const SCREENER_TOOLS = new Set(["gmgn_swap", "discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info", "get_wallet_balance"]);
@@ -73,10 +74,10 @@ import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 let client = null;
 let currentProvider = null;
 
-function initLLMClient(config) {
+async function initLLMClient(config) {
   currentProvider = detectProvider(config);
   try {
-    client = createLLMClient(config);
+    client = await createLLMClient(config);
     log("agent", `LLM Client initialized: ${currentProvider}`);
   } catch (error) {
     log("agent_error", `Failed to initialize LLM client: ${error.message}`);
@@ -85,7 +86,7 @@ function initLLMClient(config) {
 }
 
 // Initialize on module load
-initLLMClient(config);
+await initLLMClient(config);
 
 const DEFAULT_MODEL =
   process.env.LLM_MODEL || config.llmModel || "openrouter/auto";
@@ -202,7 +203,6 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             const delay = errorInfo.delay || 5000;
             log("agent", `${errorInfo.type} from ${currentProvider}, retrying in ${delay}ms...`);
             await new Promise((r) => setTimeout(r, delay));
-            attempt -= 1;
             continue;
           }
 

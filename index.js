@@ -141,6 +141,8 @@ async function checkAllGates(source = "") {
  */
 async function refreshSessionPnl(totalUsd) {
   if (!config.pilot.enabled) return;
+  // Skip P&L update if no wallet configured — avoids false -100% in DRY_RUN/test mode
+  if (!process.env.WALLET_PRIVATE_KEY) return;
   const result = updateSessionCapital(totalUsd);
 
   if (result.action === "pause_target") {
@@ -191,7 +193,7 @@ async function runLossAnalysis() {
   markAnalysisRun();
   log("learning", "Menjalankan analisis loss LLM...");
 
-  const recentTrades = getPerformanceSummary ? [] : [];
+  const recentTrades = getPerformanceHistory({ limit: 5 });
   const marketCond = getMarketIntelligence().condition;
   const prompt = buildLossAnalysisPrompt(lossContext, recentTrades, marketCond);
 
@@ -854,8 +856,9 @@ if (isTTY) {
       const market = getMarketIntelligence();
       const msg = [
         `📊 <b>Ponyou Status</b>`,
-        `Plan: Day ${plan.day}/${plan.days_total}`,
-        `PnL Today: ${plan.today_pnl_pct.toFixed(2)}%`,
+        plan
+          ? `Plan: Day ${plan.day}/${plan.days_total}\nPnL Today: ${(plan.today_pnl_pct ?? 0).toFixed(2)}%`
+          : `Plan: belum diinisialisasi`,
         `Market: ${market.condition}`,
       ].join("\n");
       await sendHTML(msg);
@@ -921,12 +924,16 @@ if (isTTY) {
           const p = getPlanSummary();
           const g = checkSessionGate();
           console.log("\n─── Pilot Status ───");
-          console.log(`Day: ${p.day}/${p.days_total}`);
-          console.log(`P&L Today: ${p.today_pnl_pct.toFixed(2)}% ($${p.today_pnl_usd.toFixed(2)})`);
-          console.log(`Target: ${p.daily_target_pct}% | StopLoss: ${config.pilot.dailyStopLossPct}%`);
-          console.log(`Mode: ${p.profit_mode ? "PROFIT MODE 🔥" : "NORMAL"}`);
-          if (g.paused) console.log(`STATUS: PAUSED (${g.reason}) - Resume in ${g.resume_in_min}m`);
-          else console.log("STATUS: RUNNING");
+          if (!p) {
+            console.log("Plan belum diinisialisasi.");
+          } else {
+            console.log(`Day: ${p.day}/${p.days_total}`);
+            console.log(`P&L Today: ${(p.today_pnl_pct ?? 0).toFixed(2)}% ($${(p.today_pnl_usd ?? 0).toFixed(2)})`);
+            console.log(`Target: ${p.daily_target_pct}% | StopLoss: ${config.pilot.dailyStopLossPct}%`);
+            console.log(`Mode: ${p.profit_mode ? "PROFIT MODE" : "NORMAL"}`);
+            if (g.paused) console.log(`STATUS: PAUSED (${g.reason}) - Resume in ${g.resume_in_min}m`);
+            else console.log("STATUS: RUNNING");
+          }
           console.log("────────────────────\n");
         } else {
           console.log("Usage: /pilot check");
