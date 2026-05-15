@@ -649,6 +649,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         log("screening", `${token.symbol}: Fetching klines for momentum analysis...`);
         const klineData = await getTokenKlines({
           mint: token.mint,
+          pair_address: token.pair_address,
           resolution: config.indicators.intervals[0] === "5_MINUTE" ? "5m" : "1m",
           limit: config.indicators.candles || 100
         });

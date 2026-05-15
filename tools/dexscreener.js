@@ -240,41 +240,71 @@ export async function getTokenSecurityDetails({ mint }) {
   }
 }
 
-// ─── OHLCV Candles ────────────────────────────────────────────
+// ─── OHLCV Candles (GeckoTerminal, no API key) ────────────────
 
-export async function getTokenKlines({ mint, resolution = "5m", limit = 100 }) {
-  // Birdeye (if key available)
-  const birdeyeKey = process.env.BIRDEYE_API_KEY;
-  if (birdeyeKey) {
-    try {
-      const typeMap = { "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1H" };
-      const type    = typeMap[resolution] || "5m";
-      const secsMap = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600 };
-      const timeTo  = Math.floor(Date.now() / 1000);
-      const timeFrom = timeTo - (secsMap[resolution] || 300) * limit;
+const GT_BASE = "https://api.geckoterminal.com/api/v2";
 
-      const res = await fetch(
-        `https://public-api.birdeye.so/defi/ohlcv?address=${mint}&type=${type}&time_from=${timeFrom}&time_to=${timeTo}`,
-        { headers: { "X-API-KEY": birdeyeKey, "x-chain": "solana" } }
-      );
-      if (res.ok) {
-        const data = await res.json();
-        const items = data.data?.items || [];
-        return {
-          mint, resolution,
-          candles: items.map(c => ({
-            time: c.unixTime,
-            open: c.o, high: c.h, low: c.l, close: c.c, volume: c.v,
-          })).sort((a, b) => a.time - b.time),
-        };
-      }
-    } catch (e) {
-      log("kline_warn", `Birdeye kline failed: ${e.message}`);
+const _poolCache = new Map(); // mint → { pool, ts }
+const POOL_TTL_MS = 5 * 60_000;
+
+// Rate-limit aware fetcher (GeckoTerminal free = 30/min)
+let _gtLastCall = 0;
+const GT_MIN_GAP_MS = 2100; // ~28 req/min, leaves headroom
+
+async function gtFetch(url, retries = 3) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const gap = Date.now() - _gtLastCall;
+    if (gap < GT_MIN_GAP_MS) await new Promise(r => setTimeout(r, GT_MIN_GAP_MS - gap));
+    _gtLastCall = Date.now();
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (res.status === 429) {
+      const wait = 2000 * (attempt + 1);
+      if (attempt < retries) { await new Promise(r => setTimeout(r, wait)); continue; }
     }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
   }
+}
 
-  log("kline_warn", `No kline source for ${mint}. Set BIRDEYE_API_KEY for candle data.`);
-  return { mint, resolution, candles: [], error: "No kline source. Set BIRDEYE_API_KEY." };
+async function getTopPool(mint) {
+  const cached = _poolCache.get(mint);
+  if (cached && Date.now() - cached.ts < POOL_TTL_MS) return cached.pool;
+  const data = await gtFetch(`${GT_BASE}/networks/solana/tokens/${mint}/pools?page=1`);
+  const top = data.data?.[0]?.attributes?.address;
+  if (top) _poolCache.set(mint, { pool: top, ts: Date.now() });
+  return top || null;
+}
+
+function mapResolution(resolution) {
+  // GeckoTerminal: timeframe=minute|hour|day, aggregate=N
+  const m = { "1m": ["minute", 1], "5m": ["minute", 5], "15m": ["minute", 15],
+              "30m": ["hour", 1], "1h": ["hour", 1], "4h": ["hour", 4], "1d": ["day", 1] };
+  return m[resolution] || ["minute", 5];
+}
+
+export async function getTokenKlines({ mint, pair_address = null, resolution = "5m", limit = 100 }) {
+  try {
+    const pool = pair_address || await getTopPool(mint);
+    if (!pool) {
+      log("kline_warn", `No pool found for ${mint} on GeckoTerminal`);
+      return { mint, resolution, candles: [], error: "No pool found" };
+    }
+
+    const [tf, agg] = mapResolution(resolution);
+    const url = `${GT_BASE}/networks/solana/pools/${pool}/ohlcv/${tf}?aggregate=${agg}&limit=${Math.min(limit, 1000)}`;
+    const data = await gtFetch(url);
+    const list = data.data?.attributes?.ohlcv_list || [];
+
+    return {
+      mint, resolution,
+      candles: list.map(c => ({
+        time: c[0], open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5],
+      })).sort((a, b) => a.time - b.time),
+    };
+  } catch (e) {
+    log("kline_warn", `GeckoTerminal kline failed for ${mint}: ${e.message}`);
+    return { mint, resolution, candles: [], error: e.message };
+  }
 }
 
 // ─── Market Info ──────────────────────────────────────────────
