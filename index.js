@@ -517,7 +517,7 @@ ${planSummary ? `Plan: Day ${planSummary.day} | P&L: ${planSummary.today_pnl_pct
 
 Review holdings. Exit jika ada rug signal atau trend reversal berat.
 ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
-      `, config.llm.maxSteps, [], "MANAGER", config.llm.managementModel, 2048, {
+      `, config.llm.managerMaxSteps, [], "MANAGER", config.llm.managementModel, 2048, {
         onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
         onToolFinish: async ({ name, result }) => {
           await liveMessage?.toolFinish(name, result, !result?.error);
@@ -706,11 +706,11 @@ ${planSummary ? `Plan: Day ${planSummary.day} | P&L: ${planSummary.today_pnl_pct
 Posisi aktif: ${openTokens.length}/${positionLimit}
 
 CANDIDATES (lolos 4-filter + rug check):
-${JSON.stringify(passingCandidates, null, 2)}
+${JSON.stringify(passingCandidates)}
 
 Pilih yang TERBAIK dan lakukan gmgn_swap.
-${planSummary?.profit_mode ? "PROFIT MODE aktif — kamu bisa lebih agresif dalam memilih." : ""}
-      `, config.llm.maxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
+${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
+      `, config.llm.screenerMaxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
         onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
         onToolFinish: async ({ name, result }) => {
           await liveMessage?.toolFinish(name, result, !result?.error);
@@ -802,7 +802,7 @@ const isTTY = process.stdin.isTTY;
 let cronStarted = false;
 let busy = false;
 const sessionHistory = [];
-const MAX_HISTORY = 20;
+const MAX_HISTORY = 10;
 let _ttyInterface = null;
 
 if (isTTY) {

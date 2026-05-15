@@ -5,8 +5,8 @@
 
 import { log } from "./logger.js";
 
-const DEFAULT_MAX_ITEMS = 8;
-const DEFAULT_MAX_STRING_LENGTH = 300;
+const DEFAULT_MAX_ITEMS = 6;
+const DEFAULT_MAX_STRING_LENGTH = 200;
 
 /**
  * Main compression entry point.
@@ -41,14 +41,14 @@ function compressDiscoverTokens(data) {
   // Keep only top N tokens and essential fields
   data.tokens = data.tokens.slice(0, DEFAULT_MAX_ITEMS).map(t => ({
     mint: t.mint,
-    symbol: t.symbol,
-    mcap: t.mcap,
-    swaps: t.swaps,
-    buys: t.buys,
-    sells: t.sells,
-    price_change_1h: t.price_change_1h,
-    hot_level: t.hot_level,
-    launchpad: t.launchpad,
+    sym: t.symbol,
+    mc: t.mcap,
+    sw: t.swaps,
+    b: t.buys,
+    s: t.sells,
+    ch1h: t.price_change_1h,
+    hot: t.hot_level,
+    lp: t.launchpad,
   }));
 
   if (originalCount > DEFAULT_MAX_ITEMS) {
