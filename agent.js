@@ -135,8 +135,9 @@ function isToolChoiceRequiredError(error) {
  */
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null, options = {}) {
   const { interactive = false, onToolStart = null, onToolFinish = null } = options;
-  const [portfolio, positions] = await Promise.all([getWalletBalances(), []]); // simplified positions for now
+  const [portfolio] = await Promise.all([getWalletBalances()]);
   const stateSummary = getStateSummary();
+  const positions = Object.fromEntries((stateSummary.positions || []).map(p => [p.position, p]));
   const lessons = getLessonsForPrompt({ agentType });
   const perfSummary = getPerformanceSummary();
   const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary);
@@ -259,8 +260,4 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   }
 
   return { content: "Max steps reached.", userMessage: goal };
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

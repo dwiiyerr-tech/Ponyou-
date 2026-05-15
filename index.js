@@ -501,6 +501,8 @@ export async function runManagementCycle({ silent = false } = {}) {
         if (telegramEnabled()) {
           sendMessage(`${exit.is_loss ? "🛑" : "🎯"} Exit: ${exit.symbol}\n${exit.reason}\nP&L: ${exit.pnl_pct?.toFixed(2)}%`);
         }
+      } else {
+        log("swap_error", `EXIT failed for ${exit.symbol}: ${res.error || "unknown error"}`);
       }
     }
 
