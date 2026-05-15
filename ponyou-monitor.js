@@ -94,6 +94,7 @@ function formatPercentage(pct) {
 }
 
 function formatNumber(num) {
+  if (num === undefined || num === null) return "N/A";
   return num.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
@@ -306,8 +307,9 @@ ${topLessons ? `Top Lessons:\n${topLessons}` : "No lessons active"}`,
       .slice(0, 5)
       .map(([symbol, pos]) => {
         const pnl = pos.pnl || 0;
-        const pnlPct = ((pnl / pos.entry_amount) * 100).toFixed(2);
-        return `${symbol.padEnd(12)} - Entry: $${formatNumber(pos.entry_amount)} | P&L: ${formatPercentage(parseFloat(pnlPct))}`;
+        const entryAmount = pos.entry_amount || 0;
+        const pnlPct = entryAmount > 0 ? ((pnl / entryAmount) * 100).toFixed(2) : 0;
+        return `${symbol.padEnd(12)} - Entry: $${formatNumber(entryAmount)} | P&L: ${formatPercentage(parseFloat(pnlPct))}`;
       })
       .join("\n");
   }
@@ -336,14 +338,20 @@ const interval = setInterval(() => {
 // Initial draw
 drawMonitor();
 
-// Listen for quit
-process.stdin.setRawMode(true);
-process.stdin.resume();
-process.stdin.on("data", (key) => {
-  const char = key.toString();
-  if (char === "q" || char === "Q") {
-    clearInterval(interval);
-    console.log(`${colors.green}👋 Monitor stopped${colors.reset}\n`);
-    process.exit(0);
+// Listen for quit (if TTY available)
+try {
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("data", (key) => {
+      const char = key.toString();
+      if (char === "q" || char === "Q") {
+        clearInterval(interval);
+        console.log(`${colors.green}👋 Monitor stopped${colors.reset}\n`);
+        process.exit(0);
+      }
+    });
   }
-});
+} catch (e) {
+  // TTY not available in this environment
+}

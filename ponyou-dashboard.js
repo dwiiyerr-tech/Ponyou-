@@ -177,14 +177,15 @@ async function main() {
   drawDashboard();
 
   // Listen for keyboard input to stop
-  process.stdin.setRawMode(true);
+  try { if (process.stdin.isTTY) { process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.on("data", (key) => {
     if (key.toString() === "q" || key.toString() === "") {
       clearInterval(interval);
       process.exit(0);
     }
-  });
+      });
+    } } catch (e) { }
 }
 
 main();
