@@ -79,11 +79,25 @@ function handleScreeningCycle(messages, tools) {
 
   // Check if there are passing candidates
   const hasCandidates = /CANDIDATES.*lolos/i.test(lastUser) || /passingCandidates/i.test(lastUser);
-  const jsonMatch = lastUser.match(/CANDIDATES.*?:\n(\[[\s\S]*?\])/i);
 
+  // Extract candidates JSON with bracket-balanced parser (handles nested arrays like `flags`)
   let candidates = [];
-  if (jsonMatch) {
-    try { candidates = JSON.parse(jsonMatch[1]); } catch {}
+  const startIdx = lastUser.search(/CANDIDATES[^\n]*:\s*\n\[/i);
+  if (startIdx >= 0) {
+    const arrStart = lastUser.indexOf('[', startIdx);
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let i = arrStart; i < lastUser.length; i++) {
+      const ch = lastUser[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\' && inStr) { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '[') depth++;
+      else if (ch === ']') { depth--; if (depth === 0) { end = i; break; } }
+    }
+    if (end > arrStart) {
+      try { candidates = JSON.parse(lastUser.slice(arrStart, end + 1)); } catch {}
+    }
   }
 
   if (candidates.length === 0 || !hasCandidates) {
