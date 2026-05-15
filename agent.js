@@ -232,7 +232,9 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
 
       const toolResults = await Promise.all(msg.tool_calls.map(async (toolCall) => {
         const functionName = toolCall.function.name.replace(/<.*$/, "").trim();
-        let functionArgs = JSON.parse(toolCall.function.arguments || "{}");
+        let functionArgs;
+        try { functionArgs = JSON.parse(toolCall.function.arguments || "{}"); }
+        catch { functionArgs = {}; }
 
         if (ONCE_PER_SESSION.has(functionName) && firedOnce.has(functionName)) {
           return { role: "tool", tool_call_id: toolCall.id, content: JSON.stringify({ blocked: true, reason: "Executed once already." }) };

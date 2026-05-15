@@ -832,7 +832,7 @@ if (isTTY) {
   console.log(`║           Ponyou AI Agent — Ready (v2.2)                 ║`);
   console.log(`║  Plan: Day ${String(plan?.day||1).padStart(2,"0")}/${plan?.days_total||30} | Target +${plan?.daily_target_pct||25}%/hari           ║`);
   console.log(`║  Modal: $${String((plan?.today_start_usd||config.pilot.initialCapitalUsd).toFixed(2)).padStart(7)} → $${String((plan?.today_target_usd||0).toFixed(2)).padStart(7)} today    ║`);
-  console.log(`║  Market: ${market.condition.padEnd(8)} | Stop-Loss: ${config.pilot.dailyStopLossPct}%/hari      ║`);
+  console.log(`║  Market: ${(market.condition || "NORMAL").padEnd(8)} | Stop-Loss: ${config.pilot.dailyStopLossPct}%/hari      ║`);
   console.log(`║  Vault: ${vault.configured ? `${vault.vault_pct}% tiap ${vault.interval_days}hr | ${vaultDue.days_remaining?.toFixed(1)}hr lagi` : "belum dikonfigurasi".padEnd(30)} ║`);
   console.log(`╚══════════════════════════════════════════════════════════╝\n`);
   console.log(`Perintah CLI: /pilot check, /auto on|off, /off (shutdown), /smart (scan smart money)\n`);
@@ -865,6 +865,7 @@ if (isTTY) {
       return;
     }
 
+    if (busy) return;
     busy = true;
     let liveMsg = null;
     try {
@@ -945,7 +946,10 @@ if (isTTY) {
       if (cmd === "smart") {
         await runBusy(async () => {
           console.log("Scanning for Smart Money activity...");
-          const { content } = await agentLoop("Find the most profitable smart money wallets on Solana and check what tokens they are buying right now. Give me a summary of hype and smart money inflow.", config.llm.maxSteps, sessionHistory, "GENERAL");
+          const smartGoal = "Find the most profitable smart money wallets on Solana and check what tokens they are buying right now. Give me a summary of hype and smart money inflow.";
+          const { content } = await agentLoop(smartGoal, config.llm.maxSteps, sessionHistory, "GENERAL");
+          sessionHistory.push({ role: "user", content: smartGoal }, { role: "assistant", content });
+          if (sessionHistory.length > MAX_HISTORY) sessionHistory.splice(0, 2);
           console.log(`\n${content}\n`);
         });
         return;
