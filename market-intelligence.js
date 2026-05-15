@@ -54,7 +54,9 @@ function saveIntel(intel) {
  */
 export function analyzeMarketCondition(tokens) {
   if (!tokens || tokens.length === 0) {
-    return { condition: "DEAD", confidence: 0, metrics: {} };
+    // No data (API unreachable) — don't classify as DEAD, return null so
+    // recordMarketSnapshot can keep the previous condition instead.
+    return { condition: null, confidence: 0, metrics: {} };
   }
 
   const swapsList = tokens.map(t => t.swaps || 0);
@@ -115,6 +117,12 @@ export function analyzeMarketCondition(tokens) {
 export function recordMarketSnapshot(tokens) {
   const intel = loadIntel();
   const analysis = analyzeMarketCondition(tokens);
+
+  // If no data (API unreachable), skip snapshot and keep previous condition
+  if (analysis.condition === null) {
+    log("market", `Market snapshot skipped — no token data (API unreachable), keeping: ${intel.currentCondition}`);
+    return { ...analysis, condition: intel.currentCondition, smoothed_condition: intel.currentCondition };
+  }
 
   intel.snapshots.push({
     ts: new Date().toISOString(),
