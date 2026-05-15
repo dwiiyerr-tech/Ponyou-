@@ -104,12 +104,15 @@ function formatPercentage(pct) {
 }
 
 function getProcessStatus() {
-  // Check if agent is running (simplified check)
   try {
     const state = loadState();
-    return Object.keys(state.positions || {}).length > 0 ? "TRADING" : "IDLE";
+    // Only count positions with actual entry data (not test/stale entries)
+    const active = Object.values(state.positions || {}).filter(
+      p => p.entry_price || p.entry_usd || p.amount_sol
+    );
+    return active.length > 0 ? "TRADING" : "IDLE";
   } catch {
-    return "UNKNOWN";
+    return "IDLE";
   }
 }
 
@@ -180,7 +183,7 @@ async function mainMenu() {
       `Positions: ${positions} | Mode: ${modeColor}${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}${colors.reset} ${colors.dim}─┐${colors.reset}`
     );
     console.log(
-      `${colors.dim}└─ CONFIG ${colors.reset}Provider: ${config.llmProvider || "?".red} | ` +
+      `${colors.dim}└─ CONFIG ${colors.reset}Provider: ${config.llmProvider || process.env.LLM_PROVIDER || (process.env.LLM_BASE_URL ? "local" : "openrouter")} | ` +
       `Capital: $${config.pilotCapitalUsd || "?"} | Max Pos: ${config.maxPositions || "?"} ${colors.dim}─┘${colors.reset}\n`
     );
 
