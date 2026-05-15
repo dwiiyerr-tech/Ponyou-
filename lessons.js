@@ -404,7 +404,16 @@ function loadDarwinWeights() {
   try {
     return JSON.parse(fs.readFileSync(DARWIN_FILE, "utf8"));
   } catch {
-    return loadDarwinWeights.__proto__.constructor(); // Fallback
+    return {
+      signals: {
+        buy_vol:  { weight: 1.0, success_count: 0, failure_count: 0 },
+        hot_level:{ weight: 1.0, success_count: 0, failure_count: 0 },
+        swaps:    { weight: 1.0, success_count: 0, failure_count: 0 },
+        volume:   { weight: 1.0, success_count: 0, failure_count: 0 },
+        holders:  { weight: 1.0, success_count: 0, failure_count: 0 },
+      },
+      last_updated: new Date().toISOString(),
+    };
   }
 }
 

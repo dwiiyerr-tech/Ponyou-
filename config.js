@@ -93,8 +93,8 @@ export const config = {
     minHolders:        u.minHolders        ?? 500,
     minMcap:           u.minMcap           ?? 150_000,
     maxMcap:           u.maxMcap           ?? 10_000_000,
-    timeframe:         u.timeframe         ?? "5m",
-    category:          u.category          ?? "trending",
+    timeframe:         nonEmptyString(u.timeframe) ?? "5m",
+    category:          nonEmptyString(u.category)  ?? "trending",
     minTokenFeesSol:   u.minTokenFeesSol   ?? 30,  // global fees paid (priority+jito tips). below = bundled/scam
     useDiscordSignals: u.useDiscordSignals ?? false,
     discordSignalMode: u.discordSignalMode ?? "merge", // merge | only
@@ -188,8 +188,8 @@ jupiter: {
 
   indicators: {
     enabled: indicatorUserConfig.enabled ?? false,
-    entryPreset: indicatorUserConfig.entryPreset ?? "supertrend_break",
-    exitPreset: indicatorUserConfig.exitPreset ?? "supertrend_break",
+    entryPreset: nonEmptyString(indicatorUserConfig.entryPreset) ?? "supertrend_break",
+    exitPreset:  nonEmptyString(indicatorUserConfig.exitPreset)  ?? "supertrend_break",
     rsiLength: indicatorUserConfig.rsiLength ?? 2,
     intervals: Array.isArray(indicatorUserConfig.intervals)
       ? indicatorUserConfig.intervals
