@@ -72,14 +72,19 @@ export function initTradingPlan({
     session: {
       date: new Date().toISOString().slice(0, 10),
       dayNumber: 1,
-      startCapitalUsd: initialCapitalUsd,
-      currentCapitalUsd: initialCapitalUsd,
+      // startCapitalUsd dikalibrasi pada update pertama dari wallet aktual
+      // (lihat updateSessionCapital). Default null = belum dikalibrasi.
+      startCapitalUsd: null,
+      currentCapitalUsd: null,
+      calibrated: false,
+      calibratedAt: null,
       pausedUntil: null,
       pauseReason: null,    // "TARGET_HIT" | null (loss sekarang pakai learning-mode)
       profitMode: false,    // true saat session profitable
       tradesCount: 0,
       winCount: 0,
       lossCount: 0,
+      consecutiveLosses: 0,
       profitUsd: 0,
       profitPct: 0,
     },
@@ -144,7 +149,29 @@ export function updateSessionCapital(currentCapitalUsd) {
   const plan = loadPlan();
   if (!plan) return { action: "continue", pnl_pct: 0, profit_mode: false };
 
+  // Guard: tolak nilai invalid agar tidak corrupt P&L.
+  // Wallet API yang gagal sering balikin 0 / NaN — itu bukan "rugi 100%".
+  if (!Number.isFinite(currentCapitalUsd) || currentCapitalUsd <= 0) {
+    return { action: "skip_invalid", pnl_pct: plan.session.profitPct || 0, reason: "invalid_wallet_value" };
+  }
+
   const session = plan.session;
+
+  // Kalibrasi pertama: set startCapitalUsd dari nilai wallet aktual.
+  // Plan.initialCapitalUsd = target tracker (compound 30d),
+  // session.startCapitalUsd = baseline real untuk P&L hari ini.
+  if (!session.calibrated || session.startCapitalUsd == null || session.startCapitalUsd <= 0) {
+    session.startCapitalUsd = currentCapitalUsd;
+    session.currentCapitalUsd = currentCapitalUsd;
+    session.calibrated = true;
+    session.calibratedAt = new Date().toISOString();
+    session.profitUsd = 0;
+    session.profitPct = 0;
+    savePlan(plan);
+    log("plan", `Session calibrated: startCapitalUsd = $${currentCapitalUsd.toFixed(4)}`);
+    return { action: "calibrated", pnl_pct: 0, pnl_usd: 0, profit_mode: false };
+  }
+
   session.currentCapitalUsd = currentCapitalUsd;
 
   const pnlUsd = currentCapitalUsd - session.startCapitalUsd;
@@ -273,14 +300,17 @@ export function advanceDay(actualCapitalUsd) {
   plan.session = {
     date: new Date().toISOString().slice(0, 10),
     dayNumber: plan.currentDay,
-    startCapitalUsd: actualCapitalUsd,
-    currentCapitalUsd: actualCapitalUsd,
+    startCapitalUsd: Number.isFinite(actualCapitalUsd) && actualCapitalUsd > 0 ? actualCapitalUsd : null,
+    currentCapitalUsd: Number.isFinite(actualCapitalUsd) && actualCapitalUsd > 0 ? actualCapitalUsd : null,
+    calibrated: Number.isFinite(actualCapitalUsd) && actualCapitalUsd > 0,
+    calibratedAt: Number.isFinite(actualCapitalUsd) && actualCapitalUsd > 0 ? new Date().toISOString() : null,
     pausedUntil: null,
     pauseReason: null,
     profitMode: false,
     tradesCount: 0,
     winCount: 0,
     lossCount: 0,
+    consecutiveLosses: 0,
     profitUsd: 0,
     profitPct: 0,
   };
@@ -299,9 +329,20 @@ export function recordTrade(isWin = null) {
   const plan = loadPlan();
   if (!plan) return;
   plan.session.tradesCount = (plan.session.tradesCount || 0) + 1;
-  if (isWin === true) plan.session.winCount = (plan.session.winCount || 0) + 1;
-  if (isWin === false) plan.session.lossCount = (plan.session.lossCount || 0) + 1;
+  if (isWin === true) {
+    plan.session.winCount = (plan.session.winCount || 0) + 1;
+    plan.session.consecutiveLosses = 0;
+  }
+  if (isWin === false) {
+    plan.session.lossCount = (plan.session.lossCount || 0) + 1;
+    plan.session.consecutiveLosses = (plan.session.consecutiveLosses || 0) + 1;
+  }
   savePlan(plan);
+}
+
+export function getConsecutiveLosses() {
+  const plan = loadPlan();
+  return plan?.session?.consecutiveLosses || 0;
 }
 
 /**
@@ -328,6 +369,7 @@ export function getPlanSummary() {
     today_pnl_usd: session.profitUsd,
     daily_target_pct: plan.dailyTargetPct,
     daily_stoploss_pct: plan.dailyStopLossPct,
+    calibrated: session.calibrated === true,
 
     // Profit mode
     profit_mode: session.profitMode,

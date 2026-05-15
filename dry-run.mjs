@@ -29,7 +29,7 @@ const gate = checkSessionGate();
 
 console.log(`Mode         : DRY RUN`);
 console.log(`Market       : ${market.condition} — ${market.description || ""}` );
-console.log(`Plan         : ${plan ? `Day ${plan.day}/${plan.days_total} | P&L: ${plan.today_pnl_pct}% | Capital: $${plan.today_start_usd}` : "Belum diinisialisasi"}`);
+console.log(`Plan         : ${plan ? `Day ${plan.day}/${plan.days_total} | P&L: ${plan.today_pnl_pct}% | Capital: ${plan.calibrated ? `$${plan.today_start_usd}` : "(uncalibrated)"}` : "Belum diinisialisasi"}`);
 console.log(`Session Gate : ${gate.paused ? `PAUSED — ${gate.reason} (${gate.resume_in_min}m lagi)` : "RUNNING"}`);
 
 // ── Wallet ─────────────────────────────────────────────────

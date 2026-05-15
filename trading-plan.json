@@ -221,18 +221,21 @@
   "currentDay": 1,
   "dailyResults": [],
   "session": {
-    "date": "2026-05-04",
+    "date": "2026-05-15",
     "dayNumber": 1,
-    "startCapitalUsd": 10,
-    "currentCapitalUsd": 8.8,
+    "startCapitalUsd": null,
+    "currentCapitalUsd": null,
+    "calibrated": false,
+    "calibratedAt": null,
     "pausedUntil": null,
     "pauseReason": null,
     "profitMode": false,
     "tradesCount": 0,
     "winCount": 0,
     "lossCount": 0,
-    "profitUsd": -1.2,
-    "profitPct": -12
+    "consecutiveLosses": 0,
+    "profitUsd": 0,
+    "profitPct": 0
   },
-  "lastUpdated": "2026-05-04T13:40:34.415Z"
+  "lastUpdated": "2026-05-15T15:25:37.140Z"
 }

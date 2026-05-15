@@ -42,8 +42,8 @@
 
   "minClaimAmount": 5,
   "autoSwapAfterClaim": false,
-  "stopLossPct": -50,
-  "takeProfitPct": 5,
+  "stopLossPct": null,
+  "takeProfitPct": null,
   "trailingTakeProfit": true,
   "trailingTriggerPct": 3,
   "trailingDropPct": 1.5,
