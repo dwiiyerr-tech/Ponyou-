@@ -16,8 +16,10 @@ const DEFAULT_MAX_STRING_LENGTH = 200;
 export function compressToolOutput(data, toolName) {
   if (!data || typeof data !== "object") return data;
 
-  // Clone to avoid modifying original data
-  let result = JSON.parse(JSON.stringify(data));
+  // Clone to avoid modifying original data (guard against circular refs)
+  let result;
+  try { result = JSON.parse(JSON.stringify(data)); }
+  catch { return { _error: "compressor: non-serializable data" }; }
 
   // Specific rules for high-volume tools
   if (toolName === "discover_tokens") {

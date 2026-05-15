@@ -31,7 +31,7 @@ export function buildSystemPrompt(agentType, portfolio, positions, stateSummary 
   const marketBlock = `[MARKET] ${market.condition} | ${market.recommended_adjustments?.note || "normal"}${market.latest_metrics?.avg_swaps ? ` | avgSwaps:${market.latest_metrics.avg_swaps} buyRatio:${market.latest_metrics.buy_ratio}` : ""}`;
 
   const vaultBlock = vaultStatus.configured
-    ? `[VAULT] ${vaultStatus.vault_pct}% every ${vaultStatus.interval_days}d → ${vaultStatus.vault_wallet?.slice(0, 8)} | ${vaultDue.is_due ? "DUE NOW" : `${vaultDue.days_remaining?.toFixed(1)}d left`} | total:${vaultStatus.total_vaulted_sol}SOL`
+    ? `[VAULT] ${vaultStatus.vault_pct}% every ${vaultStatus.interval_days}d → ${vaultStatus.vault_wallet?.slice(0, 8)} | ${(vaultDue.is_due || vaultDue.due) ? "DUE NOW" : `${vaultDue.days_remaining?.toFixed(1)}d left`} | total:${vaultStatus.total_vaulted_sol}SOL`
     : "";
 
   const rugBlock = (rugMem.blacklisted_tokens > 0 || rugMem.blacklisted_devs > 0)
