@@ -144,8 +144,10 @@ export const config = {
   // ─── LLM Settings ──────────────────────
   llm: {
     temperature: u.temperature ?? 0.373,
-    maxTokens:   u.maxTokens   ?? 4096,
-    maxSteps:    u.maxSteps    ?? 20,
+    maxTokens:        u.maxTokens        ?? 4096,
+    maxSteps:         u.maxSteps         ?? 10,
+    managerMaxSteps:  u.managerMaxSteps  ?? 5,
+    screenerMaxSteps: u.screenerMaxSteps ?? 4,
     managementModel: u.managementModel ?? process.env.LLM_MODEL ?? "minimax/minimax-m2.5",
     screeningModel:  u.screeningModel  ?? process.env.LLM_MODEL ?? "minimax/minimax-m2.5",
     generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "minimax/minimax-m2.5",
