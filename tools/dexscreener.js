@@ -5,6 +5,7 @@
 
 import { Connection, PublicKey } from "@solana/web3.js";
 import { log } from "../logger.js";
+import { listSmartWallets } from "../smart-wallets.js";
 
 const DS_BASE = "https://api.dexscreener.com";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -324,14 +325,133 @@ export async function getTrendingNarratives() {
   }
 }
 
-// ─── Smart Money stubs (not available via DexScreener) ───────
+// ─── Smart Money (Helius-based) ───────────────────────────────
 
-export async function getSmartMoneyRank({ timeframe = "24h" } = {}) {
-  log("smart_money_warn", "Smart money ranking not available via DexScreener. Use GMGN or premium data source.");
-  return { timeframe, wallets: [], note: "Not available — requires premium data source" };
+const HELIUS_BASE = "https://api.helius.xyz/v0";
+
+async function fetchHeliusTxns(address, apiKey, limit = 50) {
+  const url = `${HELIUS_BASE}/addresses/${address}/transactions?api-key=${apiKey}&limit=${limit}&type=SWAP`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Helius ${res.status}`);
+  return res.json();
 }
 
+function parseSolanaSwap(tx) {
+  // Helius enriched transaction: tokenTransfers array
+  const transfers = tx.tokenTransfers || [];
+  const nativeTransfers = tx.nativeTransfers || [];
+
+  // Find the output token (what wallet received)
+  const received = transfers.filter(t => t.toUserAccount && t.mint !== SOL_MINT);
+  const sent = transfers.filter(t => t.fromUserAccount && t.mint !== SOL_MINT);
+
+  if (received.length === 0 && sent.length === 0) return null;
+
+  return {
+    signature: tx.signature,
+    timestamp: tx.timestamp,
+    type: received.length > 0 ? "buy" : "sell",
+    token_mint: received[0]?.mint || sent[0]?.mint,
+    amount_usd: tx.fee ? tx.fee / 1e9 : 0, // rough proxy
+  };
+}
+
+/**
+ * Rank tracked smart wallets by recent P&L performance.
+ * Requires valid HELIUS_API_KEY and wallets added via addSmartWallet().
+ */
+export async function getSmartMoneyRank({ timeframe = "24h" } = {}) {
+  const apiKey = process.env.HELIUS_API_KEY;
+  if (!apiKey || apiKey === "dummy-helius-key") {
+    return { timeframe, wallets: [], note: "Set HELIUS_API_KEY in .env to enable smart money tracking" };
+  }
+
+  const wallets = listSmartWallets();
+  if (wallets.length === 0) {
+    return { timeframe, wallets: [], note: "No wallets tracked. Use add_smart_wallet tool to add wallets." };
+  }
+
+  const cutoff = Date.now() / 1000 - (timeframe === "24h" ? 86400 : timeframe === "7d" ? 604800 : 3600);
+  const results = [];
+
+  for (const wallet of wallets.slice(0, 10)) { // cap at 10 to avoid rate limits
+    try {
+      const txns = await fetchHeliusTxns(wallet.address, apiKey, 50);
+      const recentTxns = txns.filter(tx => tx.timestamp >= cutoff);
+      const swaps = recentTxns.map(parseSolanaSwap).filter(Boolean);
+
+      const buys = swaps.filter(s => s.type === "buy");
+      const sells = swaps.filter(s => s.type === "sell");
+
+      results.push({
+        address: wallet.address,
+        label: wallet.label,
+        swap_count: swaps.length,
+        buy_count: buys.length,
+        sell_count: sells.length,
+        unique_tokens: new Set(swaps.map(s => s.token_mint)).size,
+      });
+    } catch (e) {
+      log("smart_money_warn", `Helius fetch for ${wallet.address.slice(0, 8)}: ${e.message}`);
+    }
+  }
+
+  results.sort((a, b) => b.swap_count - a.swap_count);
+  return { timeframe, wallets: results, source: "helius" };
+}
+
+/**
+ * Detect which tokens tracked smart wallets are buying right now.
+ * Returns tokens sorted by number of smart wallets accumulating.
+ */
 export async function getSmartMoneyInflow({ timeframe = "1h" } = {}) {
-  log("smart_money_warn", "Smart money inflow not available via DexScreener.");
-  return { timeframe, tokens: [], note: "Not available — requires premium data source" };
+  const apiKey = process.env.HELIUS_API_KEY;
+  if (!apiKey || apiKey === "dummy-helius-key") {
+    return { timeframe, tokens: [], note: "Set HELIUS_API_KEY in .env to enable smart money inflow" };
+  }
+
+  const wallets = listSmartWallets();
+  if (wallets.length === 0) {
+    return { timeframe, tokens: [], note: "No wallets tracked. Use add_smart_wallet tool to add wallets." };
+  }
+
+  const cutoff = Date.now() / 1000 - (timeframe === "1h" ? 3600 : timeframe === "6h" ? 21600 : 86400);
+  const tokenAccum = new Map(); // mint → { wallets: Set, buy_count, sell_count }
+
+  for (const wallet of wallets.slice(0, 10)) {
+    try {
+      const txns = await fetchHeliusTxns(wallet.address, apiKey, 30);
+      const recentSwaps = txns
+        .filter(tx => tx.timestamp >= cutoff)
+        .map(parseSolanaSwap)
+        .filter(Boolean);
+
+      for (const swap of recentSwaps) {
+        if (!swap.token_mint) continue;
+        if (!tokenAccum.has(swap.token_mint)) {
+          tokenAccum.set(swap.token_mint, { wallets: new Set(), buy_count: 0, sell_count: 0 });
+        }
+        const entry = tokenAccum.get(swap.token_mint);
+        entry.wallets.add(wallet.address);
+        if (swap.type === "buy") entry.buy_count++;
+        else entry.sell_count++;
+      }
+    } catch (e) {
+      log("smart_money_warn", `Helius inflow for ${wallet.address.slice(0, 8)}: ${e.message}`);
+    }
+  }
+
+  const tokens = [...tokenAccum.entries()]
+    .map(([mint, data]) => ({
+      mint,
+      wallet_count: data.wallets.size,
+      buy_count: data.buy_count,
+      sell_count: data.sell_count,
+      buy_pressure: data.buy_count / (data.buy_count + data.sell_count || 1),
+    }))
+    .filter(t => t.buy_count > t.sell_count) // only net buyers
+    .sort((a, b) => b.wallet_count - a.wallet_count || b.buy_count - a.buy_count)
+    .slice(0, 20);
+
+  return { timeframe, tokens, source: "helius", wallets_tracked: wallets.length };
 }

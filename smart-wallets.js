@@ -1,12 +1,34 @@
-const _wallets = new Map();
+import fs from "fs";
+
+const WALLETS_FILE = "./smart-wallets.json";
+
+function load() {
+  if (!fs.existsSync(WALLETS_FILE)) return {};
+  try { return JSON.parse(fs.readFileSync(WALLETS_FILE, "utf8")); } catch { return {}; }
+}
+
+function save(wallets) {
+  fs.writeFileSync(WALLETS_FILE, JSON.stringify(wallets, null, 2));
+}
 
 export function addSmartWallet({ address, label = "" } = {}) {
   if (!address) return { error: "address required" };
-  _wallets.set(address, { address, label, added_at: new Date().toISOString() });
+  const wallets = load();
+  wallets[address] = { address, label, added_at: new Date().toISOString() };
+  save(wallets);
   return { saved: true, address, label };
 }
+
 export function removeSmartWallet({ address } = {}) {
-  const existed = _wallets.delete(address);
+  const wallets = load();
+  const existed = address in wallets;
+  if (existed) {
+    delete wallets[address];
+    save(wallets);
+  }
   return { removed: existed, address };
 }
-export function listSmartWallets() { return Array.from(_wallets.values()); }
+
+export function listSmartWallets() {
+  return Object.values(load());
+}

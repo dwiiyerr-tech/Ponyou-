@@ -1,1 +1,9 @@
 *.bundle
+node_modules/
+.env
+smart-wallets.json
+market-intel.json
+learning-state.json
+lessons.json
+rug-memory.json
+logs/
