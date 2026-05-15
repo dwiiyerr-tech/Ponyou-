@@ -21,26 +21,26 @@ function fmtPct(n) {
 }
 
 function conditionColor(c) {
-  const map = { HOT: 'var(--red)', COLD: 'var(--blue)', DEAD: 'var(--text-muted)', UNKNOWN: 'var(--text-muted)' };
-  return map[(c || '').toUpperCase()] || 'var(--text-muted)';
+  const map = { HOT: 'var(--neg)', COLD: 'var(--blue)', DEAD: 'var(--muted)', UNKNOWN: 'var(--muted)' };
+  return map[(c || '').toUpperCase()] || 'var(--muted)';
 }
 
 function rugScoreColor(score) {
-  if (score == null) return 'var(--text-muted)';
-  if (score <= 20) return 'var(--green)';
-  if (score <= 50) return 'var(--amber)';
-  return 'var(--red)';
+  if (score == null) return 'var(--muted)';
+  if (score <= 20) return 'var(--pos)';
+  if (score <= 50) return 'var(--warn)';
+  return 'var(--neg)';
 }
 
 function statusColor(status) {
   const map = {
     PENDING:  'var(--cyan)',
-    WATCHING: 'var(--amber)',
-    DEPLOYED: 'var(--green)',
-    REJECTED: 'var(--red)',
-    SKIP:     'var(--text-muted)',
+    WATCHING: 'var(--warn)',
+    DEPLOYED: 'var(--pos)',
+    REJECTED: 'var(--neg)',
+    SKIP:     'var(--muted)',
   };
-  return map[(status || '').toUpperCase()] || 'var(--text-muted)';
+  return map[(status || '').toUpperCase()] || 'var(--muted)';
 }
 
 function timeAgo(ts) {
@@ -55,7 +55,7 @@ function timeAgo(ts) {
 function MetricRow({ label, value, valueColor }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', fontSize: 11 }}>
-      <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+      <span style={{ color: 'var(--muted)' }}>{label}</span>
       <span style={{ color: valueColor || 'var(--text)', fontWeight: 500 }}>{value}</span>
     </div>
   );
@@ -84,7 +84,7 @@ function MarketIntelCard({ marketIntel }) {
         </span>
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10,
-            color: 'var(--text-muted)', marginBottom: 2 }}>
+            color: 'var(--muted)', marginBottom: 2 }}>
             <span>confidence</span>
             <span style={{ color: conditionColor(condition) }}>{confidence}%</span>
           </div>
@@ -101,12 +101,12 @@ function MarketIntelCard({ marketIntel }) {
       {/* Metrics grid */}
       {metrics.avg_swaps != null && (
         <>
-          <MetricRow label="avg swaps/token" value={fmtNum(metrics.avg_swaps)} valueColor="var(--text-dim)" />
+          <MetricRow label="avg swaps/token" value={fmtNum(metrics.avg_swaps)} valueColor="var(--dim)" />
           <MetricRow label="max swaps"        value={fmtNum(metrics.max_swaps)} />
           <MetricRow label="buy ratio"        value={fmtPct(metrics.buy_ratio)}
-            valueColor={metrics.buy_ratio > 0.5 ? 'var(--green)' : 'var(--red)'} />
+            valueColor={metrics.buy_ratio > 0.5 ? 'var(--pos)' : 'var(--neg)'} />
           <MetricRow label="hot ratio"        value={fmtPct(metrics.hot_ratio)}
-            valueColor={metrics.hot_ratio > 0.7 ? 'var(--green)' : 'var(--amber)'} />
+            valueColor={metrics.hot_ratio > 0.7 ? 'var(--pos)' : 'var(--warn)'} />
           {metrics.fresh_tokens_1h != null && (
             <MetricRow label="fresh tokens/1h" value={metrics.fresh_tokens_1h} />
           )}
@@ -116,7 +116,7 @@ function MarketIntelCard({ marketIntel }) {
       {/* Mini history chart */}
       {history.length > 1 && (
         <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 4 }}>
             condition history ({history.length} snapshots)
           </div>
           <div style={{ display: 'flex', gap: 2, alignItems: 'flex-end', height: 24 }}>
@@ -132,7 +132,7 @@ function MarketIntelCard({ marketIntel }) {
             })}
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9,
-            color: 'var(--text-muted)', marginTop: 2 }}>
+            color: 'var(--muted)', marginTop: 2 }}>
             <span>{timeAgo(history[0]?.ts)}</span>
             <span>now</span>
           </div>
@@ -152,7 +152,7 @@ function ObservedTokensCard({ observedTokens }) {
     return (
       <div className="cyber-card">
         <div className="section-header">Market Scan</div>
-        <div style={{ color: 'var(--text-muted)', fontSize: 11, textAlign: 'center', padding: '10px 0' }}>
+        <div style={{ color: 'var(--muted)', fontSize: 11, textAlign: 'center', padding: '10px 0' }}>
           No tokens observed yet
         </div>
       </div>
@@ -163,7 +163,7 @@ function ObservedTokensCard({ observedTokens }) {
     <div className="cyber-card">
       <div className="section-header">
         Market Scan
-        <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 10 }}>
+        <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 10 }}>
           {tokens.length} tokens
         </span>
       </div>
@@ -171,7 +171,7 @@ function ObservedTokensCard({ observedTokens }) {
       {/* Column headers */}
       <div style={{ display: 'grid', gridTemplateColumns: '52px 1fr 52px 52px',
         gap: 4, padding: '3px 0', borderBottom: '1px solid var(--border)',
-        marginBottom: 4, fontSize: 9, color: 'var(--text-muted)', letterSpacing: '0.05em' }}>
+        marginBottom: 4, fontSize: 9, color: 'var(--muted)', letterSpacing: '0.05em' }}>
         <span>SYMBOL</span>
         <span>MCAP</span>
         <span style={{ textAlign: 'right' }}>RUG</span>
@@ -192,7 +192,7 @@ function ObservedTokensCard({ observedTokens }) {
               textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {token.symbol || '?'}
             </span>
-            <span style={{ color: 'var(--text-dim)' }}>
+            <span style={{ color: 'var(--dim)' }}>
               {fmt(token.initial_mcap)}
             </span>
             <span style={{ textAlign: 'right', color: rugScoreColor(token.rug_score) }}>
@@ -208,7 +208,7 @@ function ObservedTokensCard({ observedTokens }) {
       {tokens.length > 15 && (
         <button onClick={() => setShowAll(v => !v)} style={{
           marginTop: 6, width: '100%', background: 'none', border: '1px solid var(--border)',
-          color: 'var(--text-muted)', padding: '3px 8px', cursor: 'pointer',
+          color: 'var(--muted)', padding: '3px 8px', cursor: 'pointer',
           fontSize: 10, fontFamily: 'inherit', borderRadius: 2,
         }}>
           {showAll ? '▲ show less' : `▼ show all ${tokens.length}`}
@@ -218,12 +218,12 @@ function ObservedTokensCard({ observedTokens }) {
       {/* Flags summary */}
       {recent.slice(0, 3).some(t => t.flags?.length > 0) && (
         <div style={{ marginTop: 8 }}>
-          <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 4,
+          <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 4,
             letterSpacing: '0.05em', textTransform: 'uppercase' }}>Recent Flags</div>
           {recent.filter(t => t.flags?.length > 0).slice(0, 3).map((token, i) => (
             <div key={i} style={{ marginBottom: 3, fontSize: 10, display: 'flex', gap: 6 }}>
               <span style={{ color: 'var(--cyan)', flexShrink: 0 }}>{token.symbol}</span>
-              <span style={{ color: 'var(--amber)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ color: 'var(--warn)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {token.flags[0]}
               </span>
             </div>
@@ -248,9 +248,9 @@ function DailyResultsCard({ tradingPlan }) {
             padding: '3px 0', borderBottom: '1px solid rgba(26,26,58,0.5)',
             fontSize: 11,
           }}>
-            <span style={{ color: 'var(--text-muted)' }}>Day {r.day} — {r.date}</span>
+            <span style={{ color: 'var(--muted)' }}>Day {r.day} — {r.date}</span>
             <span style={{
-              color: r.pnl_pct >= 0 ? 'var(--green)' : 'var(--red)',
+              color: r.pnl_pct >= 0 ? 'var(--pos)' : 'var(--neg)',
               fontWeight: 600,
             }}>
               {r.pnl_pct >= 0 ? '+' : ''}{(r.pnl_pct || 0).toFixed(1)}%
@@ -274,18 +274,18 @@ function LearningCard({ learningState, lastReport }) {
     <div className="cyber-card">
       <div className="section-header">Agent Memory & Report</div>
       <MetricRow label="Lessons learned" value={lessons} valueColor="var(--purple)" />
-      <MetricRow label="Rug memory" value={rugMemory} valueColor="var(--red)" />
+      <MetricRow label="Rug memory" value={rugMemory} valueColor="var(--neg)" />
       {lastReport && (
         <>
           <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 4,
+            <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 4,
               letterSpacing: '0.05em', textTransform: 'uppercase' }}>Today's Report</div>
             <MetricRow label="P&L"
               value={pnl != null ? `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%` : '—'}
-              valueColor={pnl >= 0 ? 'var(--green)' : 'var(--red)'} />
+              valueColor={pnl >= 0 ? 'var(--pos)' : 'var(--neg)'} />
             <MetricRow label="Trades"   value={trades ?? '—'} />
             <MetricRow label="Win rate" value={winRate != null ? `${winRate.toFixed(0)}%` : '—'}
-              valueColor={winRate >= 50 ? 'var(--green)' : 'var(--amber)'} />
+              valueColor={winRate >= 50 ? 'var(--pos)' : 'var(--warn)'} />
           </div>
         </>
       )}
@@ -298,10 +298,10 @@ function DarwinCard({ userConfig }) {
   return (
     <div className="cyber-card">
       <div className="section-header">Darwin Optimizer</div>
-      <MetricRow label="Status"      value="ENABLED"              valueColor="var(--green)" />
+      <MetricRow label="Status"      value="ENABLED"              valueColor="var(--pos)" />
       <MetricRow label="Window"      value={`${userConfig.darwinWindowDays}d`} />
-      <MetricRow label="Boost"       value={`×${userConfig.darwinBoost}`}       valueColor="var(--green)" />
-      <MetricRow label="Decay"       value={`×${userConfig.darwinDecay}`}        valueColor="var(--red)" />
+      <MetricRow label="Boost"       value={`×${userConfig.darwinBoost}`}       valueColor="var(--pos)" />
+      <MetricRow label="Decay"       value={`×${userConfig.darwinDecay}`}        valueColor="var(--neg)" />
       <MetricRow label="Floor/Ceil"  value={`${userConfig.darwinFloor} — ${userConfig.darwinCeiling}`} />
       <MetricRow label="Min samples" value={userConfig.darwinMinSamples} />
     </div>
@@ -313,7 +313,7 @@ export default function RightPanel({ agentData }) {
 
   return (
     <aside style={{
-      background: 'var(--panel)',
+      background: 'var(--bg-panel)',
       overflowY: 'auto',
       overflowX: 'hidden',
       padding: '10px 10px',

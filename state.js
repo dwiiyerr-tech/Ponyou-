@@ -41,7 +41,7 @@ function load() {
     return _stateCache;
   } catch (err) {
     log("state_error", `Failed to read state.json: ${err.message}`);
-    return { positions: {}, lastUpdated: null };
+    return { positions: {}, recentEvents: [], lastUpdated: null };
   }
 }
 
