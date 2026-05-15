@@ -69,6 +69,33 @@ export const strategy = {
 };
 
 /**
+ * Resolve effective stop-loss (decimal, negative).
+ * Hybrid: user-config override wins; otherwise strategy default.
+ * @param {number|null} userStopLossPct - From config.management.stopLossPct (percent, e.g. -15)
+ * @returns {number} stop-loss in decimal (e.g. -0.15)
+ */
+export function getEffectiveStopLoss(userStopLossPct = null) {
+  if (userStopLossPct != null && Number.isFinite(userStopLossPct) && userStopLossPct < 0) {
+    return userStopLossPct / 100;
+  }
+  return strategy.stoploss;
+}
+
+/**
+ * Resolve effective immediate take-profit (decimal).
+ * Hybrid: if user explicitly sets takeProfitPct, exit when reached at any time.
+ * Returns null if not overridden — caller should fall back to ROI table.
+ * @param {number|null} userTakeProfitPct - From config.management.takeProfitPct (percent, e.g. 25)
+ * @returns {number|null} take-profit decimal (e.g. 0.25) or null
+ */
+export function getEffectiveImmediateTakeProfit(userTakeProfitPct = null) {
+  if (userTakeProfitPct != null && Number.isFinite(userTakeProfitPct) && userTakeProfitPct > 0) {
+    return userTakeProfitPct / 100;
+  }
+  return null;
+}
+
+/**
  * Check ROI conditions for a position.
  * @param {number} ageMinutes - Minutes since entry
  * @param {number} currentPnlPct - Current PnL in percentage (e.g. 15.5 for 15.5%)

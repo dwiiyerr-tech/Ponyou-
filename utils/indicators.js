@@ -120,18 +120,16 @@ export function calculateVolatilityPercentile(klines, atrPeriod = 14) {
   const closes = klines.map(k => k.close || k.c);
 
   const atr = calculateATR(highs, lows, closes, atrPeriod);
-  if (!atr) return 50;
-
-  // Normalize ATR to percentile
-  // Lower ATR = lower volatility = lower percentile
+  // calculateATR returns array of ATR values; ambil nilai terakhir (current ATR)
+  if (!atr || !Array.isArray(atr) || atr.length === 0) return 50;
+  const atrLast = atr[atr.length - 1];
   const closePrice = closes[closes.length - 1];
-  const atrPercent = (atr / closePrice) * 100;
+  if (!Number.isFinite(atrLast) || !Number.isFinite(closePrice) || closePrice <= 0) return 50;
 
-  // Map to 0-100 percentile (adjust scaling as needed)
-  // 0-2% = low vol (percentile 10)
-  // 5-10% = medium vol (percentile 50)
-  // 20%+ = high vol (percentile 90)
-  const percentile = Math.min(100, (atrPercent / 0.2) * 100);
+  // ATR sebagai % harga. Mapping ke percentile:
+  //   2% ATR → 20 (low-med), 5% → 50 (medium), 10% → 100 (cap)
+  const atrPercent = (atrLast / closePrice) * 100;
+  const percentile = Math.min(100, (atrPercent / 10) * 100);
   return Math.max(0, percentile);
 }
 

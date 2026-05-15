@@ -51,6 +51,9 @@ export const config = {
     learningModeDurationMin: u.learningModeDurationMin   ?? 60,
     planDays:                u.planDays                  ?? 30,
     autoAdaptToMarket:       u.autoAdaptToMarket         ?? true,
+    // Circuit breaker: setelah N loss berturut, trigger learning mode (anti-tilt).
+    // 0 = disabled.
+    maxConsecutiveLosses:    u.maxConsecutiveLosses      ?? 3,
   },
 
   // ─── Market Cap Tiers ──────────────────────
@@ -119,8 +122,10 @@ export const config = {
     repeatDeployCooldownHours: u.repeatDeployCooldownHours ?? 12,
     repeatDeployCooldownScope: u.repeatDeployCooldownScope ?? "token", // pool | token | both
     repeatDeployCooldownMinFeeEarnedPct: u.repeatDeployCooldownMinFeeEarnedPct ?? u.repeatDeployCooldownMinFeeYieldPct ?? 0,
-    stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -15,
-    takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
+    // Hybrid override: null = pakai strategy.js default; angka = override eksplisit.
+    // Lihat strategy.getEffectiveStopLoss / getEffectiveImmediateTakeProfit.
+    stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? null,
+    takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? null,
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
@@ -204,27 +209,50 @@ jupiter: {
   },
 };
 
+// Warn loud jika override SL/TP terlihat berbahaya (mis. -50 yang dulu unused).
+(() => {
+  const sl = config.management.stopLossPct;
+  const tp = config.management.takeProfitPct;
+  if (sl != null && sl < -30) {
+    console.warn(`⚠️  config: stopLossPct override = ${sl}% (sangat permisif). Set ke null di user-config.json untuk pakai strategy default (-15%).`);
+  }
+  if (tp != null && tp > 0 && tp < 5) {
+    console.warn(`⚠️  config: takeProfitPct override = ${tp}% (sangat konservatif untuk scalping memecoin). Set ke null untuk pakai ROI table adaptif.`);
+  }
+})();
+
 /**
  * Compute the optimal deploy amount for a given wallet balance.
  * Scales position size with wallet growth (compounding).
  *
- * Formula: clamp(deployable × positionSizePct, floor=deployAmountSol, ceil=maxDeployAmount)
+ * Pilot mode:
+ *   Jika config.pilot.enabled dan solPriceUsd disediakan, deploy dibatasi oleh
+ *   pilotCapitalUsd / maxPositions agar bot tidak melampaui modal pilot.
  *
- * Examples (defaults: gasReserve=0.2, positionSizePct=0.35, floor=0.5):
- *   0.8 SOL wallet → 0.6 SOL deploy  (floor)
- *   2.0 SOL wallet → 0.63 SOL deploy
- *   3.0 SOL wallet → 0.98 SOL deploy
- *   4.0 SOL wallet → 1.33 SOL deploy
+ * @param {number} walletSol - Saldo SOL aktual
+ * @param {object} [opts]
+ * @param {number} [opts.solPriceUsd] - Harga SOL untuk pilot capping
  */
-export function computeDeployAmount(walletSol) {
+export function computeDeployAmount(walletSol, opts = {}) {
   const reserve  = config.management.gasReserve      ?? 0.2;
   const pct      = config.management.positionSizePct ?? 0.35;
-  const floor    = config.management.deployAmountSol;
-  const ceil     = config.risk.maxDeployAmount;
+  let   floor    = config.management.deployAmountSol;
+  let   ceil     = config.risk.maxDeployAmount;
+
+  // Pilot cap: deploy per trade tidak boleh > pilotCapitalUsd / maxPositions
+  if (config.pilot.enabled && opts.solPriceUsd && opts.solPriceUsd > 0) {
+    const slots = Math.max(1, config.risk.maxPositions || 3);
+    const perTradeUsd = config.pilot.initialCapitalUsd / slots;
+    const pilotCapSol = perTradeUsd / opts.solPriceUsd;
+    ceil  = Math.min(ceil, pilotCapSol);
+    floor = Math.min(floor, pilotCapSol); // floor tidak boleh melampaui cap
+  }
+
   const deployable = Math.max(0, walletSol - reserve);
   const dynamic    = deployable * pct;
   const result     = Math.min(ceil, Math.max(floor, dynamic));
-  return parseFloat(result.toFixed(2));
+  // Lebih banyak presisi: deploy pilot bisa kecil (mis. 0.017 SOL)
+  return parseFloat(result.toFixed(4));
 }
 
 /**
@@ -242,6 +270,8 @@ export function computeVolatilityAdjustedSize(baseSize, volatilityPercentile = 0
   if (!config.indicators?.volatilityAdjustmentEnabled && volatilityPercentile === 0) {
     return baseSize; // No adjustment if disabled or no volatility data
   }
+  // Guard: jika percentile invalid (mis. dari klines rusak), pakai 50 (medium).
+  if (!Number.isFinite(volatilityPercentile)) volatilityPercentile = 50;
 
   // Volatility factor: high vol = smaller position
   const volFactor = 1 - (0.5 * Math.max(0, Math.min(100, volatilityPercentile)) / 100);
@@ -250,7 +280,7 @@ export function computeVolatilityAdjustedSize(baseSize, volatilityPercentile = 0
   const floor = config.management.deployAmountSol || 0.1;
   const ceil = config.risk.maxDeployAmount || 50;
 
-  return parseFloat(Math.max(floor, Math.min(ceil, adjustedSize)).toFixed(2));
+  return parseFloat(Math.max(floor, Math.min(ceil, adjustedSize)).toFixed(4));
 }
 
 /**

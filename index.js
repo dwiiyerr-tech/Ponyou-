@@ -9,7 +9,10 @@ import { config, computeDeployAmount, computeVolatilityAdjustedSize } from "./co
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML } from "./telegram.js";
-import { strategy, checkROI, checkTrailingStop, run4FilterProtocol, getMcapTier } from "./strategy.js";
+import {
+  strategy, checkROI, checkTrailingStop, run4FilterProtocol, getMcapTier,
+  getEffectiveStopLoss, getEffectiveImmediateTakeProfit,
+} from "./strategy.js";
 import { trackPosition, recordClose, getTrackedPosition, getStateSummary, syncOpenPositions } from "./state.js";
 import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
 
@@ -17,6 +20,7 @@ import {
   getTradingPlan, initTradingPlan, checkSessionGate,
   updateSessionCapital, getPlanSummary, recordTrade,
   advanceDay, isInProfitMode, getDynamicPositionLimit,
+  getConsecutiveLosses,
 } from "./trading-plan.js";
 import {
   recordMarketSnapshot, getMarketIntelligence,
@@ -143,6 +147,12 @@ async function refreshSessionPnl(totalUsd) {
   if (!config.pilot.enabled) return;
   // Skip P&L update if no wallet configured — avoids false -100% in DRY_RUN/test mode
   if (!process.env.WALLET_PRIVATE_KEY) return;
+  // Skip jika nilai wallet invalid — wallet API gagal sering balikin 0,
+  // jangan biarkan itu di-interpret sebagai loss 100%.
+  if (!Number.isFinite(totalUsd) || totalUsd <= 0) {
+    log("plan", `refreshSessionPnl skipped: invalid totalUsd=${totalUsd}`);
+    return;
+  }
   const result = updateSessionCapital(totalUsd);
 
   if (result.action === "pause_target") {
@@ -350,22 +360,32 @@ export async function runDailyReport({ silent = false } = {}) {
  * Jika loss signifikan, aktifkan learning mode.
  */
 function handleTradeLoss({ symbol, mint, pnl_pct, entry_usd, exit_usd, hold_minutes, exit_reason, rug_signals, launchpad, market_condition }) {
-  // Stop-loss atau loss > 10%
-  if (pnl_pct > -10 && exit_reason !== "Stop Loss") return;
+  // Cek circuit breaker (consecutive losses) — trigger lebih awal dari -10% threshold
+  const maxLosses = config.pilot.maxConsecutiveLosses || 0;
+  const consecutive = getConsecutiveLosses();
+  const tripped = maxLosses > 0 && consecutive >= maxLosses;
 
+  // Trigger learning jika: stop-loss hit, loss > 10%, ATAU consecutive loss tripped
+  if (!tripped && pnl_pct > -10 && exit_reason !== "Stop Loss") return;
+
+  const triggerType = tripped ? "SERIES_LOSS" : "STOP_LOSS";
   const lossContext = {
     symbol, mint, pnl_pct, entry_usd, exit_usd,
     hold_minutes, exit_reason, rug_signals, launchpad, market_condition,
+    consecutive_losses: consecutive,
   };
 
-  const activated = activateLearningMode(lossContext, "STOP_LOSS", config.pilot.learningModeDurationMin);
+  const activated = activateLearningMode(lossContext, triggerType, config.pilot.learningModeDurationMin);
   if (activated) {
-    log("learning", `Learning mode: ${symbol} loss ${pnl_pct?.toFixed(2)}%`);
+    const reasonStr = tripped
+      ? `${consecutive} loss berturut-turut (tilt protection)`
+      : `loss ${pnl_pct?.toFixed(2)}%`;
+    log("learning", `Learning mode: ${symbol} ${reasonStr}`);
     const msg = [
-      `🧠 LEARNING MODE — TRADE LOSS`,
+      `🧠 LEARNING MODE — ${tripped ? "TILT PROTECTION" : "TRADE LOSS"}`,
       `Token: ${symbol} (${mint?.slice(0, 10) || "?"})`,
       `P&L: ${pnl_pct?.toFixed(2)}% | Hold: ${Math.floor(hold_minutes || 0)}min`,
-      `Alasan: ${exit_reason}`,
+      tripped ? `Streak: ${consecutive} loss berturut (max ${maxLosses})` : `Alasan: ${exit_reason}`,
       `Ponyou menganalisis dan belajar selama ${config.pilot.learningModeDurationMin}min...`,
     ].join("\n");
     if (telegramEnabled()) sendMessage(msg).catch(() => {});
@@ -378,6 +398,8 @@ async function checkDeterministicExits(tokens) {
   const exits = [];
   const market = getMarketIntelligence();
   const condition = market.condition || "NORMAL";
+  const effectiveStopLoss = getEffectiveStopLoss(config.management.stopLossPct);
+  const immediateTakeProfit = getEffectiveImmediateTakeProfit(config.management.takeProfitPct);
 
   for (const token of tokens) {
     const tracked = getTrackedPosition(token.mint);
@@ -390,8 +412,13 @@ async function checkDeterministicExits(tokens) {
 
     if (currentPnlPct > (tracked.peak_pnl_pct || 0)) tracked.peak_pnl_pct = currentPnlPct;
 
-    if (currentPnlPct / 100 <= strategy.stoploss) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: `Stop Loss: ${currentPnlPct.toFixed(2)}%`, pnl_pct: currentPnlPct, is_loss: true });
+    if (currentPnlPct / 100 <= effectiveStopLoss) {
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: `Stop Loss: ${currentPnlPct.toFixed(2)}% (SL ${(effectiveStopLoss * 100).toFixed(0)}%)`, pnl_pct: currentPnlPct, is_loss: true });
+      continue;
+    }
+    // Immediate take-profit override (hybrid mode): user-config takeProfitPct triggers any time
+    if (immediateTakeProfit != null && currentPnlPct / 100 >= immediateTakeProfit) {
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: `Immediate TP: ${currentPnlPct.toFixed(2)}% (TP ${(immediateTakeProfit * 100).toFixed(0)}%)`, pnl_pct: currentPnlPct, is_loss: false });
       continue;
     }
     const roiCheck = checkROI(ageMinutes, currentPnlPct, condition);
@@ -584,7 +611,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return `Max positions reached (${openTokens.length}/${positionLimit})`;
     }
 
-    const deployAmount = computeDeployAmount(balance.sol);
+    const deployAmount = computeDeployAmount(balance.sol, { solPriceUsd: balance.sol_price });
     const gasFee = await getSolanaGasFee();
     const discovery = await discoverTokens({ timeframe: "1m" });
     const candidates = discovery.tokens || [];

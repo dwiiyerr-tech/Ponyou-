@@ -48,26 +48,27 @@ export function checkEntryConfirmation(momentum) {
     return { pass: false, reason: "Invalid momentum data", checks };
   }
 
-  // Rule 1: RSI not overbought
+  // Rule 1: RSI tidak overbought
   if (momentum.rsi > 70) {
     checks.push({ rule: "RSI not overbought", pass: false, value: momentum.rsi });
-    return { pass: false, reason: `RSI=${momentum.rsi} (overbought, too late to enter)`, checks };
+    return { pass: false, reason: `RSI=${momentum.rsi?.toFixed(1)} (overbought, too late to enter)`, checks };
   }
   checks.push({ rule: "RSI not overbought", pass: true, value: momentum.rsi });
 
-  // Rule 2: Price above SuperTrend
-  if (momentum.currentPrice < momentum.supertrend.middle) {
-    checks.push({ rule: "Price above SuperTrend", pass: false, value: momentum.currentPrice });
-    return { pass: false, reason: "Price below SuperTrend (downtrend)", checks };
+  // Rule 2: SuperTrend trend = up
+  // (calculateSuperTrend hanya kembalikan { trend, value }, jadi pakai .trend langsung)
+  if (momentum.supertrend?.trend !== "up") {
+    checks.push({ rule: "SuperTrend up", pass: false, value: momentum.supertrend?.trend });
+    return { pass: false, reason: `SuperTrend trend=${momentum.supertrend?.trend ?? "?"} (downtrend)`, checks };
   }
-  checks.push({ rule: "Price above SuperTrend", pass: true, value: momentum.currentPrice });
+  checks.push({ rule: "SuperTrend up", pass: true, value: "up" });
 
-  // Rule 3: Not at extreme low
-  if (momentum.currentPrice < momentum.supertrend.lower) {
-    checks.push({ rule: "Not at extreme low", pass: false, value: momentum.currentPrice });
-    return { pass: false, reason: "Price too low (extreme volatility)", checks };
+  // Rule 3: Harga di atas garis SuperTrend (konfirmasi trend up belum patah)
+  if (momentum.supertrend?.value != null && momentum.currentPrice < momentum.supertrend.value) {
+    checks.push({ rule: "Price above SuperTrend line", pass: false, value: momentum.currentPrice });
+    return { pass: false, reason: `Price ${momentum.currentPrice} below ST line ${momentum.supertrend.value} (trend lemah)`, checks };
   }
-  checks.push({ rule: "Not at extreme low", pass: true, value: momentum.currentPrice });
+  checks.push({ rule: "Price above SuperTrend line", pass: true, value: momentum.currentPrice });
 
   return { pass: true, reason: "All momentum checks passed", checks };
 }
@@ -100,11 +101,17 @@ export function checkTrendBreakExit(currentPrice, supertrend) {
     return { shouldExit: false, reason: "Insufficient data" };
   }
 
-  // Exit if price breaks below trend
-  if (currentPrice < supertrend.lower) {
-    return { 
-      shouldExit: true, 
-      reason: `Trend break: price (${currentPrice}) < SuperTrend lower (${supertrend.lower})` 
+  // Exit jika trend SuperTrend flip ke down, atau harga drop di bawah garis trend
+  if (supertrend.trend === "down") {
+    return {
+      shouldExit: true,
+      reason: `Trend flip: SuperTrend trend=down (line=${supertrend.value})`,
+    };
+  }
+  if (supertrend.value != null && currentPrice < supertrend.value) {
+    return {
+      shouldExit: true,
+      reason: `Price ${currentPrice} dropped below SuperTrend line ${supertrend.value}`,
     };
   }
 
