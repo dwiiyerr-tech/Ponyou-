@@ -121,6 +121,21 @@ export function recordClose(position_address, reason) {
 }
 
 /**
+ * Mark a position as having had its partial-TP executed.
+ * Prevents duplicate partial sells on subsequent management cycles.
+ */
+export function markPartialTPDone(position_address) {
+  const state = load();
+  const pos = state.positions[position_address];
+  if (!pos) return false;
+  pos.partial_tp_done = true;
+  pos.partial_tp_done_at = new Date().toISOString();
+  save(state);
+  log("state", `Position ${position_address} partial-TP marked done`);
+  return true;
+}
+
+/**
  * Set a persistent instruction for a position (e.g. "hold until 5% profit").
  * Overwrites any previous instruction. Pass null to clear.
  */

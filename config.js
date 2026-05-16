@@ -85,6 +85,15 @@ export const config = {
     maxDeployAmount: u.maxDeployAmount ?? 50,
   },
 
+  // ─── Trading Mode ────────────────────────
+  // confirmMode: when true, every BUY (SOL → token) is parked as a
+  // pending intent and requires Telegram /yes <id> approval.
+  // Set via user-config.json { "confirmMode": true } or env CONFIRM_MODE=true.
+  trading: {
+    confirmMode:      u.confirmMode      ?? (process.env.CONFIRM_MODE === "true"),
+    confirmTtlMin:    u.confirmTtlMin    ?? 5,
+  },
+
   // ─── Pool Screening Thresholds ───────────
   screening: {
     excludeHighSupplyConcentration: u.excludeHighSupplyConcentration ?? true,
