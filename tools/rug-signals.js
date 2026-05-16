@@ -93,12 +93,54 @@ export async function getMintExtensions(connection, mintAddress) {
 
 // ─── Layer 2: Helius Behavioural Signals ─────────────────────────
 
+// Concurrency limiter for Helius calls. Free tier is ~10 req/s; bursts from
+// multiple-token screening were causing 429 floods. Cap to 4 in-flight and
+// throttle to ≥120ms between starts (~8 req/s peak).
+let _heliusInflight = 0;
+const _heliusQueue = [];
+let _lastHeliusAt = 0;
+const HELIUS_MAX_CONCURRENT = 4;
+const HELIUS_MIN_INTERVAL_MS = 120;
+
+async function heliusAcquire() {
+  if (_heliusInflight >= HELIUS_MAX_CONCURRENT) {
+    await new Promise(resolve => _heliusQueue.push(resolve));
+  }
+  const since = Date.now() - _lastHeliusAt;
+  if (since < HELIUS_MIN_INTERVAL_MS) {
+    await new Promise(r => setTimeout(r, HELIUS_MIN_INTERVAL_MS - since));
+  }
+  _heliusInflight++;
+  _lastHeliusAt = Date.now();
+}
+
+function heliusRelease() {
+  _heliusInflight--;
+  const next = _heliusQueue.shift();
+  if (next) next();
+}
+
 async function fetchHeliusTxns(address, apiKey, limit = 30, type = null) {
   const t = type ? `&type=${type}` : "";
   const url = `${HELIUS_BASE}/addresses/${address}/transactions?api-key=${apiKey}&limit=${limit}${t}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Helius ${res.status}`);
-  return res.json();
+
+  // One retry on 429 with backoff. Free-tier bursts otherwise cascade.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await heliusAcquire();
+    try {
+      const res = await fetch(url);
+      if (res.status === 429 && attempt === 0) {
+        const retryAfter = Number(res.headers.get("retry-after")) || 1.5;
+        await new Promise(r => setTimeout(r, retryAfter * 1000));
+        continue;
+      }
+      if (!res.ok) throw new Error(`Helius ${res.status}`);
+      return await res.json();
+    } finally {
+      heliusRelease();
+    }
+  }
+  throw new Error("Helius 429 (after retry)");
 }
 
 /**
