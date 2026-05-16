@@ -611,6 +611,98 @@ resume           # Resume agent
 quit             # Exit agent (graceful)
 ```
 
+## 🎯 Strategy Switching Flow (v4)
+
+```
+USER (Telegram): /strategy sniper
+        ↓
+handleStrategyTelegramCommand()  [index.js]
+        ↓
+setActiveStrategy("sniper")      [strategies.js]
+        ├─▶ writes active-strategy.json: {"id":"sniper", ...}
+        └─▶ Telegram reply: "✅ Switched to Sniper"
+
+Next management cycle:
+        ↓
+checkDeterministicExits()
+        ├─ getEffectiveStopLoss()   ─▶ getStrategy()
+        ├─ checkROI()               ─▶ getStrategy()  (reads active-strategy.json)
+        ├─ checkPartialTP()         ─▶ getStrategy()  ← all return "sniper" preset now
+        └─ checkTrailingStop()      ─▶ getStrategy()
+
+Next screening cycle:
+        ↓
+run4FilterProtocol()              ─▶ getStrategy().filters  ← sniper gates apply
+
+NO RESTART NEEDED — `/stratset sniper stoploss -0.20` works the same way
+via strategies-overrides.json.
+```
+
+## 🟡 Confirm Mode Flow (v4)
+
+Aktifkan: `user-config.json { "confirmMode": true }` atau `CONFIRM_MODE=true`.
+
+```
+SCREENING CYCLE
+        ↓
+LLM picks candidate → invokes gmgn_swap(token_in:"SOL", token_out:"XXX")
+        ↓
+executor.js → maybeParkAsConfirmIntent(args)     ← intercept here
+        ├─ confirmMode === true?           YES
+        ├─ args.token_in === "SOL"?        YES (it's a BUY)
+        ├─ DRY_RUN !== "true"?             YES
+        ↓
+createPendingIntent({
+  type: "buy",
+  args: {token_in, token_out, amount},
+  meta: {strategy_id: "sniper"},
+  ttl_min: 5
+})  ─▶ pending-intents.json
+        ↓
+Telegram: 🟡 Pending BUY — approval needed
+          Intent: #3
+          Strategy: sniper
+          Amount: 0.1 SOL
+          Token: XXX111...
+          Reply /yes 3 or /no 3
+        ↓
+return { pending: true, intent_id: 3, message: "Awaiting approval..." }
+        ↓ (LLM sees pending, stops retrying)
+
+──── meanwhile ────
+
+USER (Telegram): /yes 3
+        ↓
+executePendingIntent(3)           [index.js]
+        ├─ getIntent(3) → check status="pending" & not expired
+        ├─ gmgnSwap(intent.args)  ← actual swap
+        ├─ getTokenInfo() + getWalletBalances()  ← resolve symbol + price
+        ├─ trackPosition({ position, pool_name, amount_sol, initial_value_usd })
+        ├─ recordTrade(null)
+        ├─ consumeIntent(3, "executed", {result: tx_hash})
+        └─ Telegram: "✅ Intent #3 executed."
+
+         OR
+
+USER (Telegram): /no 3
+        ↓
+consumeIntent(3, "rejected") → "🚫 Intent #3 rejected."
+
+         OR
+
+TTL expires (5 min)
+        ↓
+listPendingIntents() flips status → "expired" automatically
+```
+
+**Toggle confirm mode runtime tanpa restart:**
+```
+/confirm off   → config.trading.confirmMode = false (until next bot restart)
+/confirm on    → config.trading.confirmMode = true
+```
+
+Untuk persist lewat restart, set `confirmMode: true` di `user-config.json`.
+
 ## 🔄 Session Pause Example
 
 ```
