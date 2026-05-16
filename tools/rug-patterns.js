@@ -112,7 +112,7 @@ export function matchPatterns(signals) {
   for (const pat of allPatterns) {
     // A pattern matches if ALL its required features are present in the token.
     const required = pat.features || [];
-    if (required.length < 2) continue;
+    if (required.length < 1) continue;
     const allMatch = required.every(f => tokenVec[f] === true);
     if (allMatch) {
       matched.push({
