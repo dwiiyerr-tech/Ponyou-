@@ -21,20 +21,27 @@ Penjelasan setiap module utama dan cara kerjanya.
     └────────────┘          └──────────────┘
         ↓ ↑
         │ └─▶ tools/executor.js (Tool dispatcher)
-        │        ↓
-        │    ┌────────────────────────────┐
-        │    │ • gmgn.js (discovery/swap) │
-        │    │ • wallet.js (balance)      │
-        │    │ • strategy.js (exit rules) │
-        │    │ • definitions.js (schemas) │
-        │    └────────────────────────────┘
+        │        ↓                                    ↑ confirm-mode intercept
+        │    ┌────────────────────────────┐    ┌──────────────┐
+        │    │ • gmgn.js (discovery/swap) │    │ intents.js   │
+        │    │ • wallet.js (balance)      │    │ (v4 pending  │
+        │    │ • strategy.js (exit rules) │    │  BUY queue)  │
+        │    │ • definitions.js (schemas) │    └──────────────┘
+        │    └────────────────────────────┘            ↑
+        │                ↑                        Telegram /yes /no
+        │                │ getStrategy()
+        │         ┌──────────────┐
+        │         │strategies.js │ (v4 preset registry +
+        │         │5 presets +   │     hot active state)
+        │         │overrides     │
+        │         └──────────────┘
         │
         └─────────────────────────────────────┐
                                               ↓
     ┌─────────────┐  ┌────────────┐  ┌────────────────┐
     │ state.js    │  │lessons.js  │  │trading-plan.js │
     │ Positions   │  │Learning    │  │Compound track  │
-    │ Trades      │  │Rug history │  │Session gate    │
+    │ +partial_tp │  │Rug history │  │Session gate    │
     └─────────────┘  └────────────┘  └────────────────┘
                               │
                               ↓
@@ -349,19 +356,72 @@ export const config = {
 
 ### **strategy.js** — The Exit Rules
 **Purpose**: Determine if/when to close a position
-**Exit rules checked**:
-1. **Stop Loss**: If PnL <= `-50%` → CLOSE
-2. **Take Profit**: If PnL >= `+5%` → CLOSE
-3. **Trailing TP**: If hit `+3%`, then drop `1.5%` → CLOSE
-4. **Low ROI**: If fee/TVL ratio too low → CLOSE
-5. **Rug Detected**: If supply burn/dev exit suspected → CLOSE
-6. **Time-based**: If holding too long without profit → CLOSE
+**Exit rules checked** (all read from the *active* strategy preset on every call — see `strategies.js`):
+1. **Stop Loss**: If PnL <= preset's `stoploss` → CLOSE
+2. **Immediate TP** (hybrid override): user-config `takeProfitPct` if set → CLOSE
+3. **Partial TP** *(v4)*: triggers once per position at preset's `partial_tp.at_pct`, sells `sell_pct%`, position stays open
+4. **ROI table**: Freqtrade-style time-vs-profit ladder (per `marketCondition`)
+5. **Trailing TP**: If hit `positive_offset`, then drop more than `positive_distance` → CLOSE
+6. **Entry filter (4-protocol)**: gate gas fee, holder age, dust holders, pump ratio, wash trading, plus preset-specific gates (`min_mcap_usd`, `min_holders`, etc.)
 
 **Key functions**:
-- `checkTrailingStop(position)` → boolean (should close?)
-- `checkROI(position)` → boolean
-- `checkStackLoss(position)` → boolean
-- `run4FilterProtocol(position)` → boolean (comprehensive check)
+- `getEffectiveStopLoss(userOverride)` → decimal SL
+- `getEffectiveImmediateTakeProfit(userOverride)` → decimal TP or null
+- `checkROI(ageMin, pnlPct, condition)` → `{exit, reason}`
+- `checkTrailingStop(currentPnl, peakPnl)` → `{exit, reason}`
+- `checkPartialTP(currentPnl, alreadyDone)` → `{trigger, sell_pct, reason}` *(v4)*
+- `run4FilterProtocol(token, security, gas)` → `{passed, flags, action, score, strategy_id}`
+
+---
+
+### **strategies.js** *(v4)* — The Preset Registry
+**Purpose**: 5 named strategy presets + hot-readable active-preset state.
+
+**Presets shipped**:
+| ID | SL | Trailing | Partial TP | LLM |
+|----|-----|----------|-----------|-----|
+| `scalping` *(default)* | -15% | 20%/5% | off | on |
+| `sniper` | -25% | 20%/8% | off | on (≥50%) |
+| `dip_buy` | -20% | 10%/5% | off | on (≥60%) |
+| `smart_money` | -25% | off | 50%@+100% | on (≥70%) |
+| `degen` | -15% | 10%/4% | off | **off** |
+
+**Persistence**:
+- `active-strategy.json` — `{ id, updated_at }` for current preset
+- `strategies-overrides.json` — `{ [id]: { key: value } }` for per-field tweaks
+
+Both files are read on every `getStrategy()` call → `/strategy` and `/stratset` commands hot-apply without restart.
+
+**Key functions**:
+- `getStrategy(id?)` → effective preset (with overrides merged)
+- `getActiveStrategyId()` / `setActiveStrategy(id)`
+- `setStrategyOverride(id, key, value)` / `clearStrategyOverrides(id?)`
+- `listStrategies()` → array for `/strategies` Telegram command
+
+---
+
+### **intents.js** *(v4)* — Pending Trade Intents (Confirm Mode)
+**Purpose**: Park BUYs as pending intents when `config.trading.confirmMode === true`. Approved manually via Telegram `/yes <id>`.
+
+**Storage**: `pending-intents.json` — flat array with TTL (default 5 min). Expired entries are flipped to `status: "expired"` on every read.
+
+**Status lifecycle**:
+```
+pending → executed   (user /yes, swap succeeded)
+        → rejected   (user /no)
+        → expired    (TTL passed)
+        → failed     (swap call returned error)
+```
+
+**Key functions**:
+- `createPendingIntent({ type, args, meta, ttl_min })` → intent
+- `listPendingIntents()` → only `pending` entries (auto-expires stale)
+- `getIntent(id)` / `consumeIntent(id, status, extra)`
+- `gcIntents(keep_hours)` → garbage collect old resolved entries
+
+**Wiring**:
+- `tools/executor.js` → `maybeParkAsConfirmIntent(args)` intercepts `gmgn_swap` for SOL→token buys
+- `index.js` → `executePendingIntent(id)` runs gmgnSwap + trackPosition when `/yes <id>` fires
 
 ---
 

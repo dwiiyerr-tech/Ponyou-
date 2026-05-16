@@ -13,6 +13,9 @@ Ponyou is a memecoin-focused trading agent. It runs continuous screening and man
 - **Solana Integration** — Works with GMGN (swaps) and OKX (risk signals).
 - **Rug Protection** — Integrated audit signals and blacklist management.
 - **Interactive REPL** — Control the agent and chat via terminal or Telegram.
+- **Multi-Strategy Presets (v4)** — Switch between `scalping`, `sniper`, `dip_buy`, `smart_money`, `degen` live via Telegram `/strategy <id>`. Each preset ships its own filter gates, ROI table, stop-loss, trailing & partial-TP rules.
+- **Confirm Mode (v4)** — Optional human-in-the-loop: every BUY is parked as a pending intent and only executes after Telegram `/yes <id>`. Useful for live-trading supervision.
+- **Partial Take-Profit (v4)** — Sell a fraction at TP1 and let the rest ride trailing — pre-configured on the `smart_money` preset.
 
 ## Setup
 
@@ -45,10 +48,21 @@ npm start     # Live trading mode
 
 ## Commands
 
-- `/status` - Wallet balance and open positions
-- `/screen` - Refresh top token candidates
-- `/close <n>` - Close a specific position
-- `/stop` - Graceful shutdown
+### CLI / Telegram (general)
+- `/status` — Wallet balance + plan summary
+- `/pnl` — Recent trade history table
+- `/screen` — Refresh top token candidates (CLI only)
+- `/close <n>` — Close a specific position (CLI only)
+- `/stop` — Graceful shutdown (CLI only)
+
+### v4 — Strategy & Confirm-mode (Telegram)
+- `/menu` — Snapshot: active strategy, plan, pending intents, confirm state
+- `/strategy [id]` — Show or switch active strategy (hot, no restart)
+- `/strategies` — List all 5 presets with their gates
+- `/stratset <id> <key> <value>` — Override a single field of any preset (e.g. `/stratset sniper stoploss -0.20`)
+- `/confirm on|off` — Toggle confirm mode at runtime
+- `/pending` — List pending BUY intents waiting for approval
+- `/yes <id>` / `/no <id>` — Approve / reject a pending intent
 
 ---
 

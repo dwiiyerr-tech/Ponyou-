@@ -169,6 +169,55 @@ Transfer otomatis % profit ke wallet savings:
 }
 ```
 
+## Multi-Strategy Presets (v4)
+
+Ponyou v4 mengusung 5 preset strategy bawaan, masing-masing dengan filter gate, ROI table, stop-loss, trailing, dan partial-TP berbeda:
+
+| Preset | Use case |
+|--------|----------|
+| `scalping` | Default — Freqtrade-style ROI di pair baru |
+| `sniper` | Strict fees + low-mcap window, hard stops |
+| `dip_buy` | Tunggu dip -40% dari ATH di token yang lebih matang |
+| `smart_money` | High mcap, partial TP 50% @ +100% lalu runner |
+| `degen` | Filter longgar, stop ketat, **tanpa LLM** (rule-based) |
+
+**Switching strategy** (hot, tanpa restart):
+```
+/strategy sniper          # via Telegram
+```
+
+**Override per-field** (mis. ganti stop-loss sniper jadi -20%):
+```
+/stratset sniper stoploss -0.20
+```
+
+Active preset disimpan di `active-strategy.json`, overrides di `strategies-overrides.json` — keduanya hot-readable.
+
+## Confirm Mode (v4 — Human-in-the-loop)
+
+Aktifkan untuk supervisi setiap BUY sebelum eksekusi:
+
+```json
+{
+  "confirmMode": true,
+  "confirmTtlMin": 5
+}
+```
+
+Atau via env:
+```bash
+CONFIRM_MODE=true npm start
+```
+
+**Cara kerjanya:**
+1. LLM atau strategy memutuskan BUY token X
+2. Sebelum gmgn_swap eksekusi, intent diparkir di `pending-intents.json`
+3. Telegram menerima notifikasi: `🟡 Pending BUY #3 — 0.1 SOL → XXX111. /yes 3 atau /no 3`
+4. User reply `/yes 3` → executor.js panggil gmgnSwap, trackPosition jalan, intent ditandai executed
+5. Bila TTL habis (default 5 min) atau user `/no 3` → intent ditolak, tidak ada swap
+
+Toggle runtime tanpa restart: `/confirm on` atau `/confirm off`.
+
 ## Pool Screening Criteria
 
 ```json

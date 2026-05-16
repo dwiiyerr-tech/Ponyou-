@@ -106,16 +106,53 @@ quit                       # Exit gracefully
 help                       # Show all commands
 ```
 
+## 📱 Telegram Commands (v4)
+
+All commands are **hot-applied** — no restart needed.
+
+| Command | What it does |
+|---------|-------------|
+| `/menu` | Snapshot: active strategy, plan, pending intents, confirm mode |
+| `/status` | Wallet + plan summary |
+| `/pnl` | Last 10 trades as a table |
+| `/strategy` | Show current active strategy |
+| `/strategy <id>` | Switch active strategy (e.g. `/strategy sniper`) |
+| `/strategies` | List all 5 presets with gates |
+| `/stratset <id> <key> <value>` | Override one field (e.g. `/stratset sniper stoploss -0.20`) |
+| `/confirm on\|off` | Toggle confirm mode at runtime |
+| `/pending` | List BUY intents waiting for approval |
+| `/yes <id>` | Approve & execute pending intent |
+| `/no <id>` | Reject pending intent |
+
+### Strategy Presets
+
+| ID | SL | Trailing | Partial TP | LLM | Use case |
+|----|-----|----------|------------|-----|----------|
+| `scalping` (default) | -15% | on (20%/5%) | off | on | Default Ponyou, Freqtrade ROI on fresh pairs |
+| `sniper` | -25% | on (20%/8%) | off | on (≥50%) | Strict fees, low mcap window, hard stops |
+| `dip_buy` | -20% | on (10%/5%) | off | on (≥60%) | Wait for -40% dip from ATH on mature tokens |
+| `smart_money` | -25% | off | 50% @ +100% | on (≥70%) | Higher mcap, partial TP at 100% then runner |
+| `degen` | -15% | on (10%/4%) | off | **off** | Loose filters, tight stops, no LLM (rule-based) |
+
+### `stratset` keys
+`stoploss`, `trailing_enabled`, `trailing_offset`, `trailing_distance`,
+`partial_tp_enabled`, `partial_tp_at`, `partial_tp_sell`,
+`use_llm`, `llm_min_confidence`,
+`min_mcap_usd`, `max_mcap_usd`, `min_holders`, `maxAllowedFlags`
+
 ## 📁 Important Files
 
 | File | Purpose |
 |------|---------|
 | `user-config.json` | All settings ← Edit here via `./configure` |
 | `.env` | Secrets (wallet, API keys) |
-| `state.json` | Active positions |
+| `state.json` | Active positions (incl. `partial_tp_done` flag) |
 | `trading-plan.json` | 30-day plan tracker |
 | `lessons.json` | Rug history, best signals, analysis |
 | `market-intelligence.json` | Market condition state |
+| `active-strategy.json` *(v4)* | Currently active strategy preset ID — auto-created |
+| `strategies-overrides.json` *(v4)* | Per-strategy field overrides set via `/stratset` |
+| `pending-intents.json` *(v4)* | Pending BUY intents in confirm mode |
 | `logs/agent-*.log` | Daily logs |
 | `logs/actions-*.jsonl` | Trade execution log |
 

@@ -15,6 +15,13 @@
 
   "strategy": "instant_scalping",
 
+  "_comment_v4_strategy_presets": "Active strategy preset: scalping (default), sniper, dip_buy, smart_money, degen. Switched live via Telegram /strategy <id> — persisted in active-strategy.json (auto-created).",
+
+  "_comment_v4_confirm_mode": "When true, every BUY needs Telegram /yes <id> approval. confirmTtlMin = how long a pending intent stays valid (default 5 min).",
+  "confirmMode": false,
+  "confirmTtlMin": 5,
+
+
   "timeframe": "5m",
   "category": "trending",
   "excludeHighSupplyConcentration": true,
