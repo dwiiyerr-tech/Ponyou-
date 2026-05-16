@@ -1,0 +1,78 @@
+{
+  "_note": "Curated rug/honeypot fingerprints seeded for Ponyou. Each pattern requires ALL listed features to be true to match. Weight adds to rug score (0-100, clamped). Higher weight = more dangerous.",
+  "_version": "1.0",
+  "patterns": [
+    {
+      "pattern_id": "seed_honeypot_transfer_hook",
+      "features": ["transfer_hook"],
+      "weight": 80,
+      "note": "Token-2022 transfer hook program — 99% are honeypots (sell-blocking code)"
+    },
+    {
+      "pattern_id": "seed_honeypot_high_tax",
+      "features": ["transfer_fee_high"],
+      "weight": 60,
+      "note": "Transfer fee ≥5% — extraction tax, almost always honeypot or rug-in-progress"
+    },
+    {
+      "pattern_id": "seed_honeypot_permanent_delegate",
+      "features": ["permanent_delegate"],
+      "weight": 70,
+      "note": "Permanent delegate can confiscate holder balances — never trade these"
+    },
+    {
+      "pattern_id": "seed_honeypot_non_transferable",
+      "features": ["non_transferable"],
+      "weight": 100,
+      "note": "Soulbound — cannot sell at all"
+    },
+    {
+      "pattern_id": "seed_honeypot_default_frozen",
+      "features": ["default_frozen"],
+      "weight": 70,
+      "note": "New accounts created frozen — buy works, sell needs unfreeze permission"
+    },
+    {
+      "pattern_id": "seed_mint_authority_active",
+      "features": ["has_mint", "creator_heavy"],
+      "weight": 45,
+      "note": "Dev can still mint AND holds heavy bag — dilution rug imminent"
+    },
+    {
+      "pattern_id": "seed_freeze_plus_concentration",
+      "features": ["has_freeze", "high_top10"],
+      "weight": 40,
+      "note": "Freeze authority + top-heavy distribution — coordinated freeze rug"
+    },
+    {
+      "pattern_id": "seed_sybil_bundle_launch",
+      "features": ["bundle_buy", "same_funder"],
+      "weight": 50,
+      "note": "Bundle snipers funded by same wallet — wallet farm, not real demand"
+    },
+    {
+      "pattern_id": "seed_classic_rug_setup",
+      "features": ["high_top10", "fresh_holders", "creator_heavy"],
+      "weight": 50,
+      "note": "Classic Solana memecoin rug: top10 heavy + fresh wallets + dev bag"
+    },
+    {
+      "pattern_id": "seed_dump_signals",
+      "features": ["dust_holders", "wash_trade"],
+      "weight": 30,
+      "note": "Top holders out of SOL (can't add liquidity) + wash trades — exit liquidity engineered"
+    },
+    {
+      "pattern_id": "seed_pure_sybil",
+      "features": ["same_funder", "fresh_holders"],
+      "weight": 45,
+      "note": "Multiple top holders fresh + same funder — coordinated holder farm"
+    },
+    {
+      "pattern_id": "seed_lp_rug_risk",
+      "features": ["lp_unlocked", "creator_heavy"],
+      "weight": 55,
+      "note": "LP not locked + dev holds heavy — can pull liquidity any second"
+    }
+  ]
+}

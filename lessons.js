@@ -7,6 +7,7 @@
  */
 
 import fs from "fs";
+import { matchPatterns, learnPatterns } from "./tools/rug-patterns.js";
 
 const LESSONS_FILE = "./lessons.json";
 const PERF_FILE    = "./performance.json";
@@ -311,6 +312,30 @@ export function recordRug({ mint, symbol, creator, launchpad, rug_signals, patte
 
   if (mem.patterns.length > 200) mem.patterns = mem.patterns.slice(-200);
   saveRugMemory(mem);
+
+  // Auto-cluster: every new rug recompiles learned patterns.
+  // Cheap (≤200 entries, single pass) and keeps the rule set fresh.
+  try {
+    const before = _learnedPatternCount();
+    const result = learnPatterns();
+    const after = result?.learned ?? before;
+    if (after > before) {
+      addLesson(
+        `Rug pattern engine learned ${after - before} new fingerprint(s) (total: ${after}).`,
+        ["rug", "pattern", "auto"],
+        { role: "SCREENER" }
+      );
+    }
+  } catch (e) {
+    // Pattern learning failure must never block rug recording.
+  }
+}
+
+function _learnedPatternCount() {
+  try {
+    if (!fs.existsSync("./rug-patterns-learned.json")) return 0;
+    return (JSON.parse(fs.readFileSync("./rug-patterns-learned.json", "utf8")).patterns || []).length;
+  } catch { return 0; }
 }
 
 /**
@@ -340,8 +365,28 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {} }) {
     reasons.push(`Launchpad ${launchpad} had ${rugLaunchpads[launchpad]} rugs`);
   }
 
-  // Rug signal scoring
+  // ─── Layer 1: Token-2022 hard blocks ──────────────────────
   const rs = rug_signals;
+  if (rs.non_transferable) {
+    return { score: 100, reasons: ["Token is non-transferable (soulbound) — cannot sell"] };
+  }
+  if (rs.transfer_hook) {
+    return { score: 100, reasons: [`Transfer hook program ${rs.transfer_hook.slice(0, 12)} — almost certainly honeypot`] };
+  }
+  if (rs.permanent_delegate) {
+    return { score: 100, reasons: [`Permanent delegate ${rs.permanent_delegate.slice(0, 12)} can confiscate holdings`] };
+  }
+  if (rs.transfer_fee_bps >= 1000) {
+    return { score: 100, reasons: [`Transfer fee ${rs.transfer_fee_bps / 100}% — extraction tax`] };
+  }
+  if (rs.default_frozen) {
+    score += 70; reasons.push("Default account state = frozen (sell needs unfreeze)");
+  }
+  if (rs.transfer_fee_bps >= 500 && rs.transfer_fee_bps < 1000) {
+    score += 50; reasons.push(`Transfer fee ${rs.transfer_fee_bps / 100}%`);
+  }
+
+  // ─── Standard rug signals ────────────────────────────────
   if (rs.top10_concentration_pct > 70) { score += 20; reasons.push(`Top10 holds ${rs.top10_concentration_pct}%`); }
   if (rs.fresh_funded_holders >= 5)    { score += 15; reasons.push(`${rs.fresh_funded_holders} holders funded <24h`); }
   if (rs.dust_holders >= 5)            { score += 10; reasons.push(`${rs.dust_holders} top holders almost empty SOL`); }
@@ -350,12 +395,28 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {} }) {
   if (rs.is_honeypot)                  { score += 40; reasons.push("Is honeypot"); }
   if (rs.creator_pct > 20)             { score += 20; reasons.push(`Creator holds ${rs.creator_pct}%`); }
 
+  // ─── Layer 2: Helius behavioural signals ─────────────────
+  if (rs.bundle_buyers_pct > 30)       { score += 25; reasons.push(`${rs.bundle_buyers_pct}% bought in launch window — bundle snipers`); }
+  if (rs.same_funder_holders >= 3)     { score += 20; reasons.push(`${rs.same_funder_holders} top holders share funder ${rs.common_funder?.slice(0, 8)} — sybil cluster`); }
+  if (rs.lp_locked === false)          { score += 15; reasons.push("LP not locked"); }
+  if (rs.wash_score >= 30)             { score += 10; reasons.push(`Wash trade pattern (ratio ${rs.buy_sell_ratio})`); }
+
+  // ─── Layer 3: Pattern fingerprint matches ────────────────
+  const patternMatches = matchPatterns(rs);
+  const matchedPatternIds = [];
+  for (const pat of patternMatches) {
+    score += pat.weight;
+    matchedPatternIds.push(pat.pattern_id);
+    reasons.push(`Pattern match: ${pat.pattern_id} (+${pat.weight})${pat.note ? " — " + pat.note : ""}`);
+  }
+
   score = Math.min(100, score);
 
   return {
     score,
     risk_level: score >= 60 ? "HIGH" : score >= 30 ? "MEDIUM" : "LOW",
     reasons,
+    matched_patterns: matchedPatternIds,
   };
 }
 

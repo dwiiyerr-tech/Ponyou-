@@ -21,6 +21,12 @@ import { getPoolMemory, addPoolNote } from "../pool-memory.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets } from "../smart-wallets.js";
+import { discoverSmartWallets, listDiscoveredWallets } from "./wallet-discovery.js";
+import { learnPatterns, listPatterns } from "./rug-patterns.js";
+import { clearSignalCache } from "./rug-signals.js";
+import { harvestMarketRugs } from "./rug-harvester.js";
+import { classifyNarrative, getNarrativeHeat, recordNarrativeOutcome } from "./narratives.js";
+import { resolveTicker, listTickers, registerTicker } from "./ticker-registry.js";
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config } from "../config.js";
 import { getRecentDecisions } from "../decision-log.js";
@@ -119,6 +125,17 @@ const toolMap = {
   add_smart_wallet: addSmartWallet,
   remove_smart_wallet: removeSmartWallet,
   list_smart_wallets: listSmartWallets,
+  discover_smart_wallets: discoverSmartWallets,
+  list_discovered_wallets: listDiscoveredWallets,
+  learn_rug_patterns: learnPatterns,
+  list_rug_patterns: listPatterns,
+  clear_rug_signal_cache: () => { clearSignalCache(); return { cleared: true }; },
+  harvest_market_rugs: harvestMarketRugs,
+  classify_narrative: ({ symbol, name, description } = {}) => ({ tags: classifyNarrative({ symbol, name, description }) }),
+  get_narrative_heat: getNarrativeHeat,
+  resolve_ticker: resolveTicker,
+  list_tickers: listTickers,
+  register_ticker: registerTicker,
   // ─── Trading Plan Tools ──────────────────────────────────
   get_plan_summary: () => ({ plan: getPlanSummary(), gate: checkSessionGate() }),
   init_trading_plan: ({ initialCapitalUsd, dailyTargetPct, dailyStopLossPct, sessionPauseDurationMin, days } = {}) => {

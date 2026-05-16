@@ -8,8 +8,13 @@
 
 import fs from "fs";
 import { log } from "./logger.js";
-import { addLesson } from "./lessons.js";
+import { addLesson, recordRug } from "./lessons.js";
 import { getTokenMarketInfo } from "./tools/gmgn.js";
+import { getTokenSecurityDetails } from "./tools/dexscreener.js";
+
+// Severity thresholds — drop% relative to initial observation
+const RUG_DROP_PCT  = -80;  // confirmed rug — auto recordRug
+const TRASH_DROP_PCT = -50; // confirmed bad pick — LLM analysis only
 
 const OBSERVATION_FILE = "./observed-tokens.json";
 
@@ -89,14 +94,36 @@ export async function processObservations() {
 
       if (initialMcap > 0) {
         changePct = ((currentMcap - initialMcap) / initialMcap) * 100;
-        if (changePct >= 100) performance = "GEM";          // 2x lipat
-        else if (changePct <= -50) performance = "TRASH";   // Dump 50%
+        if (changePct >= 100)                  performance = "GEM";    // 2x lipat
+        else if (changePct <= RUG_DROP_PCT)    performance = "RUG";    // -80%+ : confirmed rug
+        else if (changePct <= TRASH_DROP_PCT)  performance = "TRASH";  // -50% to -80%
       }
 
       obs.status = "COMPLETED";
       obs.final_mcap = currentMcap;
       obs.change_pct = changePct;
       obs.performance = performance;
+
+      // Auto-record confirmed rugs into rug-memory — this triggers learnPatterns
+      // via the auto-learn loop in lessons.js recordRug.
+      if (performance === "RUG") {
+        try {
+          // Fetch live security signals at rug-confirmation time. These are richer
+          // than the observation snapshot (which only stored flags + rug_score).
+          const sec = await getTokenSecurityDetails({ mint: obs.mint });
+          recordRug({
+            mint: obs.mint,
+            symbol: obs.symbol,
+            creator: sec?.holders?.[0]?.address || null,  // best-effort creator proxy
+            launchpad: obs.launchpad || null,
+            rug_signals: sec?.rug_signals || {},
+            pattern_notes: `auto-harvested from observation: ${changePct.toFixed(1)}% drop in ${Math.round((now - new Date(obs.observed_at).getTime()) / 3600000)}h`,
+          });
+          log("learning", `Auto-recorded RUG: ${obs.symbol} (${changePct.toFixed(1)}%)`);
+        } catch (e) {
+          log("learning_error", `Auto-record rug failed for ${obs.symbol}: ${e.message}`);
+        }
+      }
 
       if (performance !== "NEUTRAL") {
         results.push({
