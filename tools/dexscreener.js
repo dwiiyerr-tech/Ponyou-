@@ -6,6 +6,8 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { log } from "../logger.js";
 import { listSmartWallets } from "../smart-wallets.js";
+import { gatherRugSignals } from "./rug-signals.js";
+import { classifyNarrative, summarizeNarrative } from "./narratives.js";
 
 const DS_BASE = "https://api.dexscreener.com";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -50,10 +52,17 @@ function mapPair(pair, boostAmount = 0) {
   const h1Total = h1Buys + h1Sells;
   const h1Vol   = pair.volume?.h1 || 0;
 
+  const narrativeTags = classifyNarrative({
+    symbol: pair.baseToken.symbol,
+    name:   pair.baseToken.name,
+  });
+
   return {
     mint:             pair.baseToken.address,
     symbol:           pair.baseToken.symbol,
     name:             pair.baseToken.name,
+    narrative:        summarizeNarrative({ symbol: pair.baseToken.symbol, name: pair.baseToken.name }),
+    narrative_tags:   narrativeTags,
     price:            parseFloat(pair.priceUsd || 0),
     mcap:             pair.marketCap || pair.fdv || 0,
     liquidity:        pair.liquidity?.usd || 0,
@@ -213,19 +222,44 @@ export async function getTokenSecurityDetails({ mint }) {
       }
     } catch {}
 
+    // Resolve token-account → owner wallet for top holders (needed for Helius checks)
+    let holderOwners = [];
+    if (topAccounts.length > 0) {
+      try {
+        const parsedHolders = await connection.getMultipleParsedAccounts(
+          topAccounts.map(a => new PublicKey(a.address))
+        );
+        holderOwners = parsedHolders.value
+          .map(acc => acc?.data?.parsed?.info?.owner)
+          .filter(Boolean);
+      } catch (e) {
+        log("security_warn", `Could not resolve holder owners: ${e.message}`);
+      }
+    }
+
+    // Layer 1+2 rug signals (Token-2022 extensions + Helius-powered)
+    const launchTs = dsPair?.pairCreatedAt ? Math.floor(dsPair.pairCreatedAt / 1000) : null;
+    const enrichedSignals = await gatherRugSignals({
+      mint,
+      connection,
+      holderOwners,
+      launchTs,
+      dsPair,
+    });
+
     return {
       mint,
       security: sec,
       holders,
       rug_signals: {
         top10_concentration_pct: parseFloat(top10Pct.toFixed(2)),
-        fresh_funded_holders:    0,  // requires tx history (Helius)
         dust_holders:            dustHolders.length,
         is_renounced:            sec.renounced,
         is_honeypot:             null,
         freeze_authority:        !!sec.freeze_authority,
         mint_authority:          !!sec.mint_authority,
         creator_pct:             null,
+        ...enrichedSignals,
       },
       // Bonus DexScreener data if available
       dex_info: dsPair ? {

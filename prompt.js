@@ -4,6 +4,7 @@ import { getMarketIntelligence } from "./market-intelligence.js";
 import { getRugMemorySummary } from "./lessons.js";
 import { getLearningModeStatus, getLearningStatusSummary } from "./learning-mode.js";
 import { getVaultStatus, isVaultDue } from "./vault.js";
+import { getNarrativeHeatPrompt } from "./tools/narratives.js";
 
 const j = (o) => JSON.stringify(o); // compact, no whitespace
 
@@ -38,7 +39,10 @@ export function buildSystemPrompt(agentType, portfolio, positions, stateSummary 
     ? `[RUG_MEM] ${rugMem.blacklisted_tokens} tokens, ${rugMem.blacklisted_devs} devs blacklisted, ${rugMem.known_patterns} patterns`
     : "";
 
-  const contextLines = [planBlock, learningBlock, marketBlock, vaultBlock, rugBlock]
+  const narrativeHeatLine = getNarrativeHeatPrompt();
+  const narrativeBlock = narrativeHeatLine ? `[NARRATIVE] ${narrativeHeatLine}` : "";
+
+  const contextLines = [planBlock, learningBlock, marketBlock, vaultBlock, rugBlock, narrativeBlock]
     .filter(Boolean).join("\n");
 
   // ─── MANAGER ──────────────────────────────────────────────

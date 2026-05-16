@@ -38,6 +38,9 @@ import {
   recordObservations, processObservations, buildObservationAnalysisPrompt,
   buildSuccessAnalysisPrompt
 } from "./learning-continuous.js";
+import { harvestMarketRugs } from "./tools/rug-harvester.js";
+import { recordNarrativeOutcome } from "./tools/narratives.js";
+import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
   isVaultDue, computeVaultAmount, executeVaultTransfer,
   recordVaultTransfer, getVaultStatus, buildVaultNotification,
@@ -494,6 +497,15 @@ export async function runManagementCycle({ silent = false } = {}) {
           rug_detected: exit.reason.includes("Rug"),
         });
 
+        // Feed narrative engine — credit/penalize the narrative(s) this trade belongs to
+        try {
+          recordNarrativeOutcome({
+            symbol: exit.symbol,
+            name: tracked?.pool_name,
+            pnl_pct: tradePnl,
+          });
+        } catch (e) { log("narrative_error", e.message); }
+
         // Update lesson effectiveness if lessons were tracked during entry
         if (tracked?.active_lessons?.length > 0) {
           recordLessonOutcome(tracked.active_lessons, tradePnl);
@@ -720,7 +732,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
     }
 
     // Catat semua candidates (termasuk yang tidak lolos) untuk belajar nanti
-    if (scoredCandidates.length > 0) recordObservations(scoredCandidates);
+    if (scoredCandidates.length > 0) {
+      recordObservations(scoredCandidates);
+      // Build ticker registry — learn symbol→mint mappings from real market data
+      try { bulkRegisterTickers(scoredCandidates); } catch (e) { log("ticker_error", e.message); }
+    }
 
     const passingCandidates = scoredCandidates.filter(c => c.passed);
     const planSummary = getPlanSummary();
@@ -792,6 +808,13 @@ export function startCronJobs() {
 
   // Continuous Learning (setiap 30 menit)
   tasks.push(cron.schedule("*/30 * * * *", runContinuousLearningCycle));
+
+  // Market Rug Harvester (tiap 4 jam — proactive learn rug patterns from market)
+  tasks.push(cron.schedule("0 */4 * * *", () => {
+    harvestMarketRugs({ source_tokens: 30, max_record: 10 })
+      .then(r => log("cron", `Rug harvest: ${r.harvested}/${r.candidates_detected} recorded`))
+      .catch(e => log("cron_error", `Rug harvest failed: ${e.message}`));
+  }));
 
   // Vault (daily check — cron checks if 7 days elapsed)
   tasks.push(cron.schedule("0 */6 * * *", () => runVaultCycle().catch(e => log("vault_error", e.message))));
