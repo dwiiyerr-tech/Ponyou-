@@ -16,18 +16,35 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '18'
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund --prefer-offline
-        timeout-minutes: 5
+        run: |
+          set -e
+          install_once() {
+            npm install --no-audit --no-fund --no-progress --prefer-offline
+          }
+          # npm 10/11 occasionally aborts mid-install with
+          # "Exit handler never called!" — retry once if entry files are missing.
+          install_once || install_once
+          if [ ! -f node_modules/openai/index.js ]; then
+            echo "openai/index.js still missing after retry — final attempt"
+            rm -rf node_modules
+            install_once
+          fi
+        timeout-minutes: 6
 
       - name: Verify deps installed
         run: |
-          test -d node_modules/openai || (echo "openai missing"; exit 1)
-          test -d node_modules/@solana/web3.js || (echo "@solana/web3.js missing"; exit 1)
-          echo "deps OK"
+          set -e
+          for f in node_modules/openai/index.js \
+                   node_modules/@solana/web3.js/package.json \
+                   node_modules/dotenv/package.json \
+                   node_modules/jsonrepair/package.json; do
+            test -f "$f" || { echo "MISSING: $f"; exit 1; }
+          done
+          echo "deps verified"
 
       - name: Syntax check all JS source
         run: |
