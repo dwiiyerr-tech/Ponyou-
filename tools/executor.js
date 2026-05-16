@@ -38,7 +38,9 @@ import { execSync, spawn } from "child_process";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 import { log, logAction } from "../logger.js";
-import { notifyDeploy, notifyClose, notifySwap } from "../telegram.js";
+import { notifyDeploy, notifyClose, notifySwap, sendHTML, isEnabled as telegramEnabled } from "../telegram.js";
+import { createPendingIntent } from "../intents.js";
+import { getStrategy } from "../strategies.js";
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
 let _cronRestarter = null;
@@ -365,6 +367,15 @@ export async function executeTool(name, args) {
     if (!safetyCheck.pass) return { blocked: true, reason: safetyCheck.reason };
   }
 
+  // Confirm-mode intercept: park BUYs as pending intents instead of executing.
+  if (name === "gmgn_swap") {
+    const parked = await maybeParkAsConfirmIntent(args);
+    if (parked) {
+      logAction({ tool: name, args, result: parked, duration_ms: Date.now() - startTime, success: true });
+      return parked;
+    }
+  }
+
   try {
     const result = await fn(args);
     const duration = Date.now() - startTime;
@@ -394,6 +405,47 @@ export async function executeTool(name, args) {
     logAction({ tool: name, args, error: error.message, duration_ms: duration, success: false });
     return { error: error.message, tool: name };
   }
+}
+
+/**
+ * If confirm mode is on AND this is a real BUY (SOL → token in non-dry-run),
+ * park the swap as a pending intent and notify Telegram. Returns the parked
+ * result object (LLM should treat as a non-success terminal state) or null
+ * if the swap should proceed normally.
+ */
+async function maybeParkAsConfirmIntent(args) {
+  if (!config.trading?.confirmMode) return null;
+  if (process.env.DRY_RUN === "true") return null;
+  if (args?.token_in !== "SOL") return null;
+  if (!args?.token_out || args.token_out === "SOL") return null;
+
+  const strat = getStrategy();
+  const intent = createPendingIntent({
+    type: "buy",
+    args,
+    meta: { strategy_id: strat.id, requested_at: new Date().toISOString() },
+    ttl_min: config.trading.confirmTtlMin ?? 5,
+  });
+
+  const msg = [
+    `🟡 <b>Pending BUY — approval needed</b>`,
+    `Intent: <code>#${intent.id}</code>`,
+    `Strategy: ${strat.id}`,
+    `Amount: ${args.amount} SOL`,
+    `Token: <code>${args.token_out}</code>`,
+    `Expires in: ${config.trading.confirmTtlMin ?? 5} min`,
+    ``,
+    `Reply <code>/yes ${intent.id}</code> to execute, <code>/no ${intent.id}</code> to reject.`,
+  ].join("\n");
+
+  if (telegramEnabled()) sendHTML(msg).catch(() => {});
+
+  return {
+    pending: true,
+    intent_id: intent.id,
+    expires_at: intent.expires_at,
+    message: `BUY parked as intent #${intent.id} — awaiting Telegram /yes approval. Do NOT retry.`,
+  };
 }
 
 async function runSafetyChecks(name, args) {

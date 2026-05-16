@@ -11,9 +11,16 @@ import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML } from "./telegram.js";
 import {
   strategy, checkROI, checkTrailingStop, run4FilterProtocol, getMcapTier,
-  getEffectiveStopLoss, getEffectiveImmediateTakeProfit,
+  getEffectiveStopLoss, getEffectiveImmediateTakeProfit, checkPartialTP,
 } from "./strategy.js";
-import { trackPosition, recordClose, getTrackedPosition, getStateSummary, syncOpenPositions } from "./state.js";
+import {
+  getStrategy, listStrategies, setActiveStrategy, setStrategyOverride,
+  getActiveStrategyId, STRATEGY_IDS,
+} from "./strategies.js";
+import {
+  listPendingIntents, getIntent, consumeIntent,
+} from "./intents.js";
+import { trackPosition, recordClose, getTrackedPosition, getStateSummary, syncOpenPositions, markPartialTPDone } from "./state.js";
 import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
 
 import {
@@ -104,6 +111,208 @@ let _screeningBusy = false;
 
 function stripThink(t) {
   return t ? t.replace(/<think>[\s\S]*?<\/think>/gi, "").trim() : t;
+}
+
+// ─── Strategy / Confirm-Mode Telegram Commands ────────────────
+
+/**
+ * Handle Charon-style strategy + confirm-mode commands.
+ * Returns true if the message was a known command (handled), false otherwise.
+ *
+ * Supported:
+ *   /menu                         — show strategy + plan + open positions + confirm state
+ *   /strategy                     — show current active strategy
+ *   /strategy <id>                — switch active strategy
+ *   /strategies                   — list all presets
+ *   /stratset <id> <key> <value>  — override one field of a strategy
+ *   /confirm on|off               — toggle confirm mode at runtime
+ *   /pending                      — list pending intents
+ *   /yes <id>                     — approve & execute a pending intent
+ *   /no <id>                      — reject a pending intent
+ */
+async function handleStrategyTelegramCommand(text) {
+  const parts = text.trim().split(/\s+/);
+  const cmd = parts[0];
+
+  if (cmd === "/menu") {
+    const active = getStrategy();
+    const plan = getPlanSummary();
+    const pending = listPendingIntents();
+    const lines = [
+      `🤖 <b>Ponyou Menu</b>`,
+      ``,
+      `<b>Strategy</b>: ${active.name} (<code>${active.id}</code>)`,
+      `Stop-loss: ${(active.stoploss * 100).toFixed(1)}% · Trailing: ${active.trailing_stop?.enabled ? "ON" : "off"} · Partial TP: ${active.partial_tp?.enabled ? `${active.partial_tp.sell_pct}%@+${active.partial_tp.at_pct}%` : "off"}`,
+      `LLM: ${active.use_llm ? "on" : "off"}`,
+      ``,
+      `<b>Confirm mode</b>: ${config.trading.confirmMode ? "🟡 ON (BUYs need /yes)" : "🟢 OFF (auto-execute)"}`,
+      `<b>Pending intents</b>: ${pending.length}`,
+      ``,
+      plan
+        ? `<b>Plan</b>: Day ${plan.day}/${plan.days_total} · PnL ${(plan.today_pnl_pct ?? 0).toFixed(2)}% · Target +${plan.daily_target_pct}%`
+        : `<b>Plan</b>: belum diinisialisasi`,
+      ``,
+      `Commands: /strategy /strategies /stratset /confirm /pending /yes /no /pnl /status`,
+    ];
+    await sendHTML(lines.join("\n"));
+    return true;
+  }
+
+  if (cmd === "/strategies") {
+    const list = listStrategies();
+    const lines = [`🎯 <b>Strategies</b>`, ``];
+    for (const s of list) {
+      lines.push(`${s.active ? "✅" : "  "} <b>${s.id}</b> — ${s.name}`);
+      lines.push(`     SL ${s.stoploss_pct.toFixed(1)}% · Trail ${s.trailing ? "on" : "off"} · PartTP ${s.partial_tp} · LLM ${s.use_llm ? "on" : "off"}`);
+      lines.push(`     <i>${s.description}</i>`);
+    }
+    lines.push(``, `Switch with: /strategy &lt;id&gt;`);
+    await sendHTML(lines.join("\n"));
+    return true;
+  }
+
+  if (cmd === "/strategy") {
+    const id = parts[1];
+    if (!id) {
+      const active = getStrategy();
+      await sendHTML(`🎯 Active: <b>${active.name}</b> (<code>${active.id}</code>)\nSwitch: /strategy &lt;id&gt;\nList: /strategies`);
+      return true;
+    }
+    if (!STRATEGY_IDS.includes(id)) {
+      await sendHTML(`❌ Unknown strategy <code>${id}</code>. Valid: ${STRATEGY_IDS.join(", ")}`);
+      return true;
+    }
+    setActiveStrategy(id);
+    const active = getStrategy();
+    await sendHTML(`✅ Switched to <b>${active.name}</b> (<code>${id}</code>)\n${active.description}`);
+    return true;
+  }
+
+  if (cmd === "/stratset") {
+    const [, id, key, ...rest] = parts;
+    const value = rest.join(" ");
+    if (!id || !key || !value) {
+      await sendHTML([
+        `Usage: <code>/stratset &lt;id&gt; &lt;key&gt; &lt;value&gt;</code>`,
+        ``,
+        `Example: <code>/stratset sniper stoploss -0.20</code>`,
+        ``,
+        `Keys: stoploss, trailing_enabled, trailing_offset, trailing_distance,`,
+        `partial_tp_enabled, partial_tp_at, partial_tp_sell, use_llm, llm_min_confidence,`,
+        `min_mcap_usd, max_mcap_usd, min_holders, maxAllowedFlags`,
+      ].join("\n"));
+      return true;
+    }
+    if (!STRATEGY_IDS.includes(id)) {
+      await sendHTML(`❌ Unknown strategy <code>${id}</code>. Valid: ${STRATEGY_IDS.join(", ")}`);
+      return true;
+    }
+    const parsed = setStrategyOverride(id, key, value);
+    await sendHTML(`✅ <code>${id}.${key} = ${parsed}</code> (hot-applied)`);
+    return true;
+  }
+
+  if (cmd === "/confirm") {
+    const mode = (parts[1] || "").toLowerCase();
+    if (mode === "on" || mode === "off") {
+      config.trading.confirmMode = (mode === "on");
+      await sendHTML(`✅ Confirm mode <b>${mode.toUpperCase()}</b> (runtime only — set <code>confirmMode</code> in user-config.json to persist)`);
+    } else {
+      await sendHTML(`Confirm mode is <b>${config.trading.confirmMode ? "ON" : "OFF"}</b>\nUsage: /confirm on|off`);
+    }
+    return true;
+  }
+
+  if (cmd === "/pending") {
+    const pending = listPendingIntents();
+    if (!pending.length) {
+      await sendHTML(`📭 No pending intents.`);
+      return true;
+    }
+    const lines = [`📋 <b>Pending intents</b>`, ``];
+    for (const i of pending) {
+      const remainMs = new Date(i.expires_at).getTime() - Date.now();
+      const remainMin = Math.max(0, Math.ceil(remainMs / 60000));
+      lines.push(`#${i.id} ${i.type} · ${i.args?.amount || "?"} SOL → <code>${i.args?.token_out?.slice(0, 12) || "?"}</code> · ${remainMin}m left`);
+    }
+    lines.push(``, `Approve: /yes &lt;id&gt; · Reject: /no &lt;id&gt;`);
+    await sendHTML(lines.join("\n"));
+    return true;
+  }
+
+  if (cmd === "/no") {
+    const id = Number(parts[1]);
+    if (!Number.isFinite(id)) { await sendHTML(`Usage: /no &lt;intent_id&gt;`); return true; }
+    const intent = getIntent(id);
+    if (!intent) { await sendHTML(`❌ Intent #${id} not found.`); return true; }
+    if (intent.status !== "pending") { await sendHTML(`⚠️ Intent #${id} already ${intent.status}.`); return true; }
+    consumeIntent(id, "rejected", { rejected_by: "telegram" });
+    await sendHTML(`🚫 Intent #${id} rejected.`);
+    return true;
+  }
+
+  if (cmd === "/yes") {
+    const id = Number(parts[1]);
+    if (!Number.isFinite(id)) { await sendHTML(`Usage: /yes &lt;intent_id&gt;`); return true; }
+    await executePendingIntent(id);
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Execute a previously parked confirm-mode intent.
+ * Looks up token info & wallet balance to call trackPosition correctly.
+ */
+async function executePendingIntent(id) {
+  const intent = getIntent(id);
+  if (!intent) return sendHTML(`❌ Intent #${id} not found.`);
+  if (intent.status !== "pending") return sendHTML(`⚠️ Intent #${id} already ${intent.status}.`);
+  if (intent.expires_at && Date.now() > new Date(intent.expires_at).getTime()) {
+    consumeIntent(id, "expired");
+    return sendHTML(`⏰ Intent #${id} expired.`);
+  }
+
+  await sendHTML(`⏳ Executing intent #${id}...`);
+  const { args } = intent;
+  let result;
+  try {
+    result = await gmgnSwap(args);
+  } catch (e) {
+    consumeIntent(id, "failed", { error: e.message });
+    return sendHTML(`❌ Intent #${id} swap failed: ${e.message}`);
+  }
+
+  const succeeded = result?.success || result?.dry_run;
+  if (!succeeded) {
+    consumeIntent(id, "failed", { error: result?.error || "unknown" });
+    return sendHTML(`❌ Intent #${id} swap returned: ${JSON.stringify(result).slice(0, 200)}`);
+  }
+
+  // Wire up position tracking the same way the screening LLM path does.
+  let symbol = args.token_out?.slice(0, 8) || "TOKEN";
+  let initial_value_usd = 0;
+  try {
+    const tokenInfo = await getTokenInfo({ query: args.token_out });
+    symbol = tokenInfo?.results?.[0]?.symbol || symbol;
+    const balance = await getWalletBalances();
+    initial_value_usd = (args.amount || 0) * (balance?.sol_price || 0);
+  } catch (e) {
+    log("intent_warn", `metadata fetch failed for #${id}: ${e.message}`);
+  }
+
+  trackPosition({
+    position: args.token_out,
+    pool: "gmgn",
+    pool_name: symbol,
+    amount_sol: args.amount,
+    initial_value_usd,
+  });
+  recordTrade(null);
+  consumeIntent(id, "executed", { result: result?.hash || result?.signature || "ok" });
+
+  return sendHTML(`✅ Intent #${id} executed.\nToken: <code>${symbol}</code> · Amount: ${args.amount} SOL`);
 }
 
 // ─── Gate Checks ──────────────────────────────────────────────
@@ -424,6 +633,29 @@ async function checkDeterministicExits(tokens) {
       exits.push({ mint: token.mint, symbol: token.symbol, reason: `Immediate TP: ${currentPnlPct.toFixed(2)}% (TP ${(immediateTakeProfit * 100).toFixed(0)}%)`, pnl_pct: currentPnlPct, is_loss: false });
       continue;
     }
+
+    // Partial TP: sell a fraction once when PnL crosses threshold, keep the rest running.
+    const partial = checkPartialTP(currentPnlPct, tracked.partial_tp_done === true);
+    if (partial.trigger && token.balance > 0) {
+      const sellAmount = token.balance * (partial.sell_pct / 100);
+      log("strategy", `PARTIAL TP: ${token.symbol} — ${partial.reason}`);
+      const partialRes = await gmgnSwap({
+        token_in: token.mint, token_out: "SOL",
+        amount: sellAmount, slippage: 1.0,
+      });
+      if (partialRes.success || partialRes.dry_run) {
+        markPartialTPDone(token.mint);
+        if (telegramEnabled()) {
+          sendMessage(`💰 Partial TP: ${token.symbol} — sold ${partial.sell_pct}% @ +${currentPnlPct.toFixed(2)}%`).catch(() => {});
+        }
+      } else {
+        log("strategy", `PARTIAL TP swap failed for ${token.symbol}: ${partialRes.error || "?"}`);
+      }
+      // Position stays open with reduced size — let other exit checks below
+      // run on subsequent cycles, not this one.
+      continue;
+    }
+
     const roiCheck = checkROI(ageMinutes, currentPnlPct, condition);
     if (roiCheck.exit) {
       exits.push({ mint: token.mint, symbol: token.symbol, reason: roiCheck.reason, pnl_pct: currentPnlPct, is_loss: currentPnlPct < 0 });
@@ -895,7 +1127,7 @@ if (isTTY) {
   startPolling(async (msg) => {
     const text = msg?.text?.trim();
     if (!text) return;
-    
+
     // Command handling in Telegram
     if (text === "/pnl") {
       const history = getPerformanceHistory({ limit: 10 });
@@ -916,6 +1148,15 @@ if (isTTY) {
       ].join("\n");
       await sendHTML(msg);
       return;
+    }
+
+    // Charon-style command handler (strategy presets, confirm-mode intents, hot config).
+    if (text.startsWith("/")) {
+      const handled = await handleStrategyTelegramCommand(text).catch(e => {
+        sendHTML(`❌ Command error: ${e.message}`).catch(() => {});
+        return true;
+      });
+      if (handled) return;
     }
 
     if (busy) return;
