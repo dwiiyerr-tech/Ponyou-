@@ -24,7 +24,7 @@ import { getPerformanceHistory } from "./lessons.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPORT_DIR = path.join(__dirname, "logs");
-const LAST_REPORT_FILE = "./last-report.json";
+const LAST_REPORT_FILE = path.join(__dirname, "last-report.json");
 
 // ─── Helpers ───────────────────────────────────────────────────
 
@@ -109,7 +109,7 @@ export function compileReport() {
       target_pct: plan.daily_target_pct,
       stoploss_pct: plan.daily_stoploss_pct,
       win_rate_days: plan.win_rate_days,
-      achieved_today: plan.today_current_usd >= (plan.today_target_usd || 0),
+      achieved_today: !!(plan.today_target_usd && plan.today_current_usd >= plan.today_target_usd),
       days_completed: plan.days_completed,
     } : null,
     trades: {
@@ -140,8 +140,14 @@ export function compileReport() {
   };
 }
 
+function esc(s) {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+const DIVIDER = "──────────────";
+const signed = (n, suf = "") => (n > 0 ? "+" : "") + Number(n || 0).toFixed(2) + suf;
+
 /**
- * Format laporan menjadi teks ringkas untuk Telegram.
+ * Format laporan menjadi HTML minimalist untuk Telegram.
  */
 export function formatReportTelegram(report) {
   const p = report.plan;
@@ -149,59 +155,50 @@ export function formatReportTelegram(report) {
   const v = report.vault;
   const lines = [];
 
-  lines.push(`📊 LAPORAN HARIAN PONYOU`);
-  lines.push(`📅 ${report.date}`);
-  lines.push(`─────────────────────`);
+  lines.push(`📊 <b>Laporan harian</b> · ${esc(report.date)}`);
+  lines.push(DIVIDER);
 
   if (p) {
     const emoji = p.achieved_today ? "✅" : p.pnl_pct > 0 ? "📈" : "📉";
-    lines.push(`${emoji} COMPOUND PLAN — Day ${p.day}/${p.days_total}`);
-    lines.push(`Modal: $${(p.start_usd || 0).toFixed(4)} → Sekarang: $${(p.end_usd || 0).toFixed(4)}`);
-    lines.push(`Target: $${(p.target_usd || 0).toFixed(4)} (+${p.target_pct}%)`);
-    lines.push(`P&L Hari Ini: ${p.pnl_pct > 0 ? "+" : ""}${p.pnl_pct}% ($${p.pnl_usd > 0 ? "+" : ""}${(p.pnl_usd || 0).toFixed(4)})`);
-    lines.push(`Win Rate (hari): ${p.win_rate_days} | Selesai: ${p.days_completed} hari`);
+    lines.push(
+      `${emoji} <b>Day ${p.day}/${p.days_total}</b> · target +${p.target_pct}%`,
+    );
+    lines.push(
+      `$${Number(p.start_usd || 0).toFixed(2)} → $${Number(p.end_usd || 0).toFixed(2)}  (${signed(p.pnl_pct, "%")})`,
+    );
+    lines.push(`Wins: ${esc(p.win_rate_days)} · selesai ${p.days_completed}d`);
+    lines.push(``);
   }
 
-  lines.push(`─────────────────────`);
-  lines.push(`📈 TRADES (24 JAM)`);
+  lines.push(`📈 <b>Trades 24h</b>`);
   if (s) {
-    lines.push(`Total: ${s.total} trades | Win: ${s.wins} | Loss: ${s.losses} | Rug: ${s.rugs}`);
-    lines.push(`Win Rate: ${s.win_rate_pct}% | Avg P&L: ${s.avg_pnl_pct > 0 ? "+" : ""}${s.avg_pnl_pct}%`);
-    lines.push(`Avg Hold: ${s.avg_hold_min}min`);
-    if (s.best_trade) lines.push(`🏆 Best: ${s.best_trade.symbol} +${s.best_trade.pnl_pct}%`);
-    if (s.worst_trade) lines.push(`💀 Worst: ${s.worst_trade.symbol} ${s.worst_trade.pnl_pct}%`);
+    lines.push(`${s.total} total · W ${s.wins} · L ${s.losses}${s.rugs ? ` · rug ${s.rugs}` : ""}`);
+    lines.push(`WR ${s.win_rate_pct}% · avg ${signed(s.avg_pnl_pct, "%")} · hold ${s.avg_hold_min}m`);
+    if (s.best_trade)  lines.push(`🏆 ${esc(s.best_trade.symbol)}  ${signed(s.best_trade.pnl_pct, "%")}`);
+    if (s.worst_trade) lines.push(`💀 ${esc(s.worst_trade.symbol)}  ${signed(s.worst_trade.pnl_pct, "%")}`);
   } else {
-    lines.push(`Tidak ada trade dalam 24 jam terakhir`);
+    lines.push(`<i>Tidak ada trade</i>`);
   }
+  lines.push(``);
 
-  lines.push(`─────────────────────`);
-  lines.push(`🌡️ MARKET: ${report.market.current_condition} (${report.market.trend})`);
-  lines.push(report.market.description);
+  lines.push(`🌡️ <b>Market</b> · ${esc(report.market.current_condition)} (${esc(report.market.trend)})`);
 
   if (report.learning.events_total > 0) {
-    lines.push(`─────────────────────`);
-    lines.push(`🧠 LEARNING MODE: ${report.learning.events_total} kejadian | ${report.learning.analyses_total} analisis`);
-    if (report.learning.recent_analyses.length) {
-      const last = report.learning.recent_analyses[report.learning.recent_analyses.length - 1];
-      lines.push(`Terakhir: ${last.symbol} (${last.pnl_pct?.toFixed(1)}%) — ${last.lessons_count} pelajaran`);
-    }
+    lines.push(``);
+    lines.push(`🧠 <b>Learning</b> · ${report.learning.events_total} events · ${report.learning.analyses_total} analyses`);
+    const last = report.learning.recent_analyses[report.learning.recent_analyses.length - 1];
+    if (last) lines.push(`Last: ${esc(last.symbol)} ${signed(last.pnl_pct, "%")} · ${last.lessons_count} lessons`);
   }
 
-  lines.push(`─────────────────────`);
-  lines.push(`🏦 VAULT`);
+  lines.push(``);
   if (v.configured) {
-    lines.push(`Total divaulted: ${v.total_vaulted_sol} SOL ($${v.total_vaulted_usd})`);
-    if (v.is_due) {
-      lines.push(`⚠️ VAULT JATUH TEMPO — siap transfer ${v.vault_pct}%`);
-    } else {
-      lines.push(`Vault berikutnya: ${v.days_until_next?.toFixed(1)} hari lagi`);
-    }
+    const due = v.is_due
+      ? `<b>jatuh tempo</b> · siap transfer ${v.vault_pct}%`
+      : `next ${Number(v.days_until_next || 0).toFixed(1)}d`;
+    lines.push(`🏦 <b>Vault</b> · ${Number(v.total_vaulted_sol || 0).toFixed(3)} SOL ($${Number(v.total_vaulted_usd || 0).toFixed(2)}) · ${due}`);
   } else {
-    lines.push(`Vault belum dikonfigurasi (set VAULT_WALLET di .env)`);
+    lines.push(`🏦 <i>Vault belum dikonfigurasi</i>`);
   }
-
-  lines.push(`─────────────────────`);
-  lines.push(`🤖 Ponyou AI Agent`);
 
   return lines.join("\n");
 }

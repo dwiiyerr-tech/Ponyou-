@@ -231,13 +231,22 @@ export async function getBundleBuyersPct(mint, apiKey, launchTs, windowSeconds =
     for (const tx of txns) {
       if (tx.timestamp > cutoff) continue;
       const buys = (tx.tokenTransfers || []).filter(
-        t => t.mint === mint && t.toUserAccount && t.toUserAccount !== tx.feePayer === false
+        t => t.mint === mint && t.toUserAccount
       );
+      if (buys.length === 0) continue;
+
+      // Bundle heuristic: >1 distinct receiver of the target mint in one tx is
+      // unusual for organic swaps (router → user is 1 receiver). Treat such txs
+      // as bundle-buyer activity.
+      const distinctReceivers = new Set(buys.map(b => b.toUserAccount));
+      const isBundleTx = distinctReceivers.size > 1;
+
       for (const b of buys) {
         bundleBuyers.add(b.toUserAccount);
-        bundleTokenAmount += b.tokenAmount || 0;
+        const amt = b.tokenAmount || 0;
+        totalEarlyTokenAmount += amt;
+        if (isBundleTx) bundleTokenAmount += amt;
       }
-      totalEarlyTokenAmount += buys.reduce((s, b) => s + (b.tokenAmount || 0), 0);
     }
 
     const pct = totalEarlyTokenAmount > 0

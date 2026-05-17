@@ -80,7 +80,8 @@ export const PROVIDERS = {
 };
 
 /**
- * Read .env file
+ * Read .env file. Preserves values that contain '=' (e.g. base64 keys).
+ * Strips surrounding quotes. Ignores comments and blank lines.
  */
 export function readEnv() {
   if (!fs.existsSync(ENV_FILE)) return {};
@@ -88,29 +89,71 @@ export function readEnv() {
   const content = fs.readFileSync(ENV_FILE, "utf8");
   const env = {};
 
-  content.split("\n").forEach((line) => {
-    const [key, value] = line.split("=");
-    if (key && value) {
-      env[key.trim()] = value.trim();
+  content.split("\n").forEach((rawLine) => {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) return;
+    const idx = line.indexOf("=");
+    if (idx <= 0) return;
+    const key = line.slice(0, idx).trim();
+    let value = line.slice(idx + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
     }
+    if (key) env[key] = value;
   });
 
   return env;
 }
 
 /**
- * Write .env file
+ * Write .env file. Preserves comment lines + key ordering from the existing
+ * file when possible; new keys are appended at the end.
  */
 export function writeEnv(env) {
-  const lines = [];
+  let original = "";
+  if (fs.existsSync(ENV_FILE)) {
+    original = fs.readFileSync(ENV_FILE, "utf8");
+  }
 
-  Object.entries(env).forEach(([key, value]) => {
-    if (value) {
-      lines.push(`${key}=${value}`);
+  const written = new Set();
+  const out = [];
+
+  for (const rawLine of original.split("\n")) {
+    const line = rawLine;
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      out.push(line);
+      continue;
     }
-  });
+    const idx = trimmed.indexOf("=");
+    if (idx <= 0) {
+      out.push(line);
+      continue;
+    }
+    const key = trimmed.slice(0, idx).trim();
+    if (!(key in env)) {
+      out.push(line); // keep as-is
+      continue;
+    }
+    const value = env[key];
+    if (value == null || value === "") continue; // drop empty
+    out.push(`${key}=${value}`);
+    written.add(key);
+  }
 
-  fs.writeFileSync(ENV_FILE, lines.join("\n") + "\n");
+  // Append any new keys
+  for (const [key, value] of Object.entries(env)) {
+    if (written.has(key) || value == null || value === "") continue;
+    out.push(`${key}=${value}`);
+  }
+
+  // Normalize trailing newline
+  let text = out.join("\n");
+  if (!text.endsWith("\n")) text += "\n";
+  fs.writeFileSync(ENV_FILE, text);
 }
 
 /**
@@ -266,13 +309,9 @@ export function quickSwitch(providerId) {
     env.LLM_BASE_URL = provider.baseUrl;
   }
 
-  // Clear old API keys
-  Object.keys(env).forEach((key) => {
-    if (key.includes("_API_KEY") && key !== "LLM_API_KEY") {
-      delete env[key];
-    }
-  });
-
+  // NOTE: Previously this wiped every *_API_KEY. That destroyed credentials
+  // for other providers the user might want to switch back to. We now keep
+  // them in place — the agent only uses the key matching LLM_PROVIDER.
   writeEnv(env);
 
   // Update config

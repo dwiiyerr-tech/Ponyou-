@@ -427,15 +427,13 @@ async function maybeParkAsConfirmIntent(args) {
     ttl_min: config.trading.confirmTtlMin ?? 5,
   });
 
+  const ttl = config.trading.confirmTtlMin ?? 5;
   const msg = [
-    `🟡 <b>Pending BUY — approval needed</b>`,
-    `Intent: <code>#${intent.id}</code>`,
-    `Strategy: ${strat.id}`,
-    `Amount: ${args.amount} SOL`,
-    `Token: <code>${args.token_out}</code>`,
-    `Expires in: ${config.trading.confirmTtlMin ?? 5} min`,
+    `🟡 <b>Pending BUY</b> · #${intent.id}`,
+    `${args.amount} SOL → <code>${String(args.token_out).slice(0, 12)}…</code>`,
+    `Strategy: ${strat.id} · expires ${ttl}m`,
     ``,
-    `Reply <code>/yes ${intent.id}</code> to execute, <code>/no ${intent.id}</code> to reject.`,
+    `<code>/yes ${intent.id}</code>  ·  <code>/no ${intent.id}</code>`,
   ].join("\n");
 
   if (telegramEnabled()) sendHTML(msg).catch(() => {});

@@ -184,19 +184,22 @@ export async function createLLMClient(config) {
 
   log("llm", `Initializing ${providerConfig.name} client`);
 
-  // Handle Anthropic Claude API separately (different SDK)
+  // Handle Anthropic Claude API.
+  //
+  // Ponyou's agent loop is OpenAI-shaped (client.chat.completions.create with
+  // OpenAI-style `tools` schema). The Anthropic SDK does NOT expose that shape
+  // — it uses client.messages.create with a different tool schema. Plugging the
+  // raw Anthropic client into agent.js would crash on first call.
+  //
+  // Until a proper translator is added, route Claude usage through any
+  // OpenAI-compatible Claude gateway (OpenRouter "anthropic/claude-*" models,
+  // a self-hosted bridge, etc.) and fail loudly otherwise.
   if (providerConfig.type === "anthropic-native") {
-    const apiKey =
-      process.env.ANTHROPIC_API_KEY || process.env.LLM_API_KEY;
-
-    if (!apiKey) {
-      throw new Error(
-        `Anthropic API key not found. Set ANTHROPIC_API_KEY or LLM_API_KEY in .env`
-      );
-    }
-
-    const { default: Anthropic } = await import("@anthropic-ai/sdk");
-    return new Anthropic({ apiKey });
+    throw new Error(
+      `Anthropic native SDK is not yet wired into Ponyou's OpenAI-shaped agent loop. ` +
+      `Use OpenRouter with an "anthropic/..." model instead (set llmProvider=openrouter ` +
+      `and llmModel=anthropic/claude-3.5-sonnet, etc.), or run a local Claude→OpenAI bridge.`
+    );
   }
 
   // Handle OpenAI-compatible APIs

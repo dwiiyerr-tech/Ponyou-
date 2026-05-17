@@ -111,8 +111,8 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5 })
       token_out:  outputMint,
       amount,
       slippage,
-      amount_out: result.outputAmount,
-      fee_bps:    result.feeBps,
+      amount_out: result.outputAmountResult ?? result.outputAmount ?? result.outAmount ?? null,
+      fee_bps:    result.feeBps ?? null,
     };
   } catch (error) {
     log("swap_error", `Jupiter swap: ${error.message}`);

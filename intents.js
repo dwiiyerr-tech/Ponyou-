@@ -79,7 +79,17 @@ export function listPendingIntents() {
 }
 
 export function getIntent(id) {
-  return loadAll().find(i => Number(i.id) === Number(id)) || null;
+  const intents = loadAll();
+  const intent = intents.find(i => Number(i.id) === Number(id)) || null;
+  if (!intent) return null;
+  // Lazy expire: if pending but past TTL, persist the new "expired" state so
+  // every consumer of getIntent observes the same status.
+  if (intent.status === "pending" && isExpired(intent)) {
+    intent.status = "expired";
+    intent.resolved_at = new Date().toISOString();
+    saveAll(intents);
+  }
+  return intent;
 }
 
 /**

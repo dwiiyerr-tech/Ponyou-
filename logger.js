@@ -1,8 +1,10 @@
 import fs from "fs";
 import path from "path";
-import { sendMessage, isEnabled as telegramEnabled } from "./telegram.js";
+import { fileURLToPath } from "url";
+import { sendHTML, isEnabled as telegramEnabled } from "./telegram.js";
 
-const LOG_DIR = "./logs";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LOG_DIR = path.join(__dirname, "logs");
 const LOG_LEVEL = process.env.LOG_LEVEL || "info";
 
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
@@ -11,6 +13,11 @@ const currentLevel = LEVELS[LOG_LEVEL] || 1;
 // Ensure log directory exists
 if (!fs.existsSync(LOG_DIR)) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+
+// HTML escape for safe Telegram error notifications.
+function htmlEscape(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 /**
@@ -29,15 +36,15 @@ export function log(category, message) {
   // Console output
   console.log(line);
 
-  // Send error to telegram
+  // Send error to telegram (HTML so the tags actually render)
   if (level === "error" && telegramEnabled()) {
-    sendMessage(`❌ <b>ERROR LOG</b>\n<code>${message}</code>`).catch(() => {});
+    sendHTML(`⚠️ <b>${htmlEscape(category)}</b>\n<code>${htmlEscape(message)}</code>`).catch(() => {});
   }
 
-  // File output (daily rotation)
-  const dateStr = (timestamp || new Date().toISOString()).split("T")[0];
+  // File output (daily rotation, async to avoid blocking)
+  const dateStr = timestamp.split("T")[0];
   const logFile = path.join(LOG_DIR, `agent-${dateStr}.log`);
-  fs.appendFileSync(logFile, line + "\n");
+  fs.appendFile(logFile, line + "\n", () => { /* best-effort */ });
 }
 
 /**
@@ -74,8 +81,8 @@ export function logAction(action) {
   const hint = actionHint(action);
   console.log(`[${action.tool}] ${status}${hint}${dur}`);
 
-  // File: full JSON for audit trail
-  const dateStr = (timestamp || new Date().toISOString()).split("T")[0];
+  // File: full JSON for audit trail (async)
+  const dateStr = timestamp.split("T")[0];
   const actionsFile = path.join(LOG_DIR, `actions-${dateStr}.jsonl`);
-  fs.appendFileSync(actionsFile, JSON.stringify(entry) + "\n");
+  fs.appendFile(actionsFile, JSON.stringify(entry) + "\n", () => { /* best-effort */ });
 }

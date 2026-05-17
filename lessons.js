@@ -7,11 +7,14 @@
  */
 
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { matchPatterns, learnPatterns } from "./tools/rug-patterns.js";
 
-const LESSONS_FILE = "./lessons.json";
-const PERF_FILE    = "./performance.json";
-const RUG_FILE     = "./rug-memory.json";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LESSONS_FILE = path.join(__dirname, "lessons.json");
+const PERF_FILE    = path.join(__dirname, "performance.json");
+const RUG_FILE     = path.join(__dirname, "rug-memory.json");
 
 // ─── Lessons ──────────────────────────────────────────────────
 
@@ -144,11 +147,12 @@ export function recordLessonOutcome(lessonIds = [], tradePnl = 0) {
     }
   }
 
-  // Auto-deprecate ineffective lessons
+  // Auto-deprecate ineffective lessons. Pinned lessons (lesson.pinned === true,
+  // not a tag) are protected from auto-deprecation.
   for (let lesson of data.lessons) {
     if ((lesson.times_applied || 0) > 30) {
       const winRate = lesson.success_count / lesson.times_applied;
-      if (winRate < 0.4 && !lesson.tags?.includes("pinned")) {
+      if (winRate < 0.4 && !lesson.pinned) {
         lesson.tags = lesson.tags || [];
         if (!lesson.tags.includes("deprecated")) {
           lesson.tags.push("deprecated");
@@ -333,8 +337,9 @@ export function recordRug({ mint, symbol, creator, launchpad, rug_signals, patte
 
 function _learnedPatternCount() {
   try {
-    if (!fs.existsSync("./rug-patterns-learned.json")) return 0;
-    return (JSON.parse(fs.readFileSync("./rug-patterns-learned.json", "utf8")).patterns || []).length;
+    const f = path.join(__dirname, "rug-patterns-learned.json");
+    if (!fs.existsSync(f)) return 0;
+    return (JSON.parse(fs.readFileSync(f, "utf8")).patterns || []).length;
   } catch { return 0; }
 }
 
@@ -447,7 +452,7 @@ export function isTokenBlacklisted(mint) {
 
 // ─── Darwin Signal Weighting ──────────────────────────────────
 
-const DARWIN_FILE = "./darwin-weights.json";
+const DARWIN_FILE = path.join(__dirname, "darwin-weights.json");
 
 function loadDarwinWeights() {
   if (!fs.existsSync(DARWIN_FILE)) {

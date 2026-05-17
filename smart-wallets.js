@@ -1,6 +1,9 @@
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
-const WALLETS_FILE = "./smart-wallets.json";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const WALLETS_FILE = path.join(__dirname, "smart-wallets.json");
 
 function load() {
   if (!fs.existsSync(WALLETS_FILE)) return {};

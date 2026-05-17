@@ -1,4 +1,6 @@
 import "dotenv/config";
+// Force DRY_RUN regardless of how this entrypoint is invoked.
+process.env.DRY_RUN = "true";
 import { runManagementCycle, runScreeningCycle, runVaultCycle, runDailyReport } from "./index.js";
 import { getPlanSummary, checkSessionGate } from "./trading-plan.js";
 import { getMarketIntelligence } from "./market-intelligence.js";

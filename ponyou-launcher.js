@@ -341,7 +341,7 @@ Avg P&L: ${formatPercentage(parseFloat(avgPnl))}
 Total P&L: ${formatPercentage(parseFloat(totalPnl))}
 Best Trade: ${trades.length > 0 ? formatPercentage(Math.max(...trades.map((t) => t.pnl_pct))) : "N/A"}
 Worst Trade: ${trades.length > 0 ? formatPercentage(Math.min(...trades.map((t) => t.pnl_pct))) : "N/A"}
-Recent: ${trades.slice(-1)[0]?.pnl_pct ? formatPercentage(trades.slice(-1)[0].pnl_pct) : "N/A"}`,
+Recent: ${Number.isFinite(trades.slice(-1)[0]?.pnl_pct) ? formatPercentage(trades.slice(-1)[0].pnl_pct) : "N/A"}`,
     colors.green
   );
 
@@ -502,11 +502,12 @@ async function fileManagerMenu() {
     { name: "performance.json", desc: "Trade history" },
   ];
 
-  files.forEach(([name, desc], i) => {
+  files.forEach((f, i) => {
+    const { name, desc } = f;
     const exists = fs.existsSync(name);
     const size = exists ? fs.statSync(name).size : 0;
     console.log(
-      `  ${exists ? colors.green : colors.red}${i + 1}${colors.reset}. ${name.padEnd(25)} ${colors.dim}(${size} bytes)${colors.reset}`
+      `  ${exists ? colors.green : colors.red}${i + 1}${colors.reset}. ${name.padEnd(25)} ${colors.dim}${desc} (${size} bytes)${colors.reset}`
     );
   });
 

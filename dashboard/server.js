@@ -97,11 +97,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  let urlPath = req.url.split('?')[0];
+  let urlPath = decodeURIComponent(req.url.split('?')[0]);
   if (urlPath === '/') urlPath = '/index.html';
   let filePath = path.join(DIST, urlPath);
 
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+  // Path-traversal guard: resolved file must stay inside DIST.
+  const resolved = path.resolve(filePath);
+  const distRoot = path.resolve(DIST);
+  if (!resolved.startsWith(distRoot + path.sep) && resolved !== distRoot) {
+    filePath = path.join(DIST, 'index.html');
+  } else if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     filePath = path.join(DIST, 'index.html');
   }
 

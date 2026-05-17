@@ -10,11 +10,14 @@
  */
 
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { addLesson } from "./lessons.js";
 
-const ANALYSIS_FILE = "./loss-analysis.json";
-const LEARNING_STATE_FILE = "./learning-state.json";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ANALYSIS_FILE = path.join(__dirname, "loss-analysis.json");
+const LEARNING_STATE_FILE = path.join(__dirname, "learning-state.json");
 
 // ─── State ─────────────────────────────────────────────────────
 
@@ -171,16 +174,29 @@ Jawab dalam Bahasa Indonesia, singkat dan konkret. Tidak perlu panjang.
 export function recordLossAnalysis({ lossContext, analysisText, marketCondition }) {
   const data = loadAnalyses();
 
-  // Parse lessons dari teks analisis
+  // Parse lessons dari teks analisis. Patterns cover both loss-analysis
+  // (LESSON_1:, AVOID_PATTERN:) and observation-analysis (LESSON:, ADJUSTMENT:,
+  // REPLICATE_PATTERN:, ALPHA_SIGNAL:) prompt formats.
   const lessons = [];
-  const lessonPatterns = [/LESSON_\d+:\s*(.+)/gi, /AVOID_PATTERN:\s*(.+)/i];
+  const text = analysisText || "";
+  const lessonPatterns = [
+    /LESSON_\d+:\s*(.+)/gi,
+    /^\s*LESSON:\s*(.+)/gim,
+    /AVOID_PATTERN:\s*(.+)/gi,
+    /ADJUSTMENT:\s*(.+)/gi,
+    /REPLICATE_PATTERN:\s*(.+)/gi,
+    /ALPHA_SIGNAL:\s*(.+)/gi,
+  ];
+  const seen = new Set();
   for (const pattern of lessonPatterns) {
-    let match;
-    const text = analysisText || "";
     const re = new RegExp(pattern.source, pattern.flags);
+    let match;
     while ((match = re.exec(text)) !== null) {
       const lesson = match[1].trim();
-      if (lesson && lesson.length > 10) lessons.push(lesson);
+      if (lesson.length > 10 && !seen.has(lesson)) {
+        seen.add(lesson);
+        lessons.push(lesson);
+      }
     }
   }
 

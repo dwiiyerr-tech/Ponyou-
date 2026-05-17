@@ -27,7 +27,10 @@ export { swapToken } from "./jupiter.js";
  */
 export async function getSolanaGasFee() {
   try {
-    const connection = new Connection(process.env.RPC_URL, "confirmed");
+    const connection = new Connection(
+      process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
+      "confirmed",
+    );
     const fees = await connection.getRecentPrioritizationFees();
     if (!fees.length) return { avg: 0, median: 0, level: "low" };
 

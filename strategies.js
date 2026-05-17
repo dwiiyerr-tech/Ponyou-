@@ -145,15 +145,28 @@ export const STRATEGY_IDS = Object.keys(PRESETS);
 const DEFAULT_STRATEGY = "scalping";
 
 // ─── Active strategy persistence ──────────────────────────────
+//
+// Read-through cache: getStrategy() runs on every entry filter, every ROI
+// check, every trailing-stop check, etc. Without a cache that is 5-10 sync
+// disk reads per position per management cycle. We invalidate on write.
+
+const _readCache = new Map(); // file -> { mtimeMs, data }
 
 function readJsonSafe(file) {
-  if (!fs.existsSync(file)) return null;
-  try { return JSON.parse(fs.readFileSync(file, "utf8")); }
-  catch { return null; }
+  try {
+    if (!fs.existsSync(file)) return null;
+    const stat = fs.statSync(file);
+    const cached = _readCache.get(file);
+    if (cached && cached.mtimeMs === stat.mtimeMs) return cached.data;
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    _readCache.set(file, { mtimeMs: stat.mtimeMs, data });
+    return data;
+  } catch { return null; }
 }
 
 function writeJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  _readCache.delete(file);
 }
 
 export function getActiveStrategyId() {

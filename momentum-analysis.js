@@ -3,7 +3,7 @@
  * Uses RSI and SuperTrend for entry confirmation and trend-based exits
  */
 
-import { calculateRSI, calculateSuperTrend, calculateATR } from "./utils/indicators.js";
+import { calculateRSI, calculateSuperTrend } from "./utils/indicators.js";
 
 /**
  * Analyze token momentum from klines
@@ -18,9 +18,11 @@ export function analyzeMomentum(klines) {
   const highs = klines.map(k => k.high || k.h);
   const lows = klines.map(k => k.low || k.l);
 
-  // Calculate indicators
+  // Calculate indicators.
+  // calculateSuperTrend signature is (highs, lows, closes, period=10, multiplier=3).
+  // Standard SuperTrend on memecoin scalping = ATR period 10, multiplier 3.
   const rsi = calculateRSI(closes, 14);
-  const supertrend = calculateSuperTrend(highs, lows, closes, 3, 10);
+  const supertrend = calculateSuperTrend(highs, lows, closes, 10, 3);
   const currentPrice = closes[closes.length - 1];
 
   return {
@@ -125,20 +127,13 @@ export function checkTrendBreakExit(currentPrice, supertrend) {
 export function getMomentumScore(momentum) {
   if (!momentum.valid) return 0;
 
-  let score = 50;  // Base score
+  // RSI-derived base: 0..50. Missing RSI defaults to neutral 25.
+  let score = momentum.rsi ? (momentum.rsi / 100) * 50 : 25;
 
-  // Adjust by RSI
-  const rsiScore = momentum.rsi ? (momentum.rsi / 100) * 50 : 25;
-  score = rsiScore;
-
-  // Boost if price well above SuperTrend
-  if (momentum.currentPrice > momentum.supertrend.value * 1.02) {
-    score += 10;  // Price ahead of trend = bullish
-  }
-
-  // Penalize if price near bands
-  if (momentum.currentPrice < momentum.supertrend.value * 1.001) {
-    score -= 5;  // Price too close to trend = risky
+  const stVal = momentum.supertrend?.value;
+  if (Number.isFinite(stVal) && stVal > 0) {
+    if (momentum.currentPrice > stVal * 1.02) score += 10;       // ahead of trend
+    else if (momentum.currentPrice < stVal * 1.001) score -= 5;  // hugging the line
   }
 
   return Math.max(0, Math.min(100, score));

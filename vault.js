@@ -17,27 +17,35 @@
  */
 
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { Connection, PublicKey, SystemProgram, Transaction, Keypair, LAMPORTS_PER_SOL, sendAndConfirmTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { log } from "./logger.js";
 import { config } from "./config.js";
 
-const VAULT_STATE_FILE = "./vault-state.json";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const VAULT_STATE_FILE = path.join(__dirname, "vault-state.json");
 
 // ─── State ─────────────────────────────────────────────────────
 
+const EMPTY_VAULT_STATE = () => ({
+  lastVaultDate: null,
+  lastVaultTx: null,
+  totalVaultedSol: 0,
+  totalVaultedUsd: 0,
+  vaultHistory: [],
+});
+
 function loadVaultState() {
-  if (!fs.existsSync(VAULT_STATE_FILE)) {
-    return {
-      lastVaultDate: null,
-      lastVaultTx: null,
-      totalVaultedSol: 0,
-      totalVaultedUsd: 0,
-      vaultHistory: [],
-    };
+  if (!fs.existsSync(VAULT_STATE_FILE)) return EMPTY_VAULT_STATE();
+  try {
+    const data = JSON.parse(fs.readFileSync(VAULT_STATE_FILE, "utf8"));
+    // Fill in any missing fields so downstream callers don't see `undefined`.
+    return { ...EMPTY_VAULT_STATE(), ...data };
+  } catch {
+    return EMPTY_VAULT_STATE();
   }
-  try { return JSON.parse(fs.readFileSync(VAULT_STATE_FILE, "utf8")); }
-  catch { return { lastVaultDate: null, totalVaultedSol: 0, vaultHistory: [] }; }
 }
 
 function saveVaultState(state) {
@@ -130,7 +138,10 @@ export async function executeVaultTransfer(amountSol, solPriceUsd = 0) {
     if (!process.env.WALLET_PRIVATE_KEY) throw new Error("WALLET_PRIVATE_KEY tidak di-set");
 
     const wallet = Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY));
-    const connection = new Connection(process.env.RPC_URL, "confirmed");
+    const connection = new Connection(
+      process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
+      "confirmed",
+    );
 
     let vaultPubkey;
     try {
@@ -230,27 +241,32 @@ export function getVaultStatus() {
 /**
  * Buat pesan Telegram yang informatif setelah vault berhasil.
  */
+function htmlEscape(s) {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export function buildVaultNotification(result) {
   const state = loadVaultState();
   const vaultStatus = getVaultStatus();
+  const amount = Number(result.amount_sol) || 0;
+  const usd = Number(result.amount_usd) || 0;
+  const target = result.vault_wallet || "";
+  const targetShort = target ? `${target.slice(0, 8)}…${target.slice(-4)}` : "?";
 
   if (result.dry_run) {
     return [
-      `🏦 VAULT [DRY RUN]`,
-      `Akan dikirim: ${result.amount_sol} SOL (~$${result.amount_usd?.toFixed(2)})`,
-      `Tujuan: ${result.vault_wallet?.slice(0, 12)}...`,
-      `Total divaulted: ${vaultStatus.total_vaulted_sol} SOL`,
-      `Vault berikutnya: ${vaultStatus.interval_days} hari lagi`,
+      `🏦 <b>Vault</b> · <i>dry-run</i>`,
+      `${amount.toFixed(4)} SOL (≈ $${usd.toFixed(2)})`,
+      `→ <code>${htmlEscape(targetShort)}</code>`,
+      `Total: ${vaultStatus.total_vaulted_sol} SOL · next ${vaultStatus.interval_days}d`,
     ].join("\n");
   }
 
+  const tx = result.tx ? `${result.tx.slice(0, 8)}…` : "?";
   return [
-    `🏦 VAULT TRANSFER SUKSES`,
-    `Terkirim: ${result.amount_sol} SOL (~$${result.amount_usd?.toFixed(2)})`,
-    `Tujuan: ${result.vault_wallet}`,
-    `Tx: ${result.tx?.slice(0, 16)}...`,
-    `─────────────────────`,
-    `Total divaulted: ${state.totalVaultedSol} SOL ($${state.totalVaultedUsd})`,
-    `Vault ke-${state.vaultHistory.length} | Berikutnya: ${vaultStatus.interval_days} hari lagi`,
+    `🏦 <b>Vault terkirim</b>`,
+    `${amount.toFixed(4)} SOL (≈ $${usd.toFixed(2)}) → <code>${htmlEscape(targetShort)}</code>`,
+    `Tx: <code>${htmlEscape(tx)}</code>`,
+    `Total: ${state.totalVaultedSol} SOL ($${state.totalVaultedUsd}) · #${state.vaultHistory.length}`,
   ].join("\n");
 }

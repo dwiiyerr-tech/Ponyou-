@@ -33,6 +33,8 @@ const INTENT_TOOLS = {
   balance:     new Set(["get_wallet_balance"]),
   screen:      new Set(["discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info"]),
   lessons:     new Set(["add_lesson", "list_lessons"]),
+  // Tool names below must also exist in tools/definitions.js — otherwise the
+  // getToolsForRole filter silently drops them and the LLM never sees the intent.
   wallets:     new Set(["discover_smart_wallets", "list_discovered_wallets", "list_smart_wallets", "add_smart_wallet", "remove_smart_wallet", "get_smart_money_rank", "get_smart_money_inflow"]),
   rugscan:     new Set(["score_rug_risk", "learn_rug_patterns", "list_rug_patterns", "harvest_market_rugs", "get_rug_memory_summary", "report_rug", "get_token_security_details", "list_blacklist", "list_blocked_deployers"]),
   narrative:   new Set(["classify_narrative", "get_narrative_heat", "get_trending_narratives", "discover_tokens"]),
@@ -97,7 +99,10 @@ async function initLLMClient(config) {
 await initLLMClient(config);
 
 const DEFAULT_MODEL =
-  process.env.LLM_MODEL || config.llmModel || "openrouter/auto";
+  process.env.LLM_MODEL ||
+  config.llm?.generalModel ||
+  config.llmModel ||
+  "openrouter/auto";
 
 const MUTATING_TOOL_INTENTS = /\b(buy|sell|deploy|close|exit|swap|block|blacklist|set |change |update |self.?update|git pull)\b/i;
 const LIVE_DATA_TOOL_INTENTS = /\b(balance|wallet|position|portfolio|screen|candidate|find|search|research|analyze|token holders|performance|stats|report|list lessons)\b/i;
@@ -153,8 +158,9 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   let providerMode = "system";
   let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
 
+  // Tools the agent must call at most once per agentLoop invocation.
+  // Mostly money-spending actions where retry == double-execution risk.
   const ONCE_PER_SESSION = new Set(["gmgn_swap"]);
-  const NO_RETRY_TOOLS = new Set(["gmgn_swap"]);
   const firedOnce = new Set();
   const mustUseRealTool = shouldRequireRealToolUse(goal, agentType, interactive);
   let sawToolCall = false;
@@ -232,7 +238,15 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           noToolRetryCount += 1;
           messages.pop();
           if (noToolRetryCount >= 2) return { content: "No tool call made.", userMessage: goal };
-          messages.push({ role: "user", content: "You must call a tool to complete this request." });
+          // Replace (not stack) any prior nudge so we don't end up with
+          // consecutive user messages — some providers reject that shape.
+          const lastIdx = messages.length - 1;
+          const NUDGE = "You must call a tool to complete this request.";
+          if (lastIdx >= 0 && messages[lastIdx].role === "user" && messages[lastIdx].content === NUDGE) {
+            // already nudged; skip pushing again
+          } else {
+            messages.push({ role: "user", content: NUDGE });
+          }
           continue;
         }
         return { content: msg.content, userMessage: goal };
@@ -242,8 +256,19 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       const toolResults = await Promise.all(msg.tool_calls.map(async (toolCall) => {
         const functionName = toolCall.function.name.replace(/<.*$/, "").trim();
         let functionArgs;
-        try { functionArgs = JSON.parse(toolCall.function.arguments || "{}"); }
-        catch { functionArgs = {}; }
+        const rawArgs = toolCall.function.arguments || "{}";
+        try {
+          functionArgs = JSON.parse(rawArgs);
+        } catch (e) {
+          // Try jsonrepair before giving up — LLMs frequently emit nearly-valid JSON.
+          try {
+            functionArgs = JSON.parse(jsonrepair(rawArgs));
+            log("agent_warn", `Repaired broken JSON args for ${functionName}`);
+          } catch {
+            log("agent_warn", `Invalid JSON args for ${functionName}: ${e.message} — using {}`);
+            functionArgs = {};
+          }
+        }
 
         if (ONCE_PER_SESSION.has(functionName) && firedOnce.has(functionName)) {
           return { role: "tool", tool_call_id: toolCall.id, content: JSON.stringify({ blocked: true, reason: "Executed once already." }) };
@@ -253,7 +278,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         const result = await executeTool(functionName, functionArgs);
         await onToolFinish?.({ name: functionName, args: functionArgs, result, success: !result.error, step });
 
-        if (NO_RETRY_TOOLS.has(functionName)) firedOnce.add(functionName);
+        if (ONCE_PER_SESSION.has(functionName)) firedOnce.add(functionName);
         
         // RTK Compression: reduce token usage by 60-90%
         const compressed = compressToolOutput(result, functionName);

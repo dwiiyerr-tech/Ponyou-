@@ -10,9 +10,12 @@
  */
 
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 
-const INTEL_FILE = "./market-intel.json";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const INTEL_FILE = path.join(__dirname, "market-intel.json");
 
 // Rolling window: store the last N snapshots
 const MAX_SNAPSHOTS = 48; // ~24h if checked every 30min
@@ -134,15 +137,19 @@ export function recordMarketSnapshot(tokens) {
     intel.snapshots = intel.snapshots.slice(-MAX_SNAPSHOTS);
   }
 
-  // Smooth: condition must appear N times in a row to change
+  // Smooth: condition must appear N times in a row to change.
+  // Special case: until we have enough history (< 3 snapshots), accept the
+  // freshly observed condition immediately rather than staying stuck on NORMAL.
   const recent = intel.snapshots.slice(-3).map(s => s.condition);
-  const dominantRecent = recent[recent.length - 1];
+  const latest = recent[recent.length - 1];
   const prevCondition = intel.currentCondition;
 
-  // Hysteresis: only change if 2+ recent agree
-  const agreesWithNew = recent.filter(c => c === dominantRecent).length;
-  if (agreesWithNew >= 2) {
-    intel.currentCondition = dominantRecent;
+  const agreesWithLatest = recent.filter(c => c === latest).length;
+  const shouldAdopt =
+    recent.length < 3 ? true : agreesWithLatest >= 2;
+
+  if (shouldAdopt) {
+    intel.currentCondition = latest;
   }
 
   if (intel.currentCondition !== prevCondition) {
