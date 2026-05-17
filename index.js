@@ -880,9 +880,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const openTokens = (balance.tokens || []).filter(t => t.usd >= 0.1 && t.symbol !== "SOL");
 
     // ─── Profit-aware position limit ──────────────
+    // Strategy presets don't carry a `protections` block — fall back to
+    // config.risk.maxPositions (default 3) as the base cap.
+    const baseMaxPositions = strategy?.protections?.max_open_trades
+      ?? config.risk?.maxPositions
+      ?? 3;
     const positionLimit = config.pilot.enabled
-      ? getDynamicPositionLimit(strategy.protections.max_open_trades)
-      : strategy.protections.max_open_trades;
+      ? getDynamicPositionLimit(baseMaxPositions)
+      : baseMaxPositions;
 
     if (openTokens.length >= positionLimit) {
       const profitMode = isInProfitMode();
