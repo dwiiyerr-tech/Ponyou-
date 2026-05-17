@@ -79,10 +79,12 @@ export function learnPatterns() {
     buckets.set(key, bucket);
   }
 
+  // Use the FULL feature signature so two patterns that share their first 3
+  // features but differ in the remainder don't collapse into the same id.
   const learned = [...buckets.values()]
     .filter(b => b.count >= MIN_OCCURRENCES_TO_LEARN)
     .map(b => ({
-      pattern_id: `learned_${b.features.slice(0, 3).join("_")}`,
+      pattern_id: `learned_${b.features.join("_")}`,
       features: b.features,
       weight: Math.min(50, 15 + b.count * 5),
       occurrences: b.count,

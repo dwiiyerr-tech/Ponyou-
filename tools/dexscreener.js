@@ -46,11 +46,25 @@ function normalizeDex(dexId = "") {
   return dexId || null;
 }
 
-function mapPair(pair, boostAmount = 0) {
-  const h1Buys  = pair.txns?.h1?.buys  || 0;
-  const h1Sells = pair.txns?.h1?.sells || 0;
-  const h1Total = h1Buys + h1Sells;
-  const h1Vol   = pair.volume?.h1 || 0;
+// Pick the right DexScreener txns bucket for the requested timeframe.
+const TF_BUCKETS = {
+  "5m":  "m5",
+  "1h":  "h1",
+  "6h":  "h6",
+  "24h": "h24",
+};
+function tfBucket(tf) {
+  // DexScreener has no <5m bucket; treat 1m as 5m for stats purposes.
+  if (tf === "1m") return "m5";
+  return TF_BUCKETS[tf] || "h1";
+}
+
+function mapPair(pair, boostAmount = 0, timeframe = "1h") {
+  const b = tfBucket(timeframe);
+  const buys  = pair.txns?.[b]?.buys  || 0;
+  const sells = pair.txns?.[b]?.sells || 0;
+  const total = buys + sells;
+  const vol   = pair.volume?.[b] || 0;
 
   const narrativeTags = classifyNarrative({
     symbol: pair.baseToken.symbol,
@@ -66,17 +80,19 @@ function mapPair(pair, boostAmount = 0) {
     price:            parseFloat(pair.priceUsd || 0),
     mcap:             pair.marketCap || pair.fdv || 0,
     liquidity:        pair.liquidity?.usd || 0,
-    volume:           h1Vol,
-    swaps:            h1Total,
+    volume:           vol,
+    swaps:            total,
+    timeframe,
     hot_level:        boostAmount > 0 ? Math.min(3, Math.ceil(boostAmount / 200)) : 0,
     launchpad:        normalizeDex(pair.dexId),
     creator:          null,
-    buys:             h1Buys,
-    sells:            h1Sells,
-    buy_vol:          h1Total > 0 ? h1Vol * (h1Buys  / h1Total) : 0,
-    sell_vol:         h1Total > 0 ? h1Vol * (h1Sells / h1Total) : 0,
+    buys,
+    sells,
+    buy_vol:          total > 0 ? vol * (buys  / total) : 0,
+    sell_vol:         total > 0 ? vol * (sells / total) : 0,
     price_change_5m:  pair.priceChange?.m5  || 0,
     price_change_1h:  pair.priceChange?.h1  || 0,
+    price_change_24h: pair.priceChange?.h24 || 0,
     created_at:       pair.pairCreatedAt ? Math.floor(pair.pairCreatedAt / 1000) : null,
     pair_address:     pair.pairAddress,
     dex:              pair.dexId,
@@ -136,7 +152,7 @@ export async function discoverTokens({ timeframe = "1m", limit = 20 } = {}) {
       if (mint === SOL_MINT) continue;
       const liq = pair.liquidity?.usd || 0;
       if (!tokenMap.has(mint) || liq > (tokenMap.get(mint).liquidity || 0)) {
-        tokenMap.set(mint, mapPair(pair, boostMap.get(mint) || 0));
+        tokenMap.set(mint, mapPair(pair, boostMap.get(mint) || 0, timeframe));
       }
     }
 
@@ -192,14 +208,17 @@ export async function getTokenSecurityDetails({ mint }) {
       } catch {}
     }
 
-    const holders = topAccounts.map(a => ({
-      address:    a.address,
-      pct:        supplyUi > 0 ? (a.uiAmount / supplyUi) * 100 : 0,
-      is_contract: false,
-      sol_balance: solBalances[a.address] ?? 0,
-      funded_at:   null,
-      token_amount: a.uiAmount,
-    }));
+    const holders = topAccounts.map(a => {
+      const ui = parseFloat(a.uiAmount ?? a.uiAmountString ?? 0) || 0;
+      return {
+        address:     a.address,
+        pct:         supplyUi > 0 ? (ui / supplyUi) * 100 : 0,
+        is_contract: false,
+        sol_balance: solBalances[a.address] ?? 0,
+        funded_at:   null,
+        token_amount: ui,
+      };
+    });
 
     const top10Pct    = holders.slice(0, 10).reduce((s, h) => s + (h.pct || 0), 0);
     const dustHolders = holders.filter(h => (h.sol_balance || 0) < 0.2);
@@ -281,23 +300,53 @@ const GT_BASE = "https://api.geckoterminal.com/api/v2";
 const _poolCache = new Map(); // mint → { pool, ts }
 const POOL_TTL_MS = 5 * 60_000;
 
-// Rate-limit aware fetcher (GeckoTerminal free = 30/min)
+// Rate-limit aware fetcher (GeckoTerminal free = 30/min).
+// Serializes calls via a chained promise so concurrent callers can't both pass
+// the gap check simultaneously.
 let _gtLastCall = 0;
+let _gtQueue = Promise.resolve();
 const GT_MIN_GAP_MS = 2100; // ~28 req/min, leaves headroom
 
-async function gtFetch(url, retries = 3) {
-  for (let attempt = 0; attempt <= retries; attempt++) {
+async function gtAcquireSlot() {
+  // Atomic reservation: only one caller at a time runs the gap-await + stamp.
+  let release;
+  const next = new Promise((res) => (release = res));
+  const prev = _gtQueue;
+  _gtQueue = next;
+  await prev;
+  try {
     const gap = Date.now() - _gtLastCall;
-    if (gap < GT_MIN_GAP_MS) await new Promise(r => setTimeout(r, GT_MIN_GAP_MS - gap));
+    if (gap < GT_MIN_GAP_MS) await new Promise((r) => setTimeout(r, GT_MIN_GAP_MS - gap));
     _gtLastCall = Date.now();
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
-    if (res.status === 429) {
-      const wait = 2000 * (attempt + 1);
-      if (attempt < retries) { await new Promise(r => setTimeout(r, wait)); continue; }
-    }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
+  } finally {
+    release();
   }
+}
+
+async function gtFetch(url, retries = 3) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    await gtAcquireSlot();
+    try {
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      if (res.status === 429) {
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+          continue;
+        }
+        throw new Error(`HTTP 429`);
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        continue;
+      }
+    }
+  }
+  throw lastErr || new Error("GeckoTerminal fetch failed");
 }
 
 async function getTopPool(mint) {

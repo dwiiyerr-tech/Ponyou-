@@ -160,6 +160,27 @@ export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
     flags.push(`Token fees below ${f.min_token_fees_sol} SOL: ${globalFeesSol.toFixed(2)}`);
   }
 
+  // ─── Concentration gate (smart_money preset) ────────────────
+  const top10Pct = Number(securityDetails?.rug_signals?.top10_concentration_pct ?? NaN);
+  if (Number.isFinite(f.max_top10_pct) && Number.isFinite(top10Pct) && top10Pct > f.max_top10_pct) {
+    flags.push(`Top10 ${top10Pct.toFixed(1)}% > max ${f.max_top10_pct}%`);
+  }
+
+  // ─── ATH-distance gate (dip_buy preset) ─────────────────────
+  // tokenData.price_change_h24 / dip_from_ath_pct are negative when below ATH.
+  // We accept either a precomputed dip metric or the 24h change as a proxy.
+  if (Number.isFinite(f.max_ath_distance_pct)) {
+    const dip = Number(
+      tokenData.dip_from_ath_pct ??
+      tokenData.price_change_24h ??
+      tokenData.price_change_1h ??
+      NaN
+    );
+    if (Number.isFinite(dip) && dip > f.max_ath_distance_pct) {
+      flags.push(`Not dipped enough: ${dip.toFixed(1)}% > ${f.max_ath_distance_pct}%`);
+    }
+  }
+
   const passed = flags.length <= f.maxAllowedFlags;
   return {
     passed,

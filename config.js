@@ -276,9 +276,10 @@ export function computeDeployAmount(walletSol, opts = {}) {
  *   Volatility 100% (extreme): factor=0.5, size=0.25 SOL (half)
  */
 export function computeVolatilityAdjustedSize(baseSize, volatilityPercentile = 0) {
-  if (!config.indicators?.volatilityAdjustmentEnabled && volatilityPercentile === 0) {
-    return baseSize; // No adjustment if disabled or no volatility data
-  }
+  // If volatility adjustment is disabled, always return base — regardless of
+  // whatever percentile the caller happens to pass in.
+  if (!config.indicators?.volatilityAdjustmentEnabled) return baseSize;
+
   // Guard: jika percentile invalid (mis. dari klines rusak), pakai 50 (medium).
   if (!Number.isFinite(volatilityPercentile)) volatilityPercentile = 50;
 

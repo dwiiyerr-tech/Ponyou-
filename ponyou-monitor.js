@@ -142,28 +142,36 @@ function calculateStats(trades) {
   };
 }
 
-function calculateRiskMetrics(state, trades, config) {
+function calculateRiskMetrics(state, trades) {
   const positions = Object.keys(state.positions || {}).length;
   const equity = state.equity || 0;
   const peakEquity = state.peakEquity || equity;
 
   const maxDrawdown = peakEquity > 0 ? ((equity - peakEquity) / peakEquity) * 100 : 0;
 
-  // Sharpe Ratio (simplified)
-  const pnls = trades.map((t) => t.pnl_pct);
-  const variance = pnls.length > 1 ? pnls.reduce((sum, p) => sum + Math.pow(p - 0, 2), 0) / pnls.length : 0;
-  const stdDev = Math.sqrt(variance);
-  const sharpe = stdDev > 0 ? (pnls.reduce((s, p) => s + p, 0) / pnls.length) / stdDev : 0;
+  // Sharpe ratio (per-trade approximation): mean / stddev of trade returns.
+  const pnls = trades.map((t) => t.pnl_pct).filter(Number.isFinite);
+  let sharpe = 0;
+  if (pnls.length > 1) {
+    const mean = pnls.reduce((s, p) => s + p, 0) / pnls.length;
+    const variance = pnls.reduce((sum, p) => sum + Math.pow(p - mean, 2), 0) / pnls.length;
+    const stdDev = Math.sqrt(variance);
+    if (stdDev > 0) sharpe = mean / stdDev;
+  }
 
-  // Risk Score
-  const riskScore = positions * (1 - (pnls.length > 0 ? Math.max(...pnls.map(p => p > 0 ? 1 : 0)) / pnls.length : 0.5));
+  // Risk score: open exposure × (1 - recent win rate). Higher = riskier.
+  const recent = pnls.slice(-20);
+  const recentWinRate = recent.length > 0
+    ? recent.filter(p => p > 0).length / recent.length
+    : 0.5;
+  const riskScore = positions * (1 - recentWinRate);
 
   return {
     positions,
     equity,
     peakEquity,
     maxDrawdown,
-    sharpe: isNaN(sharpe) ? 0 : sharpe,
+    sharpe: Number.isFinite(sharpe) ? sharpe : 0,
     riskScore: riskScore.toFixed(2),
   };
 }
@@ -191,7 +199,7 @@ function drawMonitor() {
 
   const trades = perf.trades || [];
   const stats = calculateStats(trades);
-  const risk = calculateRiskMetrics(state, trades, config);
+  const risk = calculateRiskMetrics(state, trades);
 
   // 1. Status Overview
   const positions = Object.keys(state.positions || {}).length;
@@ -287,10 +295,12 @@ ${topLessons ? `Top Lessons:\n${topLessons}` : "No lessons active"}`,
     recentTrades = trades
       .slice(-5)
       .reverse()
-      .map(
-        (t, i) =>
-          `${i + 1}. ${t.token.symbol || "?".padEnd(6)} - ${formatPercentage(t.pnl_pct)} ${t.win ? "✓" : "✗"}`
-      )
+      .map((t, i) => {
+        const sym = (t.symbol || t.token?.symbol || "???").padEnd(6).slice(0, 6);
+        const pnl = Number.isFinite(t.pnl_pct) ? formatPercentage(t.pnl_pct) : "  N/A";
+        const mark = t.win ? "✓" : "✗";
+        return `${i + 1}. ${sym} - ${pnl} ${mark}`;
+      })
       .join("\n");
   }
 

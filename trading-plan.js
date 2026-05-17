@@ -11,9 +11,12 @@
  */
 
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 
-const PLAN_FILE = "./trading-plan.json";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PLAN_FILE = path.join(__dirname, "trading-plan.json");
 
 // ─── Plan Math ────────────────────────────────────────────────
 

@@ -7,6 +7,8 @@
  */
 
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { addLesson, recordRug } from "./lessons.js";
 import { getTokenMarketInfo } from "./tools/gmgn.js";
@@ -16,7 +18,8 @@ import { getTokenSecurityDetails } from "./tools/dexscreener.js";
 const RUG_DROP_PCT  = -80;  // confirmed rug — auto recordRug
 const TRASH_DROP_PCT = -50; // confirmed bad pick — LLM analysis only
 
-const OBSERVATION_FILE = "./observed-tokens.json";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const OBSERVATION_FILE = path.join(__dirname, "observed-tokens.json");
 
 // ─── Observation Management ────────────────────────────────────
 
@@ -45,6 +48,7 @@ export function recordObservations(candidates) {
     data.observed.push({
       mint: token.mint,
       symbol: token.symbol,
+      launchpad: token.launchpad || null,
       observed_at: new Date().toISOString(),
       check_at: new Date(now + 60 * 60 * 1000).toISOString(), // Cek 60 menit kemudian
       initial_mcap: token.mcap || token.initial_mcap,
@@ -110,11 +114,13 @@ export async function processObservations() {
         try {
           // Fetch live security signals at rug-confirmation time. These are richer
           // than the observation snapshot (which only stored flags + rug_score).
+          // NOTE: do NOT pass a "creator" proxy. Top-holder ≠ deployer, and a
+          // wrong creator would poison the dev blocklist.
           const sec = await getTokenSecurityDetails({ mint: obs.mint });
           recordRug({
             mint: obs.mint,
             symbol: obs.symbol,
-            creator: sec?.holders?.[0]?.address || null,  // best-effort creator proxy
+            creator: null,
             launchpad: obs.launchpad || null,
             rug_signals: sec?.rug_signals || {},
             pattern_notes: `auto-harvested from observation: ${changePct.toFixed(1)}% drop in ${Math.round((now - new Date(obs.observed_at).getTime()) / 3600000)}h`,

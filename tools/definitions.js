@@ -362,5 +362,311 @@ export const tools = [
       description: "Update the agent's code from git (only works in TTY).",
       parameters: { type: "object", properties: {} }
     }
+  },
+
+  // ─── Market / Plan / Vault / Report ─────────────────────
+  {
+    type: "function",
+    function: {
+      name: "get_market_intelligence",
+      description: "Get current market condition (EXTREME/HOT/NORMAL/COLD/DEAD) and recommended adjustments.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_market_trend",
+      description: "Get the rolling 24h market condition trend (HEATING_UP / COOLING_DOWN / STABLE).",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_plan_summary",
+      description: "Get the current compound trading plan summary (day, P&L, target, profit mode).",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "pause_session",
+      description: "Manually pause the trading session for N minutes.",
+      parameters: {
+        type: "object",
+        properties: {
+          reason: { type: "string" },
+          durationMin: { type: "number" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "advance_day",
+      description: "Advance the compound plan to the next day. Pass current capital in USD.",
+      parameters: {
+        type: "object",
+        properties: { actualCapitalUsd: { type: "number" } }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_learning_status",
+      description: "Get learning-mode status (active/inactive, trigger, recent analyses).",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_vault_status",
+      description: "Get vault status (configured wallet, % per cycle, days until next).",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "generate_report",
+      description: "Generate today's daily report (saved to logs/, returns preview text).",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_report_status",
+      description: "Get info about the last generated daily report.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+
+  // ─── Rug memory / risk scoring ──────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "score_rug_risk",
+      description: "Score a token's rug risk 0-100 using all available signals + learned patterns.",
+      parameters: {
+        type: "object",
+        properties: {
+          mint: { type: "string" },
+          creator: { type: "string" },
+          launchpad: { type: "string" },
+          rug_signals: { type: "object" }
+        },
+        required: ["mint"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "report_rug",
+      description: "Record a confirmed rug into rug-memory (and auto-trigger pattern learning).",
+      parameters: {
+        type: "object",
+        properties: {
+          mint: { type: "string" },
+          symbol: { type: "string" },
+          creator: { type: "string" },
+          launchpad: { type: "string" },
+          rug_signals: { type: "object" },
+          pattern_notes: { type: "string" }
+        },
+        required: ["mint"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_rug_memory_summary",
+      description: "Summary of rug memory: # blacklisted tokens/devs, # known patterns.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_blacklist",
+      description: "List all blacklisted token mints with reason and timestamp.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_from_blacklist",
+      description: "Remove a mint from the persistent blacklist.",
+      parameters: {
+        type: "object",
+        properties: { mint: { type: "string" } },
+        required: ["mint"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_blocked_deployers",
+      description: "List all blocked dev/deployer wallet addresses.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "unblock_deployer",
+      description: "Remove a dev wallet from the blocklist.",
+      parameters: {
+        type: "object",
+        properties: { address: { type: "string" } },
+        required: ["address"]
+      }
+    }
+  },
+
+  // ─── Lessons management ─────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "pin_lesson",
+      description: "Pin a lesson by id so it always appears in agent prompts.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "number" } },
+        required: ["id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "unpin_lesson",
+      description: "Unpin a lesson by id.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "number" } },
+        required: ["id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "clear_lessons",
+      description: "Clear lessons. mode = 'all' | 'performance' | 'keyword' (with keyword).",
+      parameters: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: ["all", "performance", "keyword"] },
+          keyword: { type: "string" }
+        },
+        required: ["mode"]
+      }
+    }
+  },
+
+  // ─── Performance / decisions / state ────────────────────
+  {
+    type: "function",
+    function: {
+      name: "get_performance_history",
+      description: "Get the last N closed trades with P&L and exit reasons.",
+      parameters: {
+        type: "object",
+        properties: { limit: { type: "number", default: 20 } }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_position_note",
+      description: "Attach (or clear) a free-text instruction to a tracked position.",
+      parameters: {
+        type: "object",
+        properties: {
+          position_address: { type: "string" },
+          instruction: { type: "string" }
+        },
+        required: ["position_address"]
+      }
+    }
+  },
+
+  // ─── Smart wallets ──────────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "add_smart_wallet",
+      description: "Add a Solana wallet to the smart-money tracking list.",
+      parameters: {
+        type: "object",
+        properties: {
+          address: { type: "string" },
+          label: { type: "string" }
+        },
+        required: ["address"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_smart_wallet",
+      description: "Remove a wallet from the smart-money tracking list.",
+      parameters: {
+        type: "object",
+        properties: { address: { type: "string" } },
+        required: ["address"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_smart_wallets",
+      description: "List all tracked smart-money wallets.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+
+  // ─── Klines / token-research extras ─────────────────────
+  {
+    type: "function",
+    function: {
+      name: "get_token_klines",
+      description: "Fetch OHLCV candles for a Solana token (GeckoTerminal).",
+      parameters: {
+        type: "object",
+        properties: {
+          mint: { type: "string" },
+          pair_address: { type: "string" },
+          resolution: { type: "string", enum: ["1m", "5m", "15m", "30m", "1h", "4h", "1d"], default: "5m" },
+          limit: { type: "number", default: 100 }
+        },
+        required: ["mint"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_token_narrative",
+      description: "Get the narrative/story behind a token from Jupiter ChainInsight.",
+      parameters: {
+        type: "object",
+        properties: { mint: { type: "string" } },
+        required: ["mint"]
+      }
+    }
   }
 ];

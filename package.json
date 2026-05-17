@@ -11,7 +11,7 @@
     "dev": "DRY_RUN=true node index.js",
     "ui": "node ponyou-launcher.js",
     "dashboard": "node ponyou-dashboard.js",
-    "dry": "node dry-run.mjs",
+    "dry": "DRY_RUN=true node dry-run.mjs",
     "web": "cd dashboard && node server.js",
     "web:dev": "cd dashboard && npm run dev",
     "web:build": "cd dashboard && npm run build"

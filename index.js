@@ -8,7 +8,7 @@ import { discoverTokens, getSolanaGasFee, swapToken as gmgnSwap, getTokenSecurit
 import { config, computeDeployAmount, computeVolatilityAdjustedSize } from "./config.js";
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML } from "./telegram.js";
+import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape } from "./telegram.js";
 import {
   strategy, checkROI, checkTrailingStop, run4FilterProtocol, getMcapTier,
   getEffectiveStopLoss, getEffectiveImmediateTakeProfit, checkPartialTP,
@@ -108,6 +108,9 @@ function buildPrompt() {
 let _cronTasks = [];
 let _managementBusy = false;
 let _screeningBusy = false;
+// cronStarted is hoisted here so startCronJobs / stopCronJobs (defined below
+// and exported) can safely reference it from another module's evaluation order.
+let cronStarted = false;
 
 function stripThink(t) {
   return t ? t.replace(/<think>[\s\S]*?<\/think>/gi, "").trim() : t;
@@ -138,21 +141,24 @@ async function handleStrategyTelegramCommand(text) {
     const active = getStrategy();
     const plan = getPlanSummary();
     const pending = listPendingIntents();
+    const slPct = (active.stoploss * 100).toFixed(1);
+    const trail = active.trailing_stop?.enabled ? "on" : "off";
+    const ptp   = active.partial_tp?.enabled ? `${active.partial_tp.sell_pct}%@+${active.partial_tp.at_pct}%` : "off";
+    const confirm = config.trading.confirmMode ? "🟡 ON" : "🟢 OFF";
+    const planLine = plan
+      ? `Day ${plan.day}/${plan.days_total} · PnL ${fmt.pct(plan.today_pnl_pct ?? 0)} · target +${plan.daily_target_pct}%`
+      : `belum diinisialisasi`;
+
     const lines = [
-      `🤖 <b>Ponyou Menu</b>`,
+      `🤖 <b>Ponyou</b>`,
+      fmt.divider(),
+      `<b>Strategy</b> · ${htmlEscape(active.name)} (<code>${active.id}</code>)`,
+      `SL ${slPct}% · trail ${trail} · partTP ${ptp} · LLM ${active.use_llm ? "on" : "off"}`,
       ``,
-      `<b>Strategy</b>: ${active.name} (<code>${active.id}</code>)`,
-      `Stop-loss: ${(active.stoploss * 100).toFixed(1)}% · Trailing: ${active.trailing_stop?.enabled ? "ON" : "off"} · Partial TP: ${active.partial_tp?.enabled ? `${active.partial_tp.sell_pct}%@+${active.partial_tp.at_pct}%` : "off"}`,
-      `LLM: ${active.use_llm ? "on" : "off"}`,
-      ``,
-      `<b>Confirm mode</b>: ${config.trading.confirmMode ? "🟡 ON (BUYs need /yes)" : "🟢 OFF (auto-execute)"}`,
-      `<b>Pending intents</b>: ${pending.length}`,
-      ``,
-      plan
-        ? `<b>Plan</b>: Day ${plan.day}/${plan.days_total} · PnL ${(plan.today_pnl_pct ?? 0).toFixed(2)}% · Target +${plan.daily_target_pct}%`
-        : `<b>Plan</b>: belum diinisialisasi`,
-      ``,
-      `Commands: /strategy /strategies /stratset /confirm /pending /yes /no /pnl /status`,
+      `<b>Confirm</b> · ${confirm} · pending ${pending.length}`,
+      `<b>Plan</b> · ${planLine}`,
+      fmt.divider(),
+      fmt.it("/strategy /strategies /stratset /confirm /pending /yes /no /pnl /status"),
     ];
     await sendHTML(lines.join("\n"));
     return true;
@@ -160,13 +166,13 @@ async function handleStrategyTelegramCommand(text) {
 
   if (cmd === "/strategies") {
     const list = listStrategies();
-    const lines = [`🎯 <b>Strategies</b>`, ``];
+    const lines = [`🎯 <b>Strategies</b>`, fmt.divider()];
     for (const s of list) {
-      lines.push(`${s.active ? "✅" : "  "} <b>${s.id}</b> — ${s.name}`);
-      lines.push(`     SL ${s.stoploss_pct.toFixed(1)}% · Trail ${s.trailing ? "on" : "off"} · PartTP ${s.partial_tp} · LLM ${s.use_llm ? "on" : "off"}`);
-      lines.push(`     <i>${s.description}</i>`);
+      const mark = s.active ? "●" : "○";
+      lines.push(`${mark} <b>${htmlEscape(s.id)}</b> — ${htmlEscape(s.name)}`);
+      lines.push(`   SL ${s.stoploss_pct.toFixed(1)}% · trail ${s.trailing ? "on" : "off"} · partTP ${htmlEscape(String(s.partial_tp))} · LLM ${s.use_llm ? "on" : "off"}`);
     }
-    lines.push(``, `Switch with: /strategy &lt;id&gt;`);
+    lines.push(``, fmt.it("Switch: /strategy <id>"));
     await sendHTML(lines.join("\n"));
     return true;
   }
@@ -226,16 +232,18 @@ async function handleStrategyTelegramCommand(text) {
   if (cmd === "/pending") {
     const pending = listPendingIntents();
     if (!pending.length) {
-      await sendHTML(`📭 No pending intents.`);
+      await sendHTML(`📭 ${fmt.it("Tidak ada pending intent")}`);
       return true;
     }
-    const lines = [`📋 <b>Pending intents</b>`, ``];
+    const lines = [`📋 <b>Pending</b>`, fmt.divider()];
     for (const i of pending) {
       const remainMs = new Date(i.expires_at).getTime() - Date.now();
       const remainMin = Math.max(0, Math.ceil(remainMs / 60000));
-      lines.push(`#${i.id} ${i.type} · ${i.args?.amount || "?"} SOL → <code>${i.args?.token_out?.slice(0, 12) || "?"}</code> · ${remainMin}m left`);
+      lines.push(
+        `#${i.id} · ${htmlEscape(i.type)} · ${fmt.sol(Number(i.args?.amount))} → <code>${htmlEscape(fmt.short(i.args?.token_out, 10))}</code> · ${remainMin}m`,
+      );
     }
-    lines.push(``, `Approve: /yes &lt;id&gt; · Reject: /no &lt;id&gt;`);
+    lines.push(``, fmt.it("/yes <id> · /no <id>"));
     await sendHTML(lines.join("\n"));
     return true;
   }
@@ -267,27 +275,27 @@ async function handleStrategyTelegramCommand(text) {
  */
 async function executePendingIntent(id) {
   const intent = getIntent(id);
-  if (!intent) return sendHTML(`❌ Intent #${id} not found.`);
-  if (intent.status !== "pending") return sendHTML(`⚠️ Intent #${id} already ${intent.status}.`);
+  if (!intent) return sendHTML(`❌ #${id} ${fmt.it("not found")}`);
+  if (intent.status !== "pending") return sendHTML(`⚠️ #${id} ${fmt.it("already " + intent.status)}`);
   if (intent.expires_at && Date.now() > new Date(intent.expires_at).getTime()) {
     consumeIntent(id, "expired");
-    return sendHTML(`⏰ Intent #${id} expired.`);
+    return sendHTML(`⏰ #${id} ${fmt.it("expired")}`);
   }
 
-  await sendHTML(`⏳ Executing intent #${id}...`);
+  await sendHTML(`⏳ Eksekusi #${id}…`);
   const { args } = intent;
   let result;
   try {
     result = await gmgnSwap(args);
   } catch (e) {
     consumeIntent(id, "failed", { error: e.message });
-    return sendHTML(`❌ Intent #${id} swap failed: ${e.message}`);
+    return sendHTML(`❌ #${id} swap failed\n${fmt.code(e.message)}`);
   }
 
   const succeeded = result?.success || result?.dry_run;
   if (!succeeded) {
     consumeIntent(id, "failed", { error: result?.error || "unknown" });
-    return sendHTML(`❌ Intent #${id} swap returned: ${JSON.stringify(result).slice(0, 200)}`);
+    return sendHTML(`❌ #${id} swap rejected\n${fmt.code(JSON.stringify(result).slice(0, 200))}`);
   }
 
   // Wire up position tracking the same way the screening LLM path does.
@@ -312,7 +320,10 @@ async function executePendingIntent(id) {
   recordTrade(null);
   consumeIntent(id, "executed", { result: result?.hash || result?.signature || "ok" });
 
-  return sendHTML(`✅ Intent #${id} executed.\nToken: <code>${symbol}</code> · Amount: ${args.amount} SOL`);
+  return sendHTML(
+    `✅ <b>Intent #${id}</b>\n` +
+    `Token: <code>${htmlEscape(symbol)}</code> · ${fmt.sol(Number(args.amount))}`
+  );
 }
 
 // ─── Gate Checks ──────────────────────────────────────────────
@@ -327,7 +338,10 @@ async function checkAllGates(source = "") {
     const gate = checkSessionGate();
     if (gate.just_resumed) {
       log("plan", `Session resumed — ${source}`);
-      if (telegramEnabled()) sendMessage(`▶️ Sesi dilanjutkan.\nDay ${getPlanSummary()?.day}/${getPlanSummary()?.days_total}`);
+      if (telegramEnabled()) {
+        const p = getPlanSummary();
+        sendHTML(`▶️ <b>Sesi lanjut</b> · Day ${p?.day}/${p?.days_total}`);
+      }
     }
     if (gate.paused) {
       log("plan", `Gate: paused (${gate.reason}), ${gate.resume_in_min}min — skip ${source}`);
@@ -339,7 +353,7 @@ async function checkAllGates(source = "") {
   const learn = getLearningModeStatus();
   if (learn.just_ended) {
     log("learning", "Learning mode selesai — melanjutkan trading");
-    if (telegramEnabled()) sendMessage(`▶️ Learning mode selesai — trading dilanjutkan`);
+    if (telegramEnabled()) sendHTML(`▶️ <b>Learning mode selesai</b>`);
   }
   if (learn.active) {
     // Jalankan analisis LLM sekali jika belum
@@ -369,15 +383,16 @@ async function refreshSessionPnl(totalUsd) {
 
   if (result.action === "pause_target") {
     const plan = getPlanSummary();
-    const msg = [
-      `🎯 TARGET HARIAN TERCAPAI!`,
-      `+${result.pnl_pct.toFixed(2)}% (+$${result.pnl_usd?.toFixed(4)})`,
-      `Agent dijeda ${config.pilot.sessionPauseDurationMin}min untuk istirahat.`,
-      `Day ${plan?.day}/${plan?.days_total}`,
-      `Profit mode: aktif saat resume 🔥`,
-    ].join("\n");
-    log("plan", msg);
-    if (telegramEnabled()) sendMessage(msg);
+    const logMsg = `Target hit +${result.pnl_pct.toFixed(2)}%, pause ${config.pilot.sessionPauseDurationMin}min`;
+    log("plan", logMsg);
+    if (telegramEnabled()) {
+      const lines = [
+        `🎯 <b>Target harian tercapai</b>`,
+        `PnL: ${fmt.pct(result.pnl_pct)} (${fmt.usd(result.pnl_usd)})`,
+        `Day ${plan?.day}/${plan?.days_total} · pause ${config.pilot.sessionPauseDurationMin}m`,
+      ];
+      sendHTML(lines.join("\n"));
+    }
   } else if (result.action === "trigger_learning") {
     // Aktifkan learning mode
     const balance = await getWalletBalances().catch(() => ({}));
@@ -390,14 +405,15 @@ async function refreshSessionPnl(totalUsd) {
     };
     const activated = activateLearningMode(lossContext, "DAILY_STOPLOSS", config.pilot.learningModeDurationMin);
     if (activated) {
-      const msg = [
-        `🧠 LEARNING MODE AKTIF`,
-        `Daily stop-loss tercapai: ${result.pnl_pct.toFixed(2)}%`,
-        `Ponyou akan menganalisis kenapa rugi dan belajar.`,
-        `Jeda ${config.pilot.learningModeDurationMin} menit — tidak ada entry baru.`,
-      ].join("\n");
-      log("plan", msg);
-      if (telegramEnabled()) sendMessage(msg);
+      log("plan", `Learning mode triggered — daily SL ${result.pnl_pct.toFixed(2)}%`);
+      if (telegramEnabled()) {
+        const lines = [
+          `🧠 <b>Learning mode</b>`,
+          `Daily stop-loss · ${fmt.pct(result.pnl_pct)}`,
+          `Pause ${config.pilot.learningModeDurationMin}m · no new entries`,
+        ];
+        sendHTML(lines.join("\n"));
+      }
     }
   }
 }
@@ -435,17 +451,17 @@ async function runLossAnalysis() {
       marketCondition: marketCond,
     });
 
-    const msg = [
-      `🧠 ANALISIS LOSS SELESAI`,
-      `Trigger: ${lossContext.exit_reason || "?"}`,
-      `P&L: ${lossContext.pnl_pct?.toFixed(2) || "?"}%`,
-      `${result.lessons_added} pelajaran baru ditambahkan`,
-      `─────────────────────`,
-      stripThink(content)?.slice(0, 500),
-    ].join("\n");
-
     log("learning", `Analisis selesai. ${result.lessons_added} lessons ditambahkan.`);
-    if (telegramEnabled()) sendMessage(msg);
+    if (telegramEnabled()) {
+      const body = htmlEscape((stripThink(content) || "").slice(0, 500));
+      const lines = [
+        `🧠 <b>Analisis loss</b> · ${fmt.pct(lossContext.pnl_pct)}`,
+        `Trigger: ${htmlEscape(lossContext.exit_reason || "?")} · ${result.lessons_added} lessons baru`,
+        fmt.divider(),
+        body,
+      ];
+      sendHTML(lines.join("\n"));
+    }
   } catch (e) {
     log("learning_error", `Analisis LLM gagal: ${e.message}`);
   }
@@ -496,7 +512,13 @@ export async function runContinuousLearningCycle() {
     });
     
     if (telegramEnabled() && result.lessons_added > 0) {
-      sendMessage(`🧠 CONTINUOUS LEARNING\n${result.lessons_added} pelajaran baru dari observasi market.\n\n${stripThink(content).slice(0, 400)}`);
+      const body = htmlEscape((stripThink(content) || "").slice(0, 400));
+      const lines = [
+        `🧠 <b>Continuous learning</b> · +${result.lessons_added} lessons`,
+        fmt.divider(),
+        body,
+      ];
+      sendHTML(lines.join("\n"));
     }
   } catch (e) {
     log("learning_error", `Observation analysis failed: ${e.message}`);
@@ -534,10 +556,10 @@ export async function runVaultCycle({ silent = false } = {}) {
       if (result.dry_run) recordVaultTransfer(result);
       const msg = buildVaultNotification(result);
       log("vault", `Vault sukses: ${amount_sol} SOL`);
-      if (!silent && telegramEnabled()) sendMessage(msg);
+      if (!silent && telegramEnabled()) sendHTML(msg);
     } else {
       log("vault_error", `Vault gagal: ${result.error}`);
-      if (!silent && telegramEnabled()) sendMessage(`❌ Vault gagal: ${result.error}`);
+      if (!silent && telegramEnabled()) sendHTML(`❌ <b>Vault gagal</b>\n${htmlEscape(result.error || "?")}`);
     }
 
     return result;
@@ -556,7 +578,7 @@ export async function runDailyReport({ silent = false } = {}) {
   try {
     const { report, text, filePath } = generateDailyReport();
     log("report", `Laporan disimpan: ${filePath}`);
-    if (!silent && telegramEnabled()) await sendMessage(text);
+    if (!silent && telegramEnabled()) await sendHTML(text);
     else if (!silent) console.log("\n" + text + "\n");
     return report;
   } catch (e) {
@@ -590,17 +612,21 @@ function handleTradeLoss({ symbol, mint, pnl_pct, entry_usd, exit_usd, hold_minu
   const activated = activateLearningMode(lossContext, triggerType, config.pilot.learningModeDurationMin);
   if (activated) {
     const reasonStr = tripped
-      ? `${consecutive} loss berturut-turut (tilt protection)`
+      ? `${consecutive} loss berturut (tilt)`
       : `loss ${pnl_pct?.toFixed(2)}%`;
     log("learning", `Learning mode: ${symbol} ${reasonStr}`);
-    const msg = [
-      `🧠 LEARNING MODE — ${tripped ? "TILT PROTECTION" : "TRADE LOSS"}`,
-      `Token: ${symbol} (${mint?.slice(0, 10) || "?"})`,
-      `P&L: ${pnl_pct?.toFixed(2)}% | Hold: ${Math.floor(hold_minutes || 0)}min`,
-      tripped ? `Streak: ${consecutive} loss berturut (max ${maxLosses})` : `Alasan: ${exit_reason}`,
-      `Ponyou menganalisis dan belajar selama ${config.pilot.learningModeDurationMin}min...`,
-    ].join("\n");
-    if (telegramEnabled()) sendMessage(msg).catch(() => {});
+    if (telegramEnabled()) {
+      const subline = tripped
+        ? `Streak: ${consecutive}/${maxLosses}`
+        : `Reason: ${htmlEscape(exit_reason || "?")}`;
+      const lines = [
+        `🧠 <b>Learning · ${tripped ? "Tilt protection" : "Trade loss"}</b>`,
+        `${htmlEscape(symbol || "?")} (${fmt.short(mint, 8)}) · PnL ${fmt.pct(pnl_pct)} · ${Math.floor(hold_minutes || 0)}m`,
+        subline,
+        `Pause ${config.pilot.learningModeDurationMin}m`,
+      ];
+      sendHTML(lines.join("\n")).catch(() => {});
+    }
   }
 }
 
@@ -646,7 +672,10 @@ async function checkDeterministicExits(tokens) {
       if (partialRes.success || partialRes.dry_run) {
         markPartialTPDone(token.mint);
         if (telegramEnabled()) {
-          sendMessage(`💰 Partial TP: ${token.symbol} — sold ${partial.sell_pct}% @ +${currentPnlPct.toFixed(2)}%`).catch(() => {});
+          sendHTML(
+            `💰 <b>Partial TP</b> · ${htmlEscape(token.symbol || "?")}\n` +
+            `Sold ${partial.sell_pct}% @ ${fmt.pct(currentPnlPct)}`
+          ).catch(() => {});
         }
       } else {
         log("strategy", `PARTIAL TP swap failed for ${token.symbol}: ${partialRes.error || "?"}`);
@@ -770,7 +799,13 @@ export async function runManagementCycle({ silent = false } = {}) {
         }
 
         if (telegramEnabled()) {
-          sendMessage(`${exit.is_loss ? "🛑" : "🎯"} Exit: ${exit.symbol}\n${exit.reason}\nP&L: ${exit.pnl_pct?.toFixed(2)}%`);
+          const icon = exit.is_loss ? "🛑" : "🎯";
+          const lines = [
+            `${icon} <b>Exit</b> · ${htmlEscape(exit.symbol || "?")}`,
+            `PnL: ${fmt.pct(exit.pnl_pct)}`,
+            fmt.it(exit.reason),
+          ];
+          sendHTML(lines.join("\n"));
         }
       } else {
         log("swap_error", `EXIT failed for ${exit.symbol}: ${res.error || "unknown error"}`);
@@ -814,8 +849,9 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
   } finally {
     _managementBusy = false;
     if (!silent && telegramEnabled() && mgmtReport) {
-      if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport));
-      else sendMessage(`🔄 Mgmt\n${stripThink(mgmtReport)}`);
+      const body = stripThink(mgmtReport);
+      if (liveMessage) await liveMessage.finalize(body);
+      else sendHTML(`🔄 <b>Mgmt</b>\n${htmlEscape(body)}`);
     }
   }
   return mgmtReport;
@@ -1019,8 +1055,9 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
   } finally {
     _screeningBusy = false;
     if (!silent && telegramEnabled() && screenReport) {
-      if (liveMessage) await liveMessage.finalize(stripThink(screenReport));
-      else sendMessage(`🔍 Screen\n${stripThink(screenReport)}`);
+      const body = stripThink(screenReport);
+      if (liveMessage) await liveMessage.finalize(body);
+      else sendHTML(`🔍 <b>Screen</b>\n${htmlEscape(body)}`);
     }
   }
   return screenReport;
@@ -1084,7 +1121,6 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 // ─── TTY / Interactive ────────────────────────────────────────
 
 const isTTY = process.stdin.isTTY;
-let cronStarted = false;
 let busy = false;
 const sessionHistory = [];
 const MAX_HISTORY = 10;
@@ -1139,12 +1175,13 @@ if (isTTY) {
     if (text === "/status") {
       const plan = getPlanSummary();
       const market = getMarketIntelligence();
+      const planLine = plan
+        ? `Day ${plan.day}/${plan.days_total} · PnL ${fmt.pct(plan.today_pnl_pct ?? 0)}`
+        : fmt.it("plan belum diinisialisasi");
       const msg = [
-        `📊 <b>Ponyou Status</b>`,
-        plan
-          ? `Plan: Day ${plan.day}/${plan.days_total}\nPnL Today: ${(plan.today_pnl_pct ?? 0).toFixed(2)}%`
-          : `Plan: belum diinisialisasi`,
-        `Market: ${market.condition}`,
+        `📊 <b>Status</b>`,
+        planLine,
+        `Market · ${htmlEscape(market.condition)}`,
       ].join("\n");
       await sendHTML(msg);
       return;
@@ -1163,22 +1200,24 @@ if (isTTY) {
     busy = true;
     let liveMsg = null;
     try {
-      liveMsg = await createLiveMessage("🤖 Ponyou Thinking", "Analyzing your request...");
-      
+      liveMsg = await createLiveMessage("🤖 Ponyou", "Memproses…");
+
       const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, "GENERAL", null, null, {
-        onThinkingStart: async () => { /* already started by createLiveMessage */ },
+        onThinkingStart: async () => { /* sudah dimulai oleh createLiveMessage */ },
         onToolStart: async ({ name }) => { await liveMsg?.toolStart(name); },
         onToolFinish: async ({ name, result }) => { await liveMsg?.toolFinish(name, result, !result?.error); },
       });
-      
+
       sessionHistory.push({ role: "user", content: text }, { role: "assistant", content });
       if (sessionHistory.length > MAX_HISTORY) sessionHistory.splice(0, 2);
-      
-      if (liveMsg) await liveMsg.finalize(stripThink(content));
-      else await sendMessage(stripThink(content));
-    } catch (e) { 
-      if (liveMsg) await liveMsg.finalize(`❌ Error: ${e.message}`);
-      else await sendMessage(`Error: ${e.message}`); 
+
+      const clean = stripThink(content) || "";
+      if (liveMsg) await liveMsg.finalize(clean);
+      else await sendMessage(clean);
+    } catch (e) {
+      const errLine = `❌ <b>Error</b>\n<code>${htmlEscape(e.message)}</code>`;
+      if (liveMsg) await liveMsg.finalize(errLine);
+      else await sendHTML(errLine);
     }
     finally { busy = false; refreshPrompt(); }
   });

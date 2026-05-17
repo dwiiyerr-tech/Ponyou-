@@ -9,9 +9,12 @@
  */
 
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 
-const STATE_FILE = "./state.json";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const STATE_FILE = path.join(__dirname, "state.json");
 
 const MAX_RECENT_EVENTS = 20;
 const MAX_INSTRUCTION_LENGTH = 280;
@@ -46,11 +49,17 @@ function load() {
 }
 
 async function save(state) {
-  _stateCache = state;
+  // Only update the in-memory cache AFTER the disk write succeeds. Otherwise
+  // a failed write leaves us with cache that doesn't match disk.
   _writeQueue = _writeQueue.then(async () => {
+    state.lastUpdated = new Date().toISOString();
+    const serialized = JSON.stringify(state, null, 2);
     try {
-      state.lastUpdated = new Date().toISOString();
-      await fs.promises.writeFile(STATE_FILE, JSON.stringify(state, null, 2));
+      // Atomic write: temp file + rename, so partial writes can't corrupt state.
+      const tmp = STATE_FILE + ".tmp";
+      await fs.promises.writeFile(tmp, serialized);
+      await fs.promises.rename(tmp, STATE_FILE);
+      _stateCache = state;
     } catch (err) {
       log("state_error", `Failed to write state.json: ${err.message}`);
     }

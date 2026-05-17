@@ -117,18 +117,46 @@ function loadEnv() {
   if (!fs.existsSync(ENV_FILE)) return {};
   const content = fs.readFileSync(ENV_FILE, "utf8");
   const env = {};
-  content.split("\n").forEach((line) => {
-    const [key, value] = line.split("=");
-    if (key && value) env[key.trim()] = value.trim();
+  content.split("\n").forEach((rawLine) => {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) return;
+    const idx = line.indexOf("=");
+    if (idx <= 0) return;
+    const key = line.slice(0, idx).trim();
+    let value = line.slice(idx + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (key) env[key] = value;
   });
   return env;
 }
 
 function saveEnv(env) {
-  const lines = Object.entries(env)
-    .filter(([, v]) => v)
-    .map(([k, v]) => `${k}=${v}`);
-  fs.writeFileSync(ENV_FILE, lines.join("\n") + "\n");
+  // Preserve existing comments/ordering when possible.
+  let original = "";
+  if (fs.existsSync(ENV_FILE)) original = fs.readFileSync(ENV_FILE, "utf8");
+  const written = new Set();
+  const out = [];
+  for (const line of original.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) { out.push(line); continue; }
+    const idx = trimmed.indexOf("=");
+    if (idx <= 0) { out.push(line); continue; }
+    const key = trimmed.slice(0, idx).trim();
+    if (!(key in env)) { out.push(line); continue; }
+    if (env[key] == null || env[key] === "") continue;
+    out.push(`${key}=${env[key]}`);
+    written.add(key);
+  }
+  for (const [k, v] of Object.entries(env)) {
+    if (written.has(k) || v == null || v === "") continue;
+    out.push(`${k}=${v}`);
+  }
+  let text = out.join("\n");
+  if (!text.endsWith("\n")) text += "\n";
+  fs.writeFileSync(ENV_FILE, text);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

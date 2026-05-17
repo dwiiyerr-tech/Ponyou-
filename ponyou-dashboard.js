@@ -26,20 +26,22 @@ function clearScreen() {
   console.clear();
 }
 
+function stripAnsi(s) { return String(s).replace(/\x1b\[[0-9;]*m/g, ""); }
+
 function drawBox(title, content) {
   const lines = content.split("\n");
-  const maxLen = Math.max(...lines.map((l) => l.length), title.length) + 4;
+  const visibleLen = (s) => stripAnsi(s).length;
+  const maxLen = Math.max(...lines.map(visibleLen), visibleLen(title)) + 4;
 
   console.log(`${colors.cyan}┌${"─".repeat(maxLen)}┐${colors.reset}`);
   console.log(
-    `${colors.cyan}│${colors.bright} ${title.padEnd(maxLen - 2)} ${colors.reset}${colors.cyan}│${colors.reset}`
+    `${colors.cyan}│${colors.bright} ${title}${" ".repeat(Math.max(0, maxLen - 2 - visibleLen(title)))} ${colors.reset}${colors.cyan}│${colors.reset}`
   );
   console.log(`${colors.cyan}├${"─".repeat(maxLen)}┤${colors.reset}`);
 
   lines.forEach((line) => {
-    console.log(
-      `${colors.cyan}│${colors.reset} ${line.padEnd(maxLen - 2)} ${colors.cyan}│${colors.reset}`
-    );
+    const pad = " ".repeat(Math.max(0, maxLen - 2 - visibleLen(line)));
+    console.log(`${colors.cyan}│${colors.reset} ${line}${pad} ${colors.cyan}│${colors.reset}`);
   });
 
   console.log(`${colors.cyan}└${"─".repeat(maxLen)}┘${colors.reset}`);
@@ -131,7 +133,7 @@ function drawDashboard() {
     Total Trades: ${trades.length}
     Win Rate: ${colors.green}${winRate}%${colors.reset} (${wins}W/${trades.length - wins}L)
     Avg P&L: ${formatPercentage(parseFloat(avgPnl))}
-    Recent: ${trades.slice(-1)[0]?.pnl_pct ? formatPercentage(trades.slice(-1)[0].pnl_pct) : "N/A"}
+    Recent: ${Number.isFinite(trades.slice(-1)[0]?.pnl_pct) ? formatPercentage(trades.slice(-1)[0].pnl_pct) : "N/A"}
   `;
   drawBox("PERFORMANCE", perfContent.trim());
 
@@ -177,15 +179,20 @@ async function main() {
   drawDashboard();
 
   // Listen for keyboard input to stop
-  try { if (process.stdin.isTTY) { process.stdin.setRawMode(true);
-  process.stdin.resume();
-  process.stdin.on("data", (key) => {
-    if (key.toString() === "q" || key.toString() === "") {
-      clearInterval(interval);
-      process.exit(0);
-    }
+  try {
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.on("data", (key) => {
+        const k = key.toString();
+        // q / Q / Ctrl+C (0x03) / Ctrl+D (0x04)
+        if (k === "q" || k === "Q" || k === "" || k === "") {
+          clearInterval(interval);
+          process.exit(0);
+        }
       });
-    } } catch (e) { }
+    }
+  } catch (e) { /* TTY not available */ }
 }
 
 main();
