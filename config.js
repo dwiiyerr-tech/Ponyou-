@@ -167,6 +167,17 @@ export const config = {
     generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "minimax/minimax-m2.5",
   },
 
+  // ─── Jito BlockEngine (priority lane) ─────────────────────────
+  // When enabled, swap path can route through Jito for priority inclusion
+  // and basic sandwich resistance. Scaffold only — opt in per call site.
+  // See tools/jito.js for setup notes.
+  jito: {
+    enabled:     u.jitoEnabled     ?? false,
+    region:      u.jitoRegion      ?? "fra",     // fra | ny | ams | tyo
+    tipLamports: u.jitoTipLamports ?? 100_000,   // 0.0001 SOL default
+    authToken:   process.env.JITO_AUTH_TOKEN ?? null, // optional paid tier
+  },
+
   // ─── Fast-Track Entry (skip LLM for unambiguous BUYs) ─────────
   // When enabled, screening cycle deploys candidates that pass strict
   // deterministic gates immediately, cutting entry latency from ~5-30s
