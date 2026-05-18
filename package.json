@@ -14,6 +14,7 @@
     "dry": "DRY_RUN=true node dry-run.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
+    "backtest": "node tools/backtest-cli.js",
     "web": "cd dashboard && node server.js",
     "web:dev": "cd dashboard && npm run dev",
     "web:build": "cd dashboard && npm run build"

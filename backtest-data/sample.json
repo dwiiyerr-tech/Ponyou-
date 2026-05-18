@@ -1,0 +1,44 @@
+{
+  "_comment": "Sample backtest input. Each trade is one position; priceSequence is { ts: epochMs, price: float } ticks ordered ascending. Run with: node tools/backtest-cli.js backtest-data/sample.json",
+  "marketCondition": "NORMAL",
+  "stopLossPctOverride": -15,
+  "trades": [
+    {
+      "label": "Pump then dump (loss)",
+      "priceSequence": [
+        { "ts": 0,      "price": 1.000 },
+        { "ts": 60000,  "price": 1.020 },
+        { "ts": 120000, "price": 0.950 },
+        { "ts": 180000, "price": 0.880 },
+        { "ts": 240000, "price": 0.820 }
+      ]
+    },
+    {
+      "label": "Slow grind to ROI",
+      "priceSequence": [
+        { "ts": 0,        "price": 1.000 },
+        { "ts": 60000,    "price": 1.020 },
+        { "ts": 300000,   "price": 1.080 },
+        { "ts": 900000,   "price": 1.150 },
+        { "ts": 1800000,  "price": 1.250 },
+        { "ts": 3600000,  "price": 1.300 }
+      ]
+    },
+    {
+      "label": "Quick rocket",
+      "priceSequence": [
+        { "ts": 0,      "price": 1.000 },
+        { "ts": 60000,  "price": 1.500 }
+      ]
+    },
+    {
+      "label": "Flat (forced close)",
+      "priceSequence": [
+        { "ts": 0,      "price": 1.000 },
+        { "ts": 60000,  "price": 0.995 },
+        { "ts": 120000, "price": 1.005 },
+        { "ts": 180000, "price": 1.000 }
+      ]
+    }
+  ]
+}
