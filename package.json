@@ -12,6 +12,8 @@
     "ui": "node ponyou-launcher.js",
     "dashboard": "node ponyou-dashboard.js",
     "dry": "DRY_RUN=true node dry-run.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "web": "cd dashboard && node server.js",
     "web:dev": "cd dashboard && npm run dev",
     "web:build": "cd dashboard && npm run build"
@@ -28,5 +30,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.6"
   }
 }
