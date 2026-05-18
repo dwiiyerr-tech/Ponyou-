@@ -14,6 +14,7 @@
 
 import {
   PROVIDERS,
+  CUSTOM_PRESETS,
   getCurrentProvider,
   listProviders,
   setProvider,
@@ -23,11 +24,41 @@ import {
   getProviderInfo,
   readEnv,
   writeEnv,
+  listCustomProviders,
+  addCustomProvider,
+  addPreset,
+  removeCustomProvider,
 } from "./llm-manager.js";
 
 const command = process.argv[2];
 const arg1 = process.argv[3];
 const arg2 = process.argv[4];
+const restArgs = process.argv.slice(5);
+
+/**
+ * Parse `--key value` / `--key=value` pairs from a list of argv strings.
+ */
+function parseFlags(args) {
+  const out = {};
+  for (let i = 0; i < args.length; i++) {
+    const tok = args[i];
+    if (!tok.startsWith("--")) continue;
+    const eq = tok.indexOf("=");
+    if (eq >= 0) {
+      out[tok.slice(2, eq)] = tok.slice(eq + 1);
+    } else {
+      const key = tok.slice(2);
+      const next = args[i + 1];
+      if (next && !next.startsWith("--")) {
+        out[key] = next;
+        i++;
+      } else {
+        out[key] = true;
+      }
+    }
+  }
+  return out;
+}
 
 function printError(msg) {
   console.error(`\n❌ Error: ${msg}\n`);
@@ -44,11 +75,100 @@ async function main() {
       console.log("\n🌐 Available Providers:\n");
       listProviders().forEach((p) => {
         const status = p.valid ? "✅" : "⚠️";
-        const local = p.local ? " (Local)" : " (Cloud)";
-        console.log(`${status} ${p.name}${local}`);
+        const tag = p.custom ? " (Custom)" : p.local ? " (Local)" : " (Cloud)";
+        console.log(`${status} ${p.name} [${p.id}]${tag}`);
         console.log(`   Models: ${p.models.join(", ")}`);
         console.log("");
       });
+      break;
+    }
+
+    case "list-custom": {
+      const customs = listCustomProviders();
+      if (customs.length === 0) {
+        console.log("\nNo custom providers configured.");
+        console.log("Add one with: node llm-cli.js add-custom --id=foo --baseUrl=https://...\n");
+        break;
+      }
+      console.log("\n🧩 Custom Providers:\n");
+      customs.forEach((p) => {
+        console.log(`• ${p.name || p.id} [${p.id}]`);
+        console.log(`  baseUrl:      ${p.baseUrl}`);
+        console.log(`  apiKeyEnv:    ${p.apiKeyEnv || "LLM_API_KEY"}`);
+        console.log(`  defaultModel: ${p.defaultModel || "auto"}`);
+        console.log("");
+      });
+      break;
+    }
+
+    case "list-presets": {
+      console.log("\n📦 Available Presets (use: add-preset <id>):\n");
+      Object.entries(CUSTOM_PRESETS).forEach(([id, p]) => {
+        console.log(`• ${id.padEnd(12)} ${p.name}`);
+        console.log(`  ${p.baseUrl}`);
+        console.log(`  default model: ${p.defaultModel}`);
+        console.log("");
+      });
+      break;
+    }
+
+    case "add-preset": {
+      if (!arg1) printError("Usage: llm-cli.js add-preset <preset-id> [--model=...] [--apiKeyEnv=...]");
+      if (!CUSTOM_PRESETS[arg1]) {
+        printError(
+          `Unknown preset: ${arg1}. Available: ${Object.keys(CUSTOM_PRESETS).join(", ")}`
+        );
+      }
+      const flags = parseFlags([arg2, ...restArgs].filter(Boolean));
+      const overrides = {};
+      if (flags.model) overrides.defaultModel = flags.model;
+      if (flags.apiKeyEnv) overrides.apiKeyEnv = flags.apiKeyEnv;
+      if (flags.apiKey) overrides.apiKey = flags.apiKey;
+      if (flags.baseUrl) overrides.baseUrl = flags.baseUrl;
+      if (flags.name) overrides.name = flags.name;
+
+      try {
+        const result = addPreset(arg1, overrides);
+        printSuccess(
+          `Preset '${arg1}' ${result.action}. Set ${result.entry.apiKeyEnv} in .env, then:\n   node llm-cli.js switch ${result.entry.id}`
+        );
+      } catch (err) {
+        printError(err.message);
+      }
+      break;
+    }
+
+    case "add-custom": {
+      const flags = parseFlags([arg1, arg2, ...restArgs].filter(Boolean));
+      if (!flags.id || !flags.baseUrl) {
+        printError(
+          "Usage: llm-cli.js add-custom --id=<id> --baseUrl=<url> [--name=...] [--apiKeyEnv=...] [--model=...]"
+        );
+      }
+      const entry = {
+        id: flags.id,
+        name: flags.name,
+        baseUrl: flags.baseUrl,
+        apiKeyEnv: flags.apiKeyEnv,
+        defaultModel: flags.model || flags.defaultModel,
+      };
+      if (flags.apiKey) entry.apiKey = flags.apiKey;
+      try {
+        const result = addCustomProvider(entry);
+        printSuccess(
+          `Custom provider '${entry.id}' ${result.action}.\n   Switch with: node llm-cli.js switch ${entry.id}`
+        );
+      } catch (err) {
+        printError(err.message);
+      }
+      break;
+    }
+
+    case "remove-custom": {
+      if (!arg1) printError("Usage: llm-cli.js remove-custom <id>");
+      const result = removeCustomProvider(arg1);
+      if (!result.success) printError(result.error);
+      printSuccess(`Removed custom provider '${arg1}'`);
       break;
     }
 
@@ -67,12 +187,10 @@ async function main() {
     case "switch": {
       if (!arg1) printError("Usage: llm-cli.js switch <provider>");
 
-      const provider = PROVIDERS[arg1];
-      if (!provider) printError(`Unknown provider: ${arg1}`);
-
       const result = quickSwitch(arg1);
+      if (!result.success) printError(result.error || `Unknown provider: ${arg1}`);
 
-      console.log(`\n✅ Switched to ${provider.name}\n`);
+      console.log(`\n✅ ${result.message}\n`);
 
       if (result.needsKey) {
         console.log(`📝 Next step: Set API key in .env`);
@@ -89,10 +207,12 @@ async function main() {
         printError("Usage: llm-cli.js set-key <provider> <api-key>");
       }
 
-      if (!PROVIDERS[arg1]) printError(`Unknown provider: ${arg1}`);
-
-      const result = setProvider(arg1, arg2);
-      printSuccess(`${result.message}`);
+      try {
+        const result = setProvider(arg1, arg2);
+        printSuccess(`${result.message}`);
+      } catch (err) {
+        printError(err.message);
+      }
       break;
     }
 
@@ -209,49 +329,49 @@ async function main() {
 
 Commands:
 
-  list                    List all available providers
-  current                 Show current provider configuration
-  switch <provider>       Switch to a different provider
-  set-key <p> <key>      Set API key for provider
-  validate                Validate all provider configurations
-  test <provider>         Test provider connection
-  info <provider>         Show detailed provider information
-  show-env                Show current .env LLM settings
-  help                    Show this help message
+  list                       List all providers (built-in + custom)
+  list-custom                List user-defined custom providers only
+  list-presets               List available preset templates
+  current                    Show current provider configuration
+  switch <provider>          Switch to a provider (built-in or custom id)
+  set-key <p> <key>          Set API key for provider
+  add-preset <id> [flags]    Scaffold a custom provider from a preset
+  add-custom --id ... ...    Add a fully custom provider entry
+  remove-custom <id>         Remove a custom provider
+  validate                   Validate all provider configurations
+  test <provider>            Test provider connection
+  info <provider>            Show detailed provider information
+  show-env                   Show current .env LLM settings
+  help                       Show this help message
 
 Examples:
 
-  # List all providers
-  node llm-cli.js list
-
-  # Switch to Groq (free & fast)
+  # Built-in providers
   node llm-cli.js switch groq
-
-  # Set API key for OpenRouter
   node llm-cli.js set-key openrouter sk-or-v1-xxxxx
 
-  # Test if Groq is working
-  node llm-cli.js test groq
+  # Add Gemini via preset, then switch
+  node llm-cli.js add-preset gemini
+  node llm-cli.js switch gemini
+  # then in .env: GEMINI_API_KEY=your_key
 
-  # Show info about Claude API
-  node llm-cli.js info anthropic
+  # Add a fully custom OpenAI-compatible endpoint
+  node llm-cli.js add-custom \\
+    --id=myllm --baseUrl=https://api.example.com/v1 \\
+    --apiKeyEnv=MYLLM_API_KEY --model=my-model-v1
 
-  # Validate all configurations
-  node llm-cli.js validate
+  # Override preset's default model
+  node llm-cli.js add-preset deepseek --model=deepseek-reasoner
 
-Supported Providers:
+Built-in Providers:
 
-  ☁️  Cloud Providers:
-    • openrouter    - Default, multi-model support
-    • openai        - GPT-4, GPT-3.5
-    • anthropic     - Claude Opus, Sonnet
-    • groq          - Free & very fast
-    • mistral       - Mistral AI models
-    • together      - Open source models
+  ☁️  Cloud:  openrouter, openai, anthropic, groq, mistral, together
+  💻 Local:   lmstudio, ollama
 
-  💻 Local Providers (Free!):
-    • lmstudio      - Desktop app with Mistral, Llama, etc.
-    • ollama        - Docker-friendly, pull models easily
+Available Presets (add via 'add-preset <id>'):
+
+  gemini, deepseek, xai, perplexity, cohere, fireworks,
+  deepinfra, nvidia, cerebras, sambanova, hyperbolic, azure
 
 Quick Start:
 

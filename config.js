@@ -171,6 +171,10 @@ export const config = {
   llmProvider: u.llmProvider ?? process.env.LLM_PROVIDER ?? "openrouter",
   llmModel: u.llmModel ?? process.env.LLM_MODEL ?? "openrouter/auto",
   llmBaseUrl: u.llmBaseUrl ?? process.env.LLM_BASE_URL ?? null,
+  // User-defined provider entries. Each is OpenAI-compatible: {id, name, baseUrl,
+  // apiKeyEnv | apiKey, defaultModel, headers?, features?}. When llmProvider
+  // matches a custom id, llm-provider.js resolves from here before built-ins.
+  customProviders: Array.isArray(u.customProviders) ? u.customProviders : [],
 
   // ─── Darwinian Signal Weighting ───────
   darwin: {
