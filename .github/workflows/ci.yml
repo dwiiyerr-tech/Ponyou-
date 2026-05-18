@@ -52,3 +52,23 @@ jobs:
               console.log('rug-patterns OK:', lp.seed, 'seed patterns,', m.length, 'matched honeypot');
             }).catch(e => { console.error(e); process.exit(1); });
           "
+
+  unit-tests:
+    name: Unit tests (Vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install deps
+        # Tests import real project modules (state.js, strategy.js, llm-provider.js)
+        # which transitively need openai, bs58, etc. Full install is required —
+        # syntax-check job stays fast by avoiding npm install entirely.
+        run: npm ci --no-audit --no-fund
+
+      - name: Run Vitest
+        run: npm test
+
