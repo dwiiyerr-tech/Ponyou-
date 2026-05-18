@@ -96,22 +96,35 @@ export async function getMintExtensions(connection, mintAddress) {
 // Concurrency limiter for Helius calls. Free tier is ~10 req/s; bursts from
 // multiple-token screening were causing 429 floods. Cap to 4 in-flight and
 // throttle to ≥120ms between starts (~8 req/s peak).
+//
+// Why a "next-slot" timestamp instead of (Date.now() - _lastHeliusAt)?
+// The old version sampled _lastHeliusAt before sleeping, so N concurrent
+// acquirers all read the same value, all decided to sleep the same duration,
+// and all fired together — defeating the throttle. Claiming the slot
+// synchronously (advance _heliusNextSlot before any await) makes each caller
+// pick a unique slot, so requests are spaced.
 let _heliusInflight = 0;
 const _heliusQueue = [];
-let _lastHeliusAt = 0;
+let _heliusNextSlot = 0;
 const HELIUS_MAX_CONCURRENT = 4;
 const HELIUS_MIN_INTERVAL_MS = 120;
 
 async function heliusAcquire() {
-  if (_heliusInflight >= HELIUS_MAX_CONCURRENT) {
+  // Wait for an inflight slot. `while` is used (not `if`) so that re-checking
+  // after wake handles spurious wake-ups; in practice the queue dispatches one
+  // at a time so the loop runs at most once.
+  while (_heliusInflight >= HELIUS_MAX_CONCURRENT) {
     await new Promise(resolve => _heliusQueue.push(resolve));
   }
-  const since = Date.now() - _lastHeliusAt;
-  if (since < HELIUS_MIN_INTERVAL_MS) {
-    await new Promise(r => setTimeout(r, HELIUS_MIN_INTERVAL_MS - since));
-  }
   _heliusInflight++;
-  _lastHeliusAt = Date.now();
+
+  // Claim a unique time-slot synchronously, before any await.
+  const now = Date.now();
+  const slot = Math.max(now, _heliusNextSlot);
+  _heliusNextSlot = slot + HELIUS_MIN_INTERVAL_MS;
+  if (slot > now) {
+    await new Promise(r => setTimeout(r, slot - now));
+  }
 }
 
 function heliusRelease() {

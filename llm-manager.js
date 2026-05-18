@@ -10,6 +10,111 @@ const ENV_FILE = ".env";
 const CONFIG_FILE = "user-config.json";
 
 /**
+ * Templates for "add-preset" — popular OpenAI-compatible providers users can
+ * scaffold into customProviders[] with one command. Adding a preset writes a
+ * fully-formed custom provider entry; users can edit it freely afterwards.
+ */
+export const CUSTOM_PRESETS = {
+  gemini: {
+    id: "gemini",
+    name: "Google Gemini (OpenAI-compat)",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
+    apiKeyEnv: "GEMINI_API_KEY",
+    defaultModel: "gemini-2.0-flash-exp",
+    features: { systemRole: true, toolChoice: true, vision: true, streaming: true },
+  },
+  deepseek: {
+    id: "deepseek",
+    name: "DeepSeek",
+    baseUrl: "https://api.deepseek.com/v1",
+    apiKeyEnv: "DEEPSEEK_API_KEY",
+    defaultModel: "deepseek-chat",
+    features: { systemRole: true, toolChoice: true, vision: false, streaming: true },
+  },
+  xai: {
+    id: "xai",
+    name: "xAI Grok",
+    baseUrl: "https://api.x.ai/v1",
+    apiKeyEnv: "XAI_API_KEY",
+    defaultModel: "grok-2-latest",
+    features: { systemRole: true, toolChoice: true, vision: true, streaming: true },
+  },
+  perplexity: {
+    id: "perplexity",
+    name: "Perplexity",
+    baseUrl: "https://api.perplexity.ai",
+    apiKeyEnv: "PERPLEXITY_API_KEY",
+    defaultModel: "llama-3.1-sonar-large-128k-online",
+    features: { systemRole: true, toolChoice: false, vision: false, streaming: true },
+  },
+  cohere: {
+    id: "cohere",
+    name: "Cohere (OpenAI-compat)",
+    baseUrl: "https://api.cohere.ai/compatibility/v1",
+    apiKeyEnv: "COHERE_API_KEY",
+    defaultModel: "command-r-plus",
+    features: { systemRole: true, toolChoice: true, vision: false, streaming: true },
+  },
+  fireworks: {
+    id: "fireworks",
+    name: "Fireworks AI",
+    baseUrl: "https://api.fireworks.ai/inference/v1",
+    apiKeyEnv: "FIREWORKS_API_KEY",
+    defaultModel: "accounts/fireworks/models/llama-v3p1-70b-instruct",
+    features: { systemRole: true, toolChoice: true, vision: false, streaming: true },
+  },
+  deepinfra: {
+    id: "deepinfra",
+    name: "DeepInfra",
+    baseUrl: "https://api.deepinfra.com/v1/openai",
+    apiKeyEnv: "DEEPINFRA_API_KEY",
+    defaultModel: "meta-llama/Meta-Llama-3.1-70B-Instruct",
+    features: { systemRole: true, toolChoice: true, vision: false, streaming: true },
+  },
+  nvidia: {
+    id: "nvidia",
+    name: "NVIDIA NIM",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    apiKeyEnv: "NVIDIA_API_KEY",
+    defaultModel: "meta/llama-3.1-70b-instruct",
+    features: { systemRole: true, toolChoice: true, vision: false, streaming: true },
+  },
+  cerebras: {
+    id: "cerebras",
+    name: "Cerebras",
+    baseUrl: "https://api.cerebras.ai/v1",
+    apiKeyEnv: "CEREBRAS_API_KEY",
+    defaultModel: "llama3.1-70b",
+    features: { systemRole: true, toolChoice: true, vision: false, streaming: true },
+  },
+  sambanova: {
+    id: "sambanova",
+    name: "SambaNova",
+    baseUrl: "https://api.sambanova.ai/v1",
+    apiKeyEnv: "SAMBANOVA_API_KEY",
+    defaultModel: "Meta-Llama-3.1-70B-Instruct",
+    features: { systemRole: true, toolChoice: true, vision: false, streaming: true },
+  },
+  hyperbolic: {
+    id: "hyperbolic",
+    name: "Hyperbolic",
+    baseUrl: "https://api.hyperbolic.xyz/v1",
+    apiKeyEnv: "HYPERBOLIC_API_KEY",
+    defaultModel: "meta-llama/Meta-Llama-3.1-70B-Instruct",
+    features: { systemRole: true, toolChoice: true, vision: false, streaming: true },
+  },
+  azure: {
+    id: "azure",
+    name: "Azure OpenAI",
+    baseUrl: "https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT",
+    apiKeyEnv: "AZURE_OPENAI_API_KEY",
+    defaultModel: "gpt-4o",
+    headers: { "api-key": "${AZURE_OPENAI_API_KEY}" },
+    features: { systemRole: true, toolChoice: true, vision: true, streaming: true },
+  },
+};
+
+/**
  * Preset provider configurations
  */
 export const PROVIDERS = {
@@ -177,9 +282,130 @@ export function writeConfig(config) {
 }
 
 /**
- * Set provider globally
+ * Read customProviders[] from user-config.json
+ */
+export function listCustomProviders() {
+  const cfg = readConfig();
+  return Array.isArray(cfg.customProviders) ? cfg.customProviders : [];
+}
+
+/**
+ * Find a custom provider entry by id (case-insensitive).
+ */
+export function findCustomProvider(providerId) {
+  const id = String(providerId || "").toLowerCase();
+  return listCustomProviders().find(
+    (p) => p && typeof p.id === "string" && p.id.toLowerCase() === id
+  ) || null;
+}
+
+/**
+ * Add (or replace) a custom provider entry. Returns the merged config slice.
+ * Required fields: id, baseUrl. Optional: name, apiKeyEnv, apiKey, defaultModel,
+ * headers, features.
+ */
+export function addCustomProvider(entry) {
+  if (!entry || typeof entry !== "object") {
+    throw new Error("addCustomProvider: entry must be an object");
+  }
+  if (!entry.id || typeof entry.id !== "string") {
+    throw new Error("addCustomProvider: 'id' is required");
+  }
+  if (!entry.baseUrl || typeof entry.baseUrl !== "string") {
+    throw new Error("addCustomProvider: 'baseUrl' is required");
+  }
+  if (PROVIDERS[entry.id]) {
+    throw new Error(
+      `addCustomProvider: '${entry.id}' collides with a built-in provider — pick a different id`
+    );
+  }
+
+  const cfg = readConfig();
+  const list = Array.isArray(cfg.customProviders) ? cfg.customProviders.slice() : [];
+  const idx = list.findIndex(
+    (p) => p && typeof p.id === "string" && p.id.toLowerCase() === entry.id.toLowerCase()
+  );
+
+  const normalized = {
+    id: entry.id,
+    name: entry.name || entry.id,
+    baseUrl: entry.baseUrl,
+    apiKeyEnv: entry.apiKeyEnv || `${entry.id.toUpperCase()}_API_KEY`,
+    defaultModel: entry.defaultModel || "auto",
+    ...(entry.apiKey ? { apiKey: entry.apiKey } : {}),
+    ...(entry.headers ? { headers: entry.headers } : {}),
+    ...(entry.features ? { features: entry.features } : {}),
+  };
+
+  if (idx >= 0) list[idx] = normalized;
+  else list.push(normalized);
+
+  cfg.customProviders = list;
+  writeConfig(cfg);
+  return { success: true, action: idx >= 0 ? "updated" : "added", entry: normalized };
+}
+
+/**
+ * Add a preset from CUSTOM_PRESETS. Optionally override fields (e.g. defaultModel).
+ */
+export function addPreset(presetId, overrides = {}) {
+  const preset = CUSTOM_PRESETS[presetId];
+  if (!preset) {
+    throw new Error(
+      `Unknown preset: ${presetId}. Available: ${Object.keys(CUSTOM_PRESETS).join(", ")}`
+    );
+  }
+  return addCustomProvider({ ...preset, ...overrides });
+}
+
+/**
+ * Remove a custom provider by id.
+ */
+export function removeCustomProvider(providerId) {
+  const cfg = readConfig();
+  const list = Array.isArray(cfg.customProviders) ? cfg.customProviders : [];
+  const filtered = list.filter(
+    (p) => !(p && typeof p.id === "string" && p.id.toLowerCase() === String(providerId).toLowerCase())
+  );
+  if (filtered.length === list.length) {
+    return { success: false, error: `No custom provider with id '${providerId}'` };
+  }
+  cfg.customProviders = filtered;
+  writeConfig(cfg);
+  return { success: true, removed: providerId };
+}
+
+/**
+ * Set provider globally. Supports built-in providers AND user-defined custom
+ * providers (matched by id from customProviders[]).
+ *
+ * Also writes LLM_MODEL to .env: agent.js reads process.env.LLM_MODEL first
+ * and falls through to config.llmModel only if the env var is unset, so the
+ * .env value would otherwise pin the old model after a provider switch.
  */
 export function setProvider(providerId, apiKey = null) {
+  const custom = findCustomProvider(providerId);
+  if (custom) {
+    const env = readEnv();
+    const config = readConfig();
+    env.LLM_PROVIDER = providerId;
+    if (custom.baseUrl) env.LLM_BASE_URL = custom.baseUrl;
+    if (custom.defaultModel) env.LLM_MODEL = custom.defaultModel;
+    if (apiKey && custom.apiKeyEnv) env[custom.apiKeyEnv] = apiKey;
+    writeEnv(env);
+
+    config.llmProvider = providerId;
+    config.llmModel = custom.defaultModel || "auto";
+    if (custom.baseUrl) config.llmBaseUrl = custom.baseUrl;
+    writeConfig(config);
+
+    return {
+      success: true,
+      provider: providerId,
+      message: `Provider set to ${custom.name || providerId} (custom)`,
+    };
+  }
+
   if (!PROVIDERS[providerId]) {
     throw new Error(`Unknown provider: ${providerId}`);
   }
@@ -193,6 +419,10 @@ export function setProvider(providerId, apiKey = null) {
 
   if (provider.baseUrl) {
     env.LLM_BASE_URL = provider.baseUrl;
+  }
+
+  if (provider.models && provider.models[0]) {
+    env.LLM_MODEL = provider.models[0];
   }
 
   if (apiKey && provider.apiKeyVar) {
@@ -219,12 +449,37 @@ export function setProvider(providerId, apiKey = null) {
 }
 
 /**
- * Get current provider
+ * Get current provider. Resolves from customProviders[] first when applicable.
  */
 export function getCurrentProvider() {
   const env = readEnv();
   const providerId = env.LLM_PROVIDER || "openrouter";
+
+  const custom = findCustomProvider(providerId);
+  if (custom) {
+    const keyVar = custom.apiKeyEnv || "LLM_API_KEY";
+    return {
+      id: providerId,
+      name: custom.name || providerId,
+      model: env.LLM_MODEL || custom.defaultModel || "default",
+      baseUrl: env.LLM_BASE_URL || custom.baseUrl,
+      local: false,
+      custom: true,
+      hasApiKey: !!(env[keyVar] || env.LLM_API_KEY || custom.apiKey),
+    };
+  }
+
   const provider = PROVIDERS[providerId];
+  if (!provider) {
+    return {
+      id: providerId,
+      name: providerId,
+      model: env.LLM_MODEL || "default",
+      baseUrl: env.LLM_BASE_URL || null,
+      local: false,
+      hasApiKey: false,
+    };
+  }
 
   return {
     id: providerId,
@@ -232,14 +487,27 @@ export function getCurrentProvider() {
     model: env.LLM_MODEL || "default",
     baseUrl: env.LLM_BASE_URL || provider.baseUrl,
     local: provider.local,
+    custom: false,
     hasApiKey: provider.apiKeyVar ? !!env[provider.apiKeyVar] : true,
   };
 }
 
 /**
- * Validate provider configuration
+ * Validate provider configuration. Handles built-in and custom providers.
  */
 export function validateProvider(providerId) {
+  const custom = findCustomProvider(providerId);
+  if (custom) {
+    const env = readEnv();
+    const errors = [];
+    if (!custom.baseUrl) errors.push(`Custom provider '${providerId}' missing baseUrl`);
+    const keyVar = custom.apiKeyEnv || "LLM_API_KEY";
+    if (!env[keyVar] && !env.LLM_API_KEY && !custom.apiKey) {
+      errors.push(`Missing API key: set ${keyVar} in .env (or apiKey inline in customProviders)`);
+    }
+    return { valid: errors.length === 0, errors };
+  }
+
   const provider = PROVIDERS[providerId];
   if (!provider) {
     return {
@@ -274,10 +542,10 @@ export function validateProvider(providerId) {
 }
 
 /**
- * List all providers with status
+ * List all providers with status. Includes custom providers from user-config.json.
  */
 export function listProviders() {
-  return Object.entries(PROVIDERS).map(([id, provider]) => {
+  const builtIns = Object.entries(PROVIDERS).map(([id, provider]) => {
     const validation = validateProvider(id);
     return {
       id,
@@ -286,14 +554,56 @@ export function listProviders() {
       requiresKey: provider.requiresKey,
       models: provider.models,
       valid: validation.valid,
+      custom: false,
     };
   });
+
+  const customs = listCustomProviders().map((entry) => {
+    const validation = validateProvider(entry.id);
+    return {
+      id: entry.id,
+      name: entry.name || entry.id,
+      local: false,
+      requiresKey: true,
+      models: entry.defaultModel ? [entry.defaultModel] : ["auto"],
+      valid: validation.valid,
+      custom: true,
+    };
+  });
+
+  return [...builtIns, ...customs];
 }
 
 /**
- * Quick switch to provider with template
+ * Quick switch to provider with template. Supports built-in and custom providers.
  */
 export function quickSwitch(providerId) {
+  const custom = findCustomProvider(providerId);
+  if (custom) {
+    const env = readEnv();
+    const config = readConfig();
+    env.LLM_PROVIDER = providerId;
+    if (custom.baseUrl) env.LLM_BASE_URL = custom.baseUrl;
+    // agent.js reads process.env.LLM_MODEL before config.llmModel; if we only
+    // wrote the config the old env value would still win, so update both.
+    if (custom.defaultModel) env.LLM_MODEL = custom.defaultModel;
+    writeEnv(env);
+
+    config.llmProvider = providerId;
+    config.llmModel = custom.defaultModel || "auto";
+    if (custom.baseUrl) config.llmBaseUrl = custom.baseUrl;
+    writeConfig(config);
+
+    const keyVar = custom.apiKeyEnv || "LLM_API_KEY";
+    return {
+      success: true,
+      provider: providerId,
+      message: `Switched to ${custom.name || providerId} (custom)`,
+      needsKey: !env[keyVar] && !env.LLM_API_KEY && !custom.apiKey,
+      keyVar,
+    };
+  }
+
   const provider = PROVIDERS[providerId];
   if (!provider) {
     return { success: false, error: `Unknown provider: ${providerId}` };
@@ -307,6 +617,12 @@ export function quickSwitch(providerId) {
 
   if (provider.baseUrl) {
     env.LLM_BASE_URL = provider.baseUrl;
+  }
+
+  // Also write LLM_MODEL — env var wins over config.llmModel in agent.js, so
+  // leaving the old value would silently pin the previous provider's model.
+  if (provider.models && provider.models[0]) {
+    env.LLM_MODEL = provider.models[0];
   }
 
   // NOTE: Previously this wiped every *_API_KEY. That destroyed credentials
@@ -353,9 +669,26 @@ export function setModel(model) {
 }
 
 /**
- * Get provider info
+ * Get provider info (built-in or custom).
  */
 export function getProviderInfo(providerId) {
+  const custom = findCustomProvider(providerId);
+  if (custom) {
+    const validation = validateProvider(providerId);
+    return {
+      id: providerId,
+      name: custom.name || providerId,
+      apiKeyVar: custom.apiKeyEnv || "LLM_API_KEY",
+      baseUrl: custom.baseUrl,
+      models: custom.defaultModel ? [custom.defaultModel] : ["auto"],
+      requiresKey: true,
+      local: false,
+      custom: true,
+      valid: validation.valid,
+      errors: validation.errors,
+    };
+  }
+
   const provider = PROVIDERS[providerId];
   if (!provider) return null;
 
@@ -370,9 +703,22 @@ export function getProviderInfo(providerId) {
 }
 
 /**
- * Test provider connection (simple check)
+ * Test provider connection (simple check).
  */
 export async function testProvider(providerId) {
+  const custom = findCustomProvider(providerId);
+  if (custom) {
+    const env = readEnv();
+    const keyVar = custom.apiKeyEnv || "LLM_API_KEY";
+    if (!env[keyVar] && !env.LLM_API_KEY && !custom.apiKey) {
+      return { success: false, message: `❌ API key not set (${keyVar})` };
+    }
+    if (!custom.baseUrl) {
+      return { success: false, message: `❌ baseUrl missing on custom provider '${providerId}'` };
+    }
+    return { success: true, message: `✅ Custom provider '${custom.name || providerId}' looks configured` };
+  }
+
   const provider = PROVIDERS[providerId];
   if (!provider) {
     return { success: false, error: "Unknown provider" };
@@ -440,6 +786,7 @@ export function exportConfig(providerId) {
 
 export default {
   PROVIDERS,
+  CUSTOM_PRESETS,
   readEnv,
   writeEnv,
   readConfig,
@@ -453,4 +800,9 @@ export default {
   getProviderInfo,
   testProvider,
   exportConfig,
+  listCustomProviders,
+  findCustomProvider,
+  addCustomProvider,
+  addPreset,
+  removeCustomProvider,
 };

@@ -145,10 +145,54 @@ const PROVIDER_CONFIGS = {
 };
 
 /**
- * Detect provider from configuration
+ * Build a runtime provider config from a user-defined custom provider entry.
+ * Treats every custom provider as OpenAI-compatible (the only shape the agent
+ * loop currently understands). Falls back to safe defaults for optional fields.
+ */
+function buildCustomProviderConfig(entry) {
+  if (!entry || typeof entry !== "object" || !entry.id) return null;
+  return {
+    name: entry.name || entry.id,
+    baseURL: entry.baseUrl || entry.baseURL || null,
+    apiKeyEnv: entry.apiKeyEnv || "LLM_API_KEY",
+    inlineApiKey: entry.apiKey || null,
+    headers: entry.headers && typeof entry.headers === "object" ? entry.headers : {},
+    type: "openai-compatible",
+    features: {
+      systemRole: true,
+      toolChoice: true,
+      vision: false,
+      streaming: true,
+      ...(entry.features || {}),
+    },
+    defaultModel: entry.defaultModel || "auto",
+    fallbackModel: entry.fallbackModel || entry.defaultModel || "auto",
+    isCustom: true,
+  };
+}
+
+/**
+ * Look up a user-defined custom provider by id from config.customProviders.
+ */
+function findCustomProvider(config, providerId) {
+  if (!config?.customProviders || !Array.isArray(config.customProviders)) return null;
+  const id = String(providerId || "").toLowerCase();
+  return config.customProviders.find(
+    (p) => p && typeof p.id === "string" && p.id.toLowerCase() === id
+  ) || null;
+}
+
+/**
+ * Detect provider from configuration. Custom providers (user-defined in
+ * config.customProviders) take precedence over built-ins, so a user can shadow
+ * "openai" with their own gateway if they want.
  */
 export function detectProvider(config) {
   const provider = config.llmProvider?.toLowerCase() || "openrouter";
+
+  if (findCustomProvider(config, provider)) {
+    return provider;
+  }
 
   if (PROVIDER_CONFIGS[provider]) {
     return provider;
@@ -169,9 +213,16 @@ export function detectProvider(config) {
 }
 
 /**
- * Get provider configuration
+ * Get provider configuration. Resolves custom providers from config when given.
  */
-export function getProviderConfig(provider = "openrouter") {
+export function getProviderConfig(provider = "openrouter", config = null) {
+  if (config) {
+    const custom = findCustomProvider(config, provider);
+    if (custom) {
+      const built = buildCustomProviderConfig(custom);
+      if (built) return built;
+    }
+  }
   return PROVIDER_CONFIGS[provider] || PROVIDER_CONFIGS.openrouter;
 }
 
@@ -180,9 +231,18 @@ export function getProviderConfig(provider = "openrouter") {
  */
 export async function createLLMClient(config) {
   const provider = detectProvider(config);
-  const providerConfig = getProviderConfig(provider);
+  const providerConfig = getProviderConfig(provider, config);
 
-  log("llm", `Initializing ${providerConfig.name} client`);
+  // Resolve the actual baseURL up front so the init log reflects the real
+  // endpoint — otherwise "Initializing OpenRouter client" is misleading when
+  // LLM_BASE_URL or config.llmBaseUrl routes elsewhere (e.g. local proxy).
+  const resolvedBaseURL =
+    config.llmBaseUrl ||
+    process.env.LLM_BASE_URL ||
+    providerConfig.baseURL ||
+    "(none)";
+
+  log("llm", `Initializing ${providerConfig.name} client → ${resolvedBaseURL}`);
 
   // Handle Anthropic Claude API.
   //
@@ -203,35 +263,34 @@ export async function createLLMClient(config) {
   }
 
   // Handle OpenAI-compatible APIs
-  const baseURL =
-    config.llmBaseUrl ||
-    process.env.LLM_BASE_URL ||
-    providerConfig.baseURL;
-
-  if (!baseURL) {
+  if (resolvedBaseURL === "(none)") {
     throw new Error(
       `No baseURL provided for ${providerConfig.name}. Set llmBaseUrl in user-config.json or LLM_BASE_URL in .env`
     );
   }
 
   const apiKeyEnv = providerConfig.apiKeyEnv || "LLM_API_KEY";
+  const isLocal = provider === "lmstudio" || provider === "ollama";
   const apiKey =
-    process.env.LLM_API_KEY ||
     process.env[apiKeyEnv] ||
-    (provider === "lmstudio" || provider === "ollama" ? "not-needed" : null);
+    process.env.LLM_API_KEY ||
+    providerConfig.inlineApiKey ||
+    config.llmApiKey ||
+    (isLocal ? "not-needed" : null);
 
-  if (!apiKey && provider !== "lmstudio" && provider !== "ollama") {
+  if (!apiKey && !isLocal) {
     throw new Error(
       `LLM API key not found. Set ${apiKeyEnv} in .env or LLM_API_KEY`
     );
   }
 
   return new OpenAI({
-    baseURL,
+    baseURL: resolvedBaseURL,
     apiKey: apiKey || "dummy-key",
     timeout: 5 * 60 * 1000,
     defaultHeaders: {
       "User-Agent": "Ponyou-Agent/2.2",
+      ...(providerConfig.headers || {}),
     },
   });
 }
@@ -239,15 +298,15 @@ export async function createLLMClient(config) {
 /**
  * Get provider features for capability checking
  */
-export function getProviderFeatures(provider = "openrouter") {
-  return getProviderConfig(provider).features;
+export function getProviderFeatures(provider = "openrouter", config = null) {
+  return getProviderConfig(provider, config).features;
 }
 
 /**
  * Get default model for provider
  */
-export function getDefaultModel(provider = "openrouter") {
-  return getProviderConfig(provider).defaultModel;
+export function getDefaultModel(provider = "openrouter", config = null) {
+  return getProviderConfig(provider, config).defaultModel;
 }
 
 /**
@@ -314,7 +373,7 @@ export function mapModelName(model, provider = "openrouter") {
  * Validate provider configuration
  */
 export function validateProviderConfig(provider, config) {
-  const providerConfig = getProviderConfig(provider);
+  const providerConfig = getProviderConfig(provider, config);
 
   if (providerConfig.type === "anthropic-native") {
     if (!process.env.ANTHROPIC_API_KEY && !process.env.LLM_API_KEY) {
@@ -336,12 +395,14 @@ export function validateProviderConfig(provider, config) {
       };
     }
 
-    if (
-      provider !== "lmstudio" &&
-      provider !== "ollama" &&
-      !process.env.LLM_API_KEY &&
-      !process.env[providerConfig.apiKeyEnv]
-    ) {
+    const isLocal = provider === "lmstudio" || provider === "ollama";
+    const hasKey =
+      process.env.LLM_API_KEY ||
+      process.env[providerConfig.apiKeyEnv] ||
+      providerConfig.inlineApiKey ||
+      config.llmApiKey;
+
+    if (!isLocal && !hasKey) {
       return {
         valid: false,
         error: `No API key set for ${providerConfig.name}`,
@@ -353,15 +414,37 @@ export function validateProviderConfig(provider, config) {
 }
 
 /**
- * List all available providers
+ * List all available providers. Includes user-defined custom providers when a
+ * config object with `customProviders` is passed in.
  */
-export function listProviders() {
-  return Object.entries(PROVIDER_CONFIGS).map(([key, config]) => ({
+export function listProviders(config = null) {
+  const builtIns = Object.entries(PROVIDER_CONFIGS).map(([key, c]) => ({
     id: key,
-    name: config.name,
-    type: config.type,
-    features: config.features,
+    name: c.name,
+    type: c.type,
+    features: c.features,
+    custom: false,
   }));
+
+  if (!config?.customProviders || !Array.isArray(config.customProviders)) {
+    return builtIns;
+  }
+
+  const seen = new Set(builtIns.map((p) => p.id));
+  const customs = config.customProviders
+    .filter((p) => p && typeof p.id === "string" && !seen.has(p.id.toLowerCase()))
+    .map((p) => {
+      const built = buildCustomProviderConfig(p);
+      return {
+        id: p.id,
+        name: built?.name || p.id,
+        type: "openai-compatible",
+        features: built?.features || {},
+        custom: true,
+      };
+    });
+
+  return [...builtIns, ...customs];
 }
 
 export default {

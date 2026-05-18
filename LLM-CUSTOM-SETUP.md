@@ -45,7 +45,7 @@ Pilih opsi:
 ### Option B: Command-Line (Quick Switching)
 
 ```bash
-# List all providers
+# List all providers (built-in + custom)
 node llm-cli.js list
 
 # Switch to Groq (free & fast)
@@ -568,12 +568,98 @@ node llm-cli.js switch groq
 
 ---
 
+## 🧩 Custom Providers (Pakai LLM API Apa Saja)
+
+Selain built-in providers, Ponyou bisa dipakai dengan **provider OpenAI-compatible
+apa saja** — cukup daftarkan sebagai custom provider. Definisinya disimpan di
+`user-config.json` pada array `customProviders[]`.
+
+### Daftar preset siap pakai
+
+```bash
+node llm-cli.js list-presets
+```
+
+Preset yang tersedia: `gemini`, `deepseek`, `xai`, `perplexity`, `cohere`,
+`fireworks`, `deepinfra`, `nvidia`, `cerebras`, `sambanova`, `hyperbolic`, `azure`.
+
+### Tambah dari preset (1 perintah)
+
+```bash
+node llm-cli.js add-preset gemini
+# lalu set GEMINI_API_KEY=... di .env
+node llm-cli.js switch gemini
+```
+
+Override field preset dengan flag:
+
+```bash
+node llm-cli.js add-preset deepseek --model=deepseek-reasoner
+node llm-cli.js add-preset gemini --apiKeyEnv=GOOGLE_API_KEY
+```
+
+### Tambah provider 100% custom
+
+```bash
+node llm-cli.js add-custom \
+  --id=myllm \
+  --baseUrl=https://api.example.com/v1 \
+  --apiKeyEnv=MYLLM_API_KEY \
+  --model=my-model-v1 \
+  --name="My Internal Gateway"
+```
+
+Lalu set `MYLLM_API_KEY=...` di `.env` dan `node llm-cli.js switch myllm`.
+
+### Manual edit di `user-config.json`
+
+Sama efek dengan CLI — `customProviders[]` boleh diedit tangan:
+
+```json
+{
+  "llmProvider": "gemini",
+  "llmModel": "gemini-2.0-flash-exp",
+  "customProviders": [
+    {
+      "id": "gemini",
+      "name": "Google Gemini",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "apiKeyEnv": "GEMINI_API_KEY",
+      "defaultModel": "gemini-2.0-flash-exp"
+    }
+  ]
+}
+```
+
+Field yang didukung per entry:
+- `id` (wajib) — slug unik (jangan tabrakan dengan built-in)
+- `baseUrl` (wajib) — endpoint OpenAI-compatible
+- `apiKeyEnv` — nama env var (default: `<ID>_API_KEY`)
+- `apiKey` — taruh key inline (kurang aman, tapi opsional)
+- `defaultModel` — model default saat `switch`
+- `headers` — header tambahan untuk request (mis. untuk Azure)
+- `features` — `{ systemRole, toolChoice, vision, streaming }`
+- `name` — label tampilan
+
+### Daftar / hapus custom
+
+```bash
+node llm-cli.js list-custom
+node llm-cli.js remove-custom <id>
+```
+
+> **Catatan**: Anthropic native API masih belum disambungkan (agent loop
+> berbentuk OpenAI shape). Untuk Claude, pakai OpenRouter atau bridge
+> Claude→OpenAI yang menyediakan endpoint OpenAI-compatible.
+
+---
+
 ## 🎉 Summary
 
 Ponyou sekarang punya 3 custom tools untuk manage LLM providers:
 
 1. **setup-llm.js** - Interactive menu (best for first time)
-2. **llm-cli.js** - Command-line tool (fastest for switching)
+2. **llm-cli.js** - Command-line tool (fastest for switching, mendukung custom)
 3. **llm-manager.js** - JavaScript library (for developers)
 
 **Gunakan salah satu sesuai preferensi Anda!** 🚀
