@@ -70,7 +70,10 @@ async function save(state) {
 // ─── Position Registry ─────────────────────────────────────────
 
 /**
- * Record a newly deployed position.
+ * Record a newly deployed position. Returns the save() promise so callers
+ * that need durability (BUY confirmations, deploy callbacks) can await
+ * the disk write; older callers that don't await still work, but a crash
+ * between mutation and flush would lose the position registration.
  */
 export function trackPosition({
   position,
@@ -99,8 +102,9 @@ export function trackPosition({
     peak_pnl_pct: 0,
   };
   pushEvent(state, { action: "deploy", position, pool_name: pool_name || pool });
-  save(state);
+  const saved = save(state);
   log("state", `Tracked new position: ${position} in pool ${pool}`);
+  return saved;
 }
 
 /**
@@ -120,13 +124,14 @@ function pushEvent(state, event) {
 export function recordClose(position_address, reason) {
   const state = load();
   const pos = state.positions[position_address];
-  if (!pos) return;
+  if (!pos) return null;
   pos.closed = true;
   pos.closed_at = new Date().toISOString();
   pos.notes.push(`Closed at ${pos.closed_at}: ${reason}`);
   pushEvent(state, { action: "close", position: position_address, pool_name: pos.pool_name || pos.pool, reason });
-  save(state);
+  const saved = save(state);
   log("state", `Position ${position_address} marked closed: ${reason}`);
+  return saved;
 }
 
 /**
@@ -139,9 +144,11 @@ export function markPartialTPDone(position_address) {
   if (!pos) return false;
   pos.partial_tp_done = true;
   pos.partial_tp_done_at = new Date().toISOString();
-  save(state);
+  const saved = save(state);
   log("state", `Position ${position_address} partial-TP marked done`);
-  return true;
+  // Returning the promise lets callers await durability; the truthy value
+  // also preserves the prior boolean-style contract for fire-and-forget callers.
+  return saved;
 }
 
 /**
@@ -164,6 +171,23 @@ export function setPositionInstruction(position_address, instruction) {
 export function getTrackedPosition(position_address) {
   const state = load();
   return state.positions[position_address] || null;
+}
+
+/**
+ * Persist a new peak PnL for a position. Used by trailing-stop logic in the
+ * management cycle, which needs the peak to survive restarts — otherwise the
+ * trailing stop resets to 0 every restart and a position that pumped 50% then
+ * dropped would slip past the trailing trigger.
+ *
+ * Returns the save promise so callers can await durability if they care.
+ */
+export function updatePeakPnl(position_address, peak_pnl_pct) {
+  const state = load();
+  const pos = state.positions[position_address];
+  if (!pos) return null;
+  if (!(peak_pnl_pct > (pos.peak_pnl_pct || 0))) return null;
+  pos.peak_pnl_pct = peak_pnl_pct;
+  return save(state);
 }
 
 /**
