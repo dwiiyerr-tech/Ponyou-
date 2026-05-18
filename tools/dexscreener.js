@@ -12,6 +12,17 @@ import { classifyNarrative, summarizeNarrative } from "./narratives.js";
 const DS_BASE = "https://api.dexscreener.com";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
+let _connection = null;
+function getSolanaConnection() {
+  if (!_connection) {
+    _connection = new Connection(
+      process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
+      "confirmed"
+    );
+  }
+  return _connection;
+}
+
 async function fetchDS(url, retries = 2) {
   let lastErr;
   for (let i = 0; i <= retries; i++) {
@@ -172,10 +183,7 @@ export async function discoverTokens({ timeframe = "1m", limit = 20 } = {}) {
 
 export async function getTokenSecurityDetails({ mint }) {
   try {
-    const connection = new Connection(
-      process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
-      "confirmed"
-    );
+    const connection = getSolanaConnection();
     const mintPubkey = new PublicKey(mint);
 
     // Parallel: mint account info + largest token accounts

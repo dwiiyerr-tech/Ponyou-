@@ -9,13 +9,73 @@ import { VersionedTransaction, Keypair, Connection, PublicKey } from "@solana/we
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { getActiveWallet } from "./wallet-manager.js";
+import { submitSwapBundle, awaitBundleLanding, isJitoEnabled } from "./jito.js";
 
-const ULTRA_BASE = "https://ultra-api.jup.ag";
-const SOL_MINT   = "So11111111111111111111111111111111111111112";
+const ULTRA_BASE   = "https://ultra-api.jup.ag";
+const JUPITER_V6   = "https://quote-api.jup.ag/v6";
+const SOL_MINT     = "So11111111111111111111111111111111111111112";
 
 function getWallet() {
-  if (!process.env.WALLET_PRIVATE_KEY) throw new Error("WALLET_PRIVATE_KEY not set");
+  const active = getActiveWallet();
+  if (active?.keypair) return active.keypair;
+  if (!process.env.WALLET_PRIVATE_KEY) throw new Error("No wallet configured: set WALLET_PRIVATE_KEY or multiWallet in user-config.json");
   return Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY));
+}
+
+// ── Jito swap path (Jupiter v6 quote → bundle via BlockEngine) ──────────────
+async function swapViaJito({ inputMint, outputMint, amountRaw, slippageBps, wallet }) {
+  // Step 1: v6 quote
+  const quoteUrl = `${JUPITER_V6}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}`;
+  const quoteRes = await fetch(quoteUrl);
+  if (!quoteRes.ok) throw new Error(`Jupiter v6 quote ${quoteRes.status}: ${await quoteRes.text()}`);
+  const quote = await quoteRes.json();
+  if (quote.error) throw new Error(`Jupiter v6 quote: ${quote.error}`);
+
+  // Step 2: v6 swap (get serialized VersionedTransaction)
+  const swapRes = await fetch(`${JUPITER_V6}/swap`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      quoteResponse: quote,
+      userPublicKey: wallet.publicKey.toString(),
+      wrapAndUnwrapSol: true,
+      dynamicComputeUnitLimit: true,
+      prioritizationFeeLamports: 0, // Jito tip handles priority
+    }),
+  });
+  if (!swapRes.ok) throw new Error(`Jupiter v6 swap ${swapRes.status}: ${await swapRes.text()}`);
+  const swapData = await swapRes.json();
+  if (!swapData.swapTransaction) throw new Error("Jupiter v6 swap: no transaction returned");
+
+  // Step 3: deserialize + sign
+  const tx = VersionedTransaction.deserialize(Buffer.from(swapData.swapTransaction, "base64"));
+  tx.sign([wallet]);
+  const recentBlockhash = tx.message.recentBlockhash;
+
+  // Step 4: submit [swapTx, tipTx] as Jito bundle
+  const bundleId = await submitSwapBundle({
+    signedSwapTx: tx,
+    wallet,
+    recentBlockhash,
+    tipLamports: config.jito.tipLamports,
+    region: config.jito.region || "fra",
+    authToken: config.jito.authToken || null,
+  });
+
+  // Step 5: await landing (≤30s)
+  const landing = await awaitBundleLanding({
+    bundleId,
+    region: config.jito.region || "fra",
+    authToken: config.jito.authToken || null,
+    timeoutMs: 30_000,
+  });
+
+  if (!landing.landed) throw new Error(`Jito bundle not landed: ${JSON.stringify(landing.status?.err)}`);
+
+  const hash = landing.status?.transactions?.[0] || bundleId;
+  log("swap", `Jito bundle landed: ${bundleId} tx=${hash}`);
+  return { hash, amount_out: quote.outAmount ?? null, jito_bundle_id: bundleId };
 }
 
 async function getDecimals(mint) {
@@ -43,12 +103,19 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
   }
 
   try {
-    const wallet     = walletOverride || getWallet();
-    const inputMint  = (token_in  === "SOL") ? SOL_MINT : token_in;
-    const outputMint = (token_out === "SOL") ? SOL_MINT : token_out;
-    const decimals   = await getDecimals(inputMint);
-    const amountRaw  = Math.floor(amount * Math.pow(10, decimals)).toString();
+    const wallet      = walletOverride || getWallet();
+    const inputMint   = (token_in  === "SOL") ? SOL_MINT : token_in;
+    const outputMint  = (token_out === "SOL") ? SOL_MINT : token_out;
+    const decimals    = await getDecimals(inputMint);
+    const amountRaw   = Math.floor(amount * Math.pow(10, decimals)).toString();
     const slippageBps = Math.floor(slippage * 100);
+
+    // ── Jito path (when enabled in config) ──────────────────────────
+    if (isJitoEnabled(config)) {
+      const { hash, amount_out, jito_bundle_id } = await swapViaJito({ inputMint, outputMint, amountRaw, slippageBps, wallet });
+      log("swap", `Jito OK: ${amount} ${inputMint.slice(0,8)} → ${outputMint.slice(0,8)} | bundle=${jito_bundle_id}`);
+      return { success: true, hash, token_in: inputMint, token_out: outputMint, amount, slippage, amount_out, jito_bundle_id };
+    }
 
     // ── Step 1: Get order ──────────────────────────────────
     const orderUrl = new URL(`${ULTRA_BASE}/order`);

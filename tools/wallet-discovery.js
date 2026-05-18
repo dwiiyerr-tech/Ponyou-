@@ -16,11 +16,23 @@ import { fileURLToPath } from "url";
 import { log } from "../logger.js";
 import { discoverTokens } from "./dexscreener.js";
 import { listSmartWallets, addSmartWallet } from "../smart-wallets.js";
+import { heliusAcquire, heliusRelease } from "./rug-signals.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DISCOVERED_FILE = path.join(__dirname, "../discovered-wallets.json");
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const HELIUS_BASE = "https://api.helius.xyz/v0";
+
+let _connection = null;
+function getSolanaConnection() {
+  if (!_connection) {
+    _connection = new Connection(
+      process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
+      "confirmed"
+    );
+  }
+  return _connection;
+}
 
 // Owners that look like trading wallets but are actually LP/vault/program-owned.
 // Extend as you observe more false positives.
@@ -72,9 +84,14 @@ async function getTopOwners(connection, mint, limit = 15) {
 
 async function fetchHeliusTxns(address, apiKey, limit = 50) {
   const url = `${HELIUS_BASE}/addresses/${address}/transactions?api-key=${apiKey}&limit=${limit}&type=SWAP`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Helius ${res.status}`);
-  return res.json();
+  await heliusAcquire();
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Helius ${res.status}`);
+    return res.json();
+  } finally {
+    heliusRelease();
+  }
 }
 
 /**
@@ -223,10 +240,7 @@ export async function discoverSmartWallets({
     return { error: "HELIUS_API_KEY not configured", discovered: [] };
   }
 
-  const connection = new Connection(
-    process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
-    "confirmed"
-  );
+  const connection = getSolanaConnection();
 
   // Stage 1 — seed tokens
   const trending = await discoverTokens({ limit: source_tokens * 2 });
@@ -300,9 +314,6 @@ export async function discoverSmartWallets({
         entry.promoted = true;
         log("discovery", `Promoted ${addr.slice(0, 8)} — winrate ${stats.winrate}, ${stats.realized_pnl_sol} SOL`);
       }
-
-      // Gentle rate limit
-      await new Promise(r => setTimeout(r, 250));
     } catch (e) {
       log("discovery_warn", `score ${addr.slice(0, 8)}: ${e.message}`);
     }

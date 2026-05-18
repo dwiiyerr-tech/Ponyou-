@@ -41,6 +41,7 @@ import { log, logAction } from "../logger.js";
 import { notifyDeploy, notifyClose, notifySwap, sendHTML, isEnabled as telegramEnabled } from "../telegram.js";
 import { createPendingIntent } from "../intents.js";
 import { getStrategy } from "../strategies.js";
+import { getActiveWallet, markWalletError } from "./wallet-manager.js";
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
 let _cronRestarter = null;
@@ -376,8 +377,15 @@ export async function executeTool(name, args) {
     }
   }
 
+  // Inject active wallet keypair so Jupiter/Jito use the correct signing key
+  let callArgs = args;
+  if (name === "gmgn_swap") {
+    const activeWallet = getActiveWallet();
+    if (activeWallet?.keypair) callArgs = { ...args, wallet: activeWallet.keypair };
+  }
+
   try {
-    const result = await fn(args);
+    const result = await fn(callArgs);
     const duration = Date.now() - startTime;
     const success = result?.success !== false && !result?.error;
 
@@ -389,13 +397,18 @@ export async function executeTool(name, args) {
       success,
     });
 
+    if (name === "gmgn_swap" && !success) {
+      const activeWallet = getActiveWallet();
+      if (activeWallet?.address) markWalletError(activeWallet.address);
+    }
+
     if (success && name === "gmgn_swap") {
-      notifySwap({ 
-        inputSymbol: args.token_in === "SOL" ? "SOL" : args.token_in?.slice(0, 8), 
-        outputSymbol: args.token_out === "SOL" ? "SOL" : args.token_out?.slice(0, 8), 
-        amountIn: args.amount, 
-        amountOut: result.amount_out, 
-        tx: result.hash 
+      notifySwap({
+        inputSymbol: args.token_in === "SOL" ? "SOL" : args.token_in?.slice(0, 8),
+        outputSymbol: args.token_out === "SOL" ? "SOL" : args.token_out?.slice(0, 8),
+        amountIn: args.amount,
+        amountOut: result.amount_out,
+        tx: result.hash
       }).catch(() => {});
     }
 
@@ -403,6 +416,10 @@ export async function executeTool(name, args) {
   } catch (error) {
     const duration = Date.now() - startTime;
     logAction({ tool: name, args, error: error.message, duration_ms: duration, success: false });
+    if (name === "gmgn_swap") {
+      const activeWallet = getActiveWallet();
+      if (activeWallet?.address) markWalletError(activeWallet.address);
+    }
     return { error: error.message, tool: name };
   }
 }

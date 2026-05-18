@@ -47,6 +47,7 @@ export class GeyserStream {
   constructor({
     url,
     onEvent = () => {},
+    onDisconnect = null,
     accountInclude = [],
     commitment = "confirmed",
     reconnect = true,
@@ -54,6 +55,7 @@ export class GeyserStream {
     if (!url) throw new Error("GeyserStream: url required");
     this.url = url;
     this.onEvent = onEvent;
+    this.onDisconnect = onDisconnect;
     this.accountInclude = [...accountInclude];
     this.commitment = commitment;
     this.shouldReconnect = reconnect;
@@ -187,6 +189,9 @@ export class GeyserStream {
     setGauge("geyser_connected", 0);
     this._ws = null;
     if (!this.shouldReconnect || this._closed) return;
+    if (this.onDisconnect) {
+      try { this.onDisconnect(this._reconnectAttempt); } catch {}
+    }
     this._scheduleReconnect();
   }
 
@@ -295,7 +300,7 @@ function redactUrl(url) {
  * Fail-soft factory: returns null when no creds, otherwise starts the stream.
  * Wires the smart-wallets registry as the default account filter.
  */
-export function startGeyserStream({ onEvent, commitment = "confirmed" } = {}) {
+export function startGeyserStream({ onEvent, onDisconnect = null, commitment = "confirmed" } = {}) {
   const url = process.env.HELIUS_ATLAS_WS_URL || process.env.HELIUS_GEYSER_URL;
   if (!url) {
     log("geyser", "HELIUS_ATLAS_WS_URL / HELIUS_GEYSER_URL not set — stream disabled (fail-soft)");
@@ -309,6 +314,7 @@ export function startGeyserStream({ onEvent, commitment = "confirmed" } = {}) {
   const stream = new GeyserStream({
     url,
     onEvent: onEvent || (() => {}),
+    onDisconnect,
     accountInclude: wallets,
     commitment,
   });
