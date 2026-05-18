@@ -21,5 +21,9 @@ ticker-registry.json
 discovered-wallets.json
 narrative-heat.json
 rug-patterns-learned.json
+metrics.json
+kill-switch.flag
+pending-intents.json
+active-strategy.json
 
 logs/

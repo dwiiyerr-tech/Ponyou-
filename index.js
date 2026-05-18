@@ -22,6 +22,14 @@ import {
 } from "./intents.js";
 import { trackPosition, recordClose, getTrackedPosition, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl } from "./state.js";
 import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
+import {
+  startTimer, elapsedMs, recordLatency, recordError, recordCounter,
+  setGauge, getStats, flushMetrics,
+} from "./metrics.js";
+import {
+  readKillState, isKilled, setSessionBaseline, reportBalance,
+  recordSwapOutcome, trip as tripKillSwitch, reset as resetKillSwitch,
+} from "./kill-switch.js";
 
 import {
   getTradingPlan, initTradingPlan, checkSessionGate,
@@ -266,6 +274,48 @@ async function handleStrategyTelegramCommand(text) {
     return true;
   }
 
+  if (cmd === "/metrics") {
+    const stats = getStats();
+    const lines = [`📊 <b>Metrics</b> · uptime ${(stats.session_uptime_ms / 60_000).toFixed(0)}m`];
+    for (const [name, s] of Object.entries(stats.series)) {
+      if (!s) continue;
+      lines.push(
+        `${htmlEscape(name)}: n=${s.count} p50=${s.p50?.toFixed(0)}ms ` +
+        `p95=${s.p95?.toFixed(0)}ms p99=${s.p99?.toFixed(0)}ms`
+      );
+    }
+    if (Object.keys(stats.counters).length > 0) {
+      lines.push("");
+      lines.push("<b>Counters</b>");
+      for (const [k, v] of Object.entries(stats.counters)) lines.push(`${htmlEscape(k)}: ${v}`);
+    }
+    await sendHTML(lines.join("\n"));
+    await flushMetrics().catch(() => {});
+    return true;
+  }
+
+  if (cmd === "/kill") {
+    tripKillSwitch({ reason: "manual", detail: "tripped via Telegram /kill" });
+    await sendHTML("🛑 <b>Kill switch tripped.</b>\nResume with <code>/unkill</code> or delete <code>kill-switch.flag</code>.");
+    return true;
+  }
+
+  if (cmd === "/unkill") {
+    const wasKilled = isKilled();
+    resetKillSwitch();
+    await sendHTML(wasKilled ? "▶️ Kill switch cleared. Cycles will resume." : "Kill switch was not active.");
+    return true;
+  }
+
+  if (cmd === "/killstate") {
+    const state = readKillState();
+    if (!state) await sendHTML("✅ Kill switch <i>not active</i>.");
+    else await sendHTML(
+      `🛑 <b>Killed</b>\nReason: ${htmlEscape(state.reason)}\nDetail: ${htmlEscape(state.detail || "")}\nSince: ${htmlEscape(state.tripped_at)}`
+    );
+    return true;
+  }
+
   return false;
 }
 
@@ -336,6 +386,17 @@ async function executePendingIntent(id) {
  * Returns { blocked: boolean, reason: string }
  */
 async function checkAllGates(source = "") {
+  // 0. Kill switch (highest priority — file-flag persists across restart so
+  //    a tripped state isn't bypassed by `npm start`). Manual reset:
+  //    `rm kill-switch.flag` or call reset() from a REPL.
+  const killState = readKillState();
+  if (killState) {
+    return {
+      blocked: true,
+      reason: `KILL_SWITCH: ${killState.reason} — ${killState.detail}`,
+    };
+  }
+
   // 1. Session pause (target hit)
   if (config.pilot.enabled) {
     const gate = checkSessionGate();
@@ -382,6 +443,13 @@ async function refreshSessionPnl(totalUsd) {
     log("plan", `refreshSessionPnl skipped: invalid totalUsd=${totalUsd}`);
     return;
   }
+  // Kill-switch drawdown check: anchored to the first valid balance the bot
+  // observed this session. setSessionBaseline is idempotent, so re-calling is
+  // cheap. reportBalance returns true if it just tripped the switch.
+  setSessionBaseline(totalUsd);
+  setGauge("wallet_total_usd", totalUsd);
+  reportBalance(totalUsd);
+
   const result = updateSessionCapital(totalUsd);
 
   if (result.action === "pause_target") {
@@ -719,6 +787,7 @@ export async function runManagementCycle({ silent = false } = {}) {
   log("cron", "Starting management cycle");
   let mgmtReport = null;
   let liveMessage = null;
+  const _cycleStart = startTimer();
 
   try {
     if (!silent && telegramEnabled()) {
@@ -748,12 +817,14 @@ export async function runManagementCycle({ silent = false } = {}) {
         token_in: exit.mint, token_out: "SOL",
         amount: tokenData?.balance, slippage: 1.0,
       });
+      recordSwapOutcome({ success: !!(res.success || res.dry_run) });
       if (res.success || res.dry_run) {
         // Await close-flush: a crash before this lands on disk means the next
         // management cycle would re-attempt the exit on a position already
         // sold, hitting Jupiter with zero balance. Cheap insurance.
         await recordClose(exit.mint, exit.reason);
         recordTrade(!exit.is_loss);
+        recordCounter("swaps_executed");
 
         // Record performance
         const tracked = getTrackedPosition(exit.mint);
@@ -857,8 +928,10 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
   } catch (e) {
     log("cron_error", e.message);
     mgmtReport = `Error: ${e.message}`;
+    recordError("management_cycle");
   } finally {
     _managementBusy = false;
+    recordLatency("management_cycle", elapsedMs(_cycleStart));
     if (!silent && telegramEnabled() && mgmtReport) {
       const body = stripThink(mgmtReport);
       if (liveMessage) await liveMessage.finalize(body);
@@ -881,6 +954,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
   log("cron", "Starting screening cycle");
   let screenReport = null;
   let liveMessage = null;
+  const _cycleStart = startTimer();
 
   try {
     if (!silent && telegramEnabled()) {
@@ -1068,8 +1142,10 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
   } catch (e) {
     log("cron_error", e.message);
     screenReport = `Error: ${e.message}`;
+    recordError("screening_cycle");
   } finally {
     _screeningBusy = false;
+    recordLatency("screening_cycle", elapsedMs(_cycleStart));
     if (!silent && telegramEnabled() && screenReport) {
       const body = stripThink(screenReport);
       if (liveMessage) await liveMessage.finalize(body);
