@@ -17,12 +17,13 @@ function getWallet() {
  * Get current wallet balances: SOL, USDC, and all SPL tokens using Helius Wallet API.
  * Returns USD-denominated values provided by Helius.
  */
-export async function getWalletBalances() {
-  let walletAddress;
-  try {
-    walletAddress = getWallet().publicKey.toString();
-  } catch {
-    return { wallet: null, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet not configured" };
+export async function getWalletBalances(walletAddress = null) {
+  if (!walletAddress) {
+    try {
+      walletAddress = getWallet().publicKey.toString();
+    } catch {
+      return { wallet: null, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet not configured" };
+    }
   }
 
   const HELIUS_KEY = process.env.HELIUS_API_KEY;

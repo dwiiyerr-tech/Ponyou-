@@ -32,6 +32,10 @@ import {
 } from "./kill-switch.js";
 import { runFastTrackBatch } from "./fast-buy.js";
 import { startGeyserStream } from "./geyser.js";
+import {
+  initWalletManager, getActiveWallet, markWalletError,
+  resetWalletErrors, getWalletCapitalSol, isMultiWalletEnabled, getAllWallets,
+} from "./tools/wallet-manager.js";
 
 import {
   getTradingPlan, initTradingPlan, checkSessionGate,
@@ -74,6 +78,9 @@ import {
 log("startup", "Ponyou AI Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
+
+// ─── Init Multi-Wallet ────────────────────────────────────────
+initWalletManager();
 
 // ─── Auto-init trading plan ───────────────────────────────────
 if (!getTradingPlan() && config.pilot.enabled) {
@@ -315,6 +322,30 @@ async function handleStrategyTelegramCommand(text) {
     else await sendHTML(
       `🛑 <b>Killed</b>\nReason: ${htmlEscape(state.reason)}\nDetail: ${htmlEscape(state.detail || "")}\nSince: ${htmlEscape(state.tripped_at)}`
     );
+    return true;
+  }
+
+  if (cmd === "/wallets") {
+    const wallets = getAllWallets();
+    if (!wallets.length || !isMultiWalletEnabled()) {
+      const active = getActiveWallet();
+      await sendHTML(
+        `💼 <b>Wallets</b> · Single-wallet mode\n` +
+        (active ? `<code>${htmlEscape(active.address.slice(0, 20))}…</code>` : fmt.it("tidak terkonfigurasi"))
+      );
+      return true;
+    }
+    const lines = [`💼 <b>Wallets</b>`, fmt.divider()];
+    for (const w of wallets) {
+      const icon = w.status === "hot" ? "🟢" : w.status === "cold" ? "🔴" : "⚫";
+      const activeTag = w.is_active ? " ← <b>aktif</b>" : "";
+      const coldStr = w.status === "cold" && w.cold_until > Date.now()
+        ? ` · recover ${Math.ceil((w.cold_until - Date.now()) / 60000)}m`
+        : "";
+      lines.push(`${icon} ${htmlEscape(w.label)} · ${w.capital_pct}% · err:${w.error_count}${coldStr}${activeTag}`);
+      lines.push(`   <code>${htmlEscape(w.address.slice(0, 20))}…</code>`);
+    }
+    await sendHTML(lines.join("\n"));
     return true;
   }
 
@@ -983,7 +1014,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return `Max positions reached (${openTokens.length}/${positionLimit})`;
     }
 
-    const deployAmount = computeDeployAmount(balance.sol, { solPriceUsd: balance.sol_price });
+    const activeWallet = getActiveWallet();
+    const walletSol = isMultiWalletEnabled() && activeWallet
+      ? getWalletCapitalSol(activeWallet.address, balance.sol)
+      : balance.sol;
+    const deployAmount = computeDeployAmount(walletSol, { solPriceUsd: balance.sol_price });
     const gasFee = await getSolanaGasFee();
     const discovery = await discoverTokens({ timeframe: "1m" });
     const candidates = discovery.tokens || [];
@@ -1225,8 +1260,12 @@ async function handleSmartWalletSwap(event) {
       return;
     }
 
-    const balance = await getWalletBalances().catch(() => ({ sol: 0 }));
-    const deployAmountSol = computeDeployAmount(balance.sol || 0);
+    const activeWallet = getActiveWallet();
+    const balance = await getWalletBalances(activeWallet?.address || null).catch(() => ({ sol: 0 }));
+    const walletSol = isMultiWalletEnabled() && activeWallet
+      ? getWalletCapitalSol(activeWallet.address, balance.sol || 0)
+      : (balance.sol || 0);
+    const deployAmountSol = computeDeployAmount(walletSol);
     if (!(deployAmountSol > 0)) {
       log("geyser_handler_warn", `deployAmountSol=${deployAmountSol} — skip`);
       return;

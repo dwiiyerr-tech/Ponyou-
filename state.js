@@ -84,6 +84,7 @@ export function trackPosition({
   signal_snapshot = null,
   active_lessons = [],
   active_signals = [],
+  wallet_address = null,
 }) {
   const state = load();
   state.positions[position] = {
@@ -95,6 +96,7 @@ export function trackPosition({
     signal_snapshot: signal_snapshot || null,
     active_lessons: active_lessons || [],
     active_signals: active_signals || [],
+    wallet_address,
     deployed_at: new Date().toISOString(),
     closed: false,
     closed_at: null,
