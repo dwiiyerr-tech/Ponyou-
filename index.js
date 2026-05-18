@@ -61,6 +61,8 @@ import {
 } from "./learning-continuous.js";
 import { harvestMarketRugs } from "./tools/rug-harvester.js";
 import { recordNarrativeOutcome } from "./tools/narratives.js";
+import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
+import { discoverSmartWallets } from "./tools/wallet-discovery.js";
 import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
   isVaultDue, computeVaultAmount, executeVaultTransfer,
@@ -1284,11 +1286,50 @@ async function handleSmartWalletSwap(event) {
   }
 }
 
+let _geyserDisconnectAlerted = false;
+
+function handleGeyserDisconnect(attempt) {
+  // Only alert once per session so we don't spam Telegram during reconnect storms
+  if (attempt === 1 && !_geyserDisconnectAlerted && telegramEnabled()) {
+    _geyserDisconnectAlerted = true;
+    sendHTML("⚠️ <b>Geyser stream disconnected</b> — reconnecting… (fallback: polling-only)").catch(() => {});
+  }
+}
+
+async function seedSmartWallets() {
+  if (listSmartWallets().length > 0) return; // already populated
+  log("smart_wallets", "smart-wallets.json empty — running auto-discovery…");
+  try {
+    const result = await discoverSmartWallets({ source_tokens: 5, min_winrate: 0.6, min_trades: 5, auto_add: false });
+    if (result.error) {
+      log("smart_wallets", `Auto-seed skipped: ${result.error}`);
+      return;
+    }
+    const qualified = (result.discovered || []).filter(w => w.qualified);
+    for (const w of qualified.slice(0, 15)) {
+      addSmartWallet({ address: w.address, label: w.label || `auto_${w.address.slice(0, 6)}` });
+    }
+    if (qualified.length > 0) {
+      log("smart_wallets", `Seeded ${qualified.length} smart wallets from discovery pipeline`);
+      if (_geyserStream) {
+        const addrs = listSmartWallets().map(w => w.address);
+        _geyserStream.refreshSubscriptions(addrs);
+        log("smart_wallets", `Geyser subscriptions updated: ${addrs.length} wallets`);
+      }
+      if (telegramEnabled()) {
+        sendHTML(`✅ <b>Smart wallets seeded</b> — ${qualified.length} wallets found via discovery`).catch(() => {});
+      }
+    }
+  } catch (e) {
+    log("smart_wallets", `Auto-seed error: ${e.message}`);
+  }
+}
+
 function startTurboButtons() {
   if (_turboStarted) return;
   _turboStarted = true;
   try {
-    _geyserStream = startGeyserStream({ onEvent: handleSmartWalletSwap });
+    _geyserStream = startGeyserStream({ onEvent: handleSmartWalletSwap, onDisconnect: handleGeyserDisconnect });
     if (_geyserStream) log("turbo", "Geyser stream active — real-time smart-wallet monitoring ON");
     else log("turbo", "Geyser disabled (HELIUS_ATLAS_WS_URL not set) — polling-only");
   } catch (e) {
@@ -1305,8 +1346,8 @@ export function startCronJobs() {
   // Management (setiap N menit)
   tasks.push(cron.schedule(`*/${config.schedule.managementIntervalMin} * * * *`, runManagementCycle));
 
-  // Screening (setiap N menit)
-  tasks.push(cron.schedule(`*/${config.schedule.screeningIntervalMin} * * * *`, runScreeningCycle));
+  // Screening (setiap N menit, offset +1 agar tidak tabrakan dengan management cycle di :00/:30)
+  tasks.push(cron.schedule(`1-59/${config.schedule.screeningIntervalMin} * * * *`, runScreeningCycle));
 
   // Continuous Learning (setiap 30 menit)
   tasks.push(cron.schedule("*/30 * * * *", runContinuousLearningCycle));
@@ -1331,6 +1372,8 @@ export function startCronJobs() {
   _cronTasks = tasks;
   cronStarted = true;
   startTurboButtons();
+  // Auto-seed smart wallets after Geyser is started so refreshSubscriptions() can wire them in
+  seedSmartWallets().catch(e => log("smart_wallets", `seed failed: ${e.message}`));
   log("cron", `Jobs started: mgmt=${config.schedule.managementIntervalMin}m screen=${config.schedule.screeningIntervalMin}m vault=6h report=${reportH}:${String(reportM).padStart(2,"0")}UTC`);
 }
 

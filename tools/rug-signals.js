@@ -110,7 +110,7 @@ let _heliusNextSlot = 0;
 const HELIUS_MAX_CONCURRENT = 4;
 const HELIUS_MIN_INTERVAL_MS = 250;
 
-async function heliusAcquire() {
+export async function heliusAcquire() {
   // Wait for an inflight slot. `while` is used (not `if`) so that re-checking
   // after wake handles spurious wake-ups; in practice the queue dispatches one
   // at a time so the loop runs at most once.
@@ -128,7 +128,7 @@ async function heliusAcquire() {
   }
 }
 
-function heliusRelease() {
+export function heliusRelease() {
   _heliusInflight--;
   const next = _heliusQueue.shift();
   if (next) next();
@@ -180,7 +180,6 @@ export async function getFreshFundedCount(holderOwners, apiKey, launchTs, maxAge
         if (inflows.length > 0 && tx.timestamp < earliestFunding) earliestFunding = tx.timestamp;
       }
       if (earliestFunding !== Infinity && earliestFunding >= cutoff) fresh++;
-      await new Promise(r => setTimeout(r, 200));
     } catch (e) {
       log("rug_signal_warn", `freshFunded ${owner.slice(0, 8)}: ${e.message}`);
     }
@@ -212,7 +211,6 @@ export async function getSameFunderCluster(holderOwners, apiKey) {
           break; // only earliest funder per holder
         }
       }
-      await new Promise(r => setTimeout(r, 200));
     } catch (e) {
       log("rug_signal_warn", `sameFunder ${owner.slice(0, 8)}: ${e.message}`);
     }
