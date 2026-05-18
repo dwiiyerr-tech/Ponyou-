@@ -164,8 +164,12 @@ export class GeyserStream {
       recordCounter("geyser_events_total");
       const parsed = parseTransactionEvent(msg.params.result);
       if (parsed) {
-        try { this.onEvent(parsed); }
-        catch (e) {
+        try {
+          Promise.resolve(this.onEvent(parsed)).catch((e) => {
+            recordCounter("geyser_consumer_error");
+            log("geyser_error", `onEvent rejected: ${e.message}`);
+          });
+        } catch (e) {
           recordCounter("geyser_consumer_error");
           log("geyser_error", `onEvent threw: ${e.message}`);
         }
