@@ -20,7 +20,7 @@ import {
 import {
   listPendingIntents, getIntent, consumeIntent,
 } from "./intents.js";
-import { trackPosition, recordClose, getTrackedPosition, getStateSummary, syncOpenPositions, markPartialTPDone } from "./state.js";
+import { trackPosition, recordClose, getTrackedPosition, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl } from "./state.js";
 import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
 
 import {
@@ -310,7 +310,10 @@ async function executePendingIntent(id) {
     log("intent_warn", `metadata fetch failed for #${id}: ${e.message}`);
   }
 
-  trackPosition({
+  // Await the disk flush: if the bot crashes between swap-success and persist,
+  // we'd lose track of the freshly-deployed position. Critical for confirm-mode
+  // BUYs where the user explicitly approved a real swap.
+  await trackPosition({
     position: args.token_out,
     pool: "gmgn",
     pool_name: symbol,
@@ -648,7 +651,12 @@ async function checkDeterministicExits(tokens) {
       ? ((token.usd - tracked.initial_value_usd) / tracked.initial_value_usd) * 100
       : 0;
 
-    if (currentPnlPct > (tracked.peak_pnl_pct || 0)) tracked.peak_pnl_pct = currentPnlPct;
+    // Persist the new peak — mutating `tracked` in memory isn't enough because
+    // a restart wipes the cache and resets the trailing-stop reference to 0.
+    if (currentPnlPct > (tracked.peak_pnl_pct || 0)) {
+      tracked.peak_pnl_pct = currentPnlPct;
+      updatePeakPnl(token.mint, currentPnlPct);
+    }
 
     if (currentPnlPct / 100 <= effectiveStopLoss) {
       exits.push({ mint: token.mint, symbol: token.symbol, reason: `Stop Loss: ${currentPnlPct.toFixed(2)}% (SL ${(effectiveStopLoss * 100).toFixed(0)}%)`, pnl_pct: currentPnlPct, is_loss: true });
@@ -741,7 +749,10 @@ export async function runManagementCycle({ silent = false } = {}) {
         amount: tokenData?.balance, slippage: 1.0,
       });
       if (res.success || res.dry_run) {
-        recordClose(exit.mint, exit.reason);
+        // Await close-flush: a crash before this lands on disk means the next
+        // management cycle would re-attempt the exit on a position already
+        // sold, hitting Jupiter with zero balance. Cheap insurance.
+        await recordClose(exit.mint, exit.reason);
         recordTrade(!exit.is_loss);
 
         // Record performance
@@ -833,7 +844,7 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
             const tokenOut = result.token_out || result.would_swap?.token_out;
             const tokenIn = result.token_in || result.would_swap?.token_in;
             if (tokenOut === "SOL" || tokenOut === "So11111111111111111111111111111111111111112") {
-              recordClose(tokenIn, "LLM Manager Decision");
+              await recordClose(tokenIn, "LLM Manager Decision");
               recordTrade(true); // assume LLM exits for profit
             }
           }
@@ -1038,7 +1049,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
               c.mint === result.token_out || c.mint === result.would_swap?.token_out
             );
             if (token) {
-              trackPosition({
+              await trackPosition({
                 position: token.mint,
                 pool: "gmgn",
                 pool_name: token.symbol,

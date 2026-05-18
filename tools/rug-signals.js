@@ -93,9 +93,10 @@ export async function getMintExtensions(connection, mintAddress) {
 
 // ─── Layer 2: Helius Behavioural Signals ─────────────────────────
 
-// Concurrency limiter for Helius calls. Free tier is ~10 req/s; bursts from
-// multiple-token screening were causing 429 floods. Cap to 4 in-flight and
-// throttle to ≥120ms between starts (~8 req/s peak).
+// Concurrency limiter for Helius calls. Free tier nominally allows ~10 req/s,
+// but real-world the /addresses/.../transactions endpoint 429s at ≥8 req/s in
+// bursty workloads (dry-run logs showed multiple 429s at 120ms spacing). Cap
+// to 4 in-flight and throttle to ≥250ms between starts (~4 req/s peak).
 //
 // Why a "next-slot" timestamp instead of (Date.now() - _lastHeliusAt)?
 // The old version sampled _lastHeliusAt before sleeping, so N concurrent
@@ -107,7 +108,7 @@ let _heliusInflight = 0;
 const _heliusQueue = [];
 let _heliusNextSlot = 0;
 const HELIUS_MAX_CONCURRENT = 4;
-const HELIUS_MIN_INTERVAL_MS = 120;
+const HELIUS_MIN_INTERVAL_MS = 250;
 
 async function heliusAcquire() {
   // Wait for an inflight slot. `while` is used (not `if`) so that re-checking
