@@ -167,6 +167,23 @@ export const config = {
     generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "minimax/minimax-m2.5",
   },
 
+  // ─── Fast-Track Entry (skip LLM for unambiguous BUYs) ─────────
+  // When enabled, screening cycle deploys candidates that pass strict
+  // deterministic gates immediately, cutting entry latency from ~5-30s
+  // (LLM) to ~500ms (network only). Remaining candidates still go through
+  // the LLM. See fast-buy.js for the gate logic.
+  fastTrack: {
+    enabled:           u.fastTrackEnabled        ?? false,
+    maxRugScore:       u.fastTrackMaxRugScore    ?? 20,
+    minMcap:           u.fastTrackMinMcap        ?? 150_000,
+    maxMcap:           u.fastTrackMaxMcap        ?? 5_000_000,
+    minVolumeUsd:      u.fastTrackMinVolume      ?? 50_000,
+    minSmartInflowUsd: u.fastTrackMinSmartInflow ?? 0,    // 0 = check disabled
+    maxAgeMinutes:     u.fastTrackMaxAgeMinutes  ?? null, // null = no max
+    maxFlags:          u.fastTrackMaxFlags       ?? 0,
+    maxNewPerCycle:    u.fastTrackMaxNewPerCycle ?? 1,
+  },
+
   // ─── LLM Provider Configuration ─────────────────
   llmProvider: u.llmProvider ?? process.env.LLM_PROVIDER ?? "openrouter",
   llmModel: u.llmModel ?? process.env.LLM_MODEL ?? "openrouter/auto",

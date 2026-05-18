@@ -30,6 +30,7 @@ import {
   readKillState, isKilled, setSessionBaseline, reportBalance,
   recordSwapOutcome, trip as tripKillSwitch, reset as resetKillSwitch,
 } from "./kill-switch.js";
+import { runFastTrackBatch } from "./fast-buy.js";
 
 import {
   getTradingPlan, initTradingPlan, checkSessionGate,
@@ -1096,8 +1097,30 @@ export async function runScreeningCycle({ silent = false } = {}) {
       try { bulkRegisterTickers(scoredCandidates); } catch (e) { log("ticker_error", e.message); }
     }
 
-    const passingCandidates = scoredCandidates.filter(c => c.passed);
+    let passingCandidates = scoredCandidates.filter(c => c.passed);
     const planSummary = getPlanSummary();
+
+    // ─── Fast-track lane (skip LLM for unambiguous BUYs) ────────
+    // Off by default. When enabled, candidates passing the strict
+    // deterministic gate get deployed immediately and removed from the
+    // LLM pool; remaining ones still go through the LLM agentLoop.
+    if (config.fastTrack?.enabled && passingCandidates.length > 0) {
+      const slotsLeft = Math.max(0, positionLimit - openTokens.length);
+      const maxNew = Math.min(config.fastTrack.maxNewPerCycle ?? 1, slotsLeft);
+      if (maxNew > 0) {
+        const batch = await runFastTrackBatch({
+          candidates: passingCandidates,
+          fastTrackConfig: config.fastTrack,
+          deployAmountSol: deployAmount,
+          solPriceUsd: balance.sol_price || 0,
+          maxNew,
+        });
+        if (batch.deployed.length > 0) {
+          log("fast_track", `Deployed ${batch.deployed.length} via fast-track: ${batch.deployed.map(t => t.symbol).join(", ")}`);
+        }
+        passingCandidates = batch.remaining;
+      }
+    }
 
     if (passingCandidates.length > 0) {
       log("cron", `${passingCandidates.length} passed — invoking LLM`);
