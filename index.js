@@ -31,6 +31,7 @@ import {
   recordSwapOutcome, trip as tripKillSwitch, reset as resetKillSwitch,
 } from "./kill-switch.js";
 import { runFastTrackBatch } from "./fast-buy.js";
+import { startGeyserStream } from "./geyser.js";
 
 import {
   getTradingPlan, initTradingPlan, checkSessionGate,
@@ -1178,6 +1179,84 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
   return screenReport;
 }
 
+// ─── Turbo Buttons (Geyser real-time stream) ──────────────────
+// Wires the Helius Atlas WS feed into the fast-track buy lane so we react
+// to smart-wallet swaps within ~1 slot instead of waiting for the next
+// DexScreener polling cycle. Fail-soft — if HELIUS_ATLAS_WS_URL isn't set,
+// startGeyserStream() returns null and we silently keep polling-only.
+let _geyserStream = null;
+let _turboStarted = false;
+const _geyserLastByMint = new Map();
+let _geyserLastGlobalTs = 0;
+const SOL_MINT_STR = "So11111111111111111111111111111111111111112";
+
+async function handleSmartWalletSwap(event) {
+  try {
+    if (!event || event.kind !== "swap") return;
+    if (event.token_in !== "SOL" && event.token_in !== SOL_MINT_STR) return;
+    if (!event.token_out || event.token_out === "SOL" || event.token_out === SOL_MINT_STR) return;
+    const mint = event.token_out;
+    const now = Date.now();
+    if (now - (_geyserLastByMint.get(mint) || 0) < 60_000) return;
+    if (now - _geyserLastGlobalTs < 5_000) return;
+    _geyserLastByMint.set(mint, now);
+    _geyserLastGlobalTs = now;
+    if (_geyserLastByMint.size > 500) {
+      const cutoff = now - 120_000;
+      for (const [k, t] of _geyserLastByMint) if (t < cutoff) _geyserLastByMint.delete(k);
+    }
+    recordCounter("geyser_smart_buy_triggered");
+    log("geyser_smart_buy", `wallet=${String(event.wallet || "?").slice(0,8)} mint=${mint.slice(0,8)} slot=${event.slot}`);
+    if (!config.fastTrack?.enabled) {
+      log("geyser_smart_buy", "fast-track disabled — signal received but no auto-buy");
+      return;
+    }
+
+    let token = null;
+    try {
+      const tokenSearch = await getTokenInfo({ query: mint });
+      token = tokenSearch?.results?.[0] || null;
+    } catch (e) {
+      log("geyser_handler_warn", `getTokenInfo: ${e.message}`);
+      return;
+    }
+    if (!token || !token.mint) {
+      log("geyser_handler_warn", `no token data for ${mint.slice(0,8)}`);
+      return;
+    }
+
+    const balance = await getWalletBalances().catch(() => ({ sol: 0 }));
+    const deployAmountSol = computeDeployAmount(balance.sol || 0);
+    if (!(deployAmountSol > 0)) {
+      log("geyser_handler_warn", `deployAmountSol=${deployAmountSol} — skip`);
+      return;
+    }
+
+    const batch = await runFastTrackBatch({
+      candidates: [token],
+      fastTrackConfig: config.fastTrack,
+      deployAmountSol,
+      solPriceUsd: 0,
+      maxNew: 1,
+    });
+    log("geyser_smart_buy", `fast-track: deployed=${batch.deployed.length} skipped=${batch.skipped.length}`);
+  } catch (e) {
+    log("geyser_handler_error", e.message);
+  }
+}
+
+function startTurboButtons() {
+  if (_turboStarted) return;
+  _turboStarted = true;
+  try {
+    _geyserStream = startGeyserStream({ onEvent: handleSmartWalletSwap });
+    if (_geyserStream) log("turbo", "Geyser stream active — real-time smart-wallet monitoring ON");
+    else log("turbo", "Geyser disabled (HELIUS_ATLAS_WS_URL not set) — polling-only");
+  } catch (e) {
+    log("turbo_error", `startGeyserStream failed: ${e.message}`);
+  }
+}
+
 // ─── Cron Setup ───────────────────────────────────────────────
 
 export function startCronJobs() {
@@ -1212,6 +1291,7 @@ export function startCronJobs() {
 
   _cronTasks = tasks;
   cronStarted = true;
+  startTurboButtons();
   log("cron", `Jobs started: mgmt=${config.schedule.managementIntervalMin}m screen=${config.schedule.screeningIntervalMin}m vault=6h report=${reportH}:${String(reportM).padStart(2,"0")}UTC`);
 }
 
@@ -1228,6 +1308,8 @@ async function shutdown(signal) {
   log("shutdown", signal);
   stopPolling();
   _cronTasks.forEach(t => t.stop());
+  if (_geyserStream?.close) _geyserStream.close();
+  _geyserStream = null;
   process.exit(0);
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
