@@ -33,7 +33,7 @@ async function getDecimals(mint) {
  * Swap tokens via Jupiter Ultra API.
  * Supports SOL → Token and Token → SOL.
  */
-export async function swapToken({ token_in, token_out, amount, slippage = 0.5 }) {
+export async function swapToken({ token_in, token_out, amount, slippage = 0.5, wallet: walletOverride = null }) {
   if (process.env.DRY_RUN === "true") {
     return {
       dry_run: true,
@@ -43,7 +43,7 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5 })
   }
 
   try {
-    const wallet     = getWallet();
+    const wallet     = walletOverride || getWallet();
     const inputMint  = (token_in  === "SOL") ? SOL_MINT : token_in;
     const outputMint = (token_out === "SOL") ? SOL_MINT : token_out;
     const decimals   = await getDecimals(inputMint);

@@ -195,6 +195,16 @@ export const config = {
     maxNewPerCycle:    u.fastTrackMaxNewPerCycle ?? 1,
   },
 
+  // ─── Multi-Wallet (Capital Splitting + Hot/Cold Rotation) ────
+  multiWallet: {
+    enabled:            u.multiWalletEnabled      ?? false,
+    rotationMaxErrors:  u.multiWalletMaxErrors     ?? 3,
+    rotationCooldownMs: (u.multiWalletCooldownMin  ?? 10) * 60_000,
+    // Array of { key: "bs58...", label: "Wallet A", capital_pct: 60 }
+    // capital_pct harus total 100. Jika kosong → single-wallet fallback.
+    wallets: Array.isArray(u.wallets) ? u.wallets : [],
+  },
+
   // ─── LLM Provider Configuration ─────────────────
   llmProvider: u.llmProvider ?? process.env.LLM_PROVIDER ?? "openrouter",
   llmModel: u.llmModel ?? process.env.LLM_MODEL ?? "openrouter/auto",
