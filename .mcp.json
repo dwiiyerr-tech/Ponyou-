@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "gemini-bridge": {
+      "command": "node",
+      "args": ["/home/ubuntu/ponyou/gemini-bridge-server.js"],
+      "description": "Gemini CLI bridge — ask_gemini, gemini_analyze_file, gemini_research"
+    },
+    "ponyou-data": {
+      "command": "node",
+      "args": ["/home/ubuntu/ponyou/mcp-server.js"],
+      "description": "Ponyou data tools — market, positions, lessons, regime, performance"
+    }
+  }
+}
