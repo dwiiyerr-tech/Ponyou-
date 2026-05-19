@@ -86,7 +86,7 @@ import {
   checkTrendBreakExit, getMomentumScore,
 } from "./momentum-analysis.js";
 import { resolveExecutionMode } from "./runtime-mode.js";
-import { computeFractionalKellySize } from "./kelly.js";
+import { getCapitalAwareSizing } from "./capital-sizing.js";
 import { evaluateCandidateDecision } from "./decision-workflow.js";
 import { recordDecision } from "./decision-log.js";
 
@@ -1349,8 +1349,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
         (filterResult.passed ? 8 : -5)
       ));
       const kelly = config.kelly?.enabled
-        ? computeFractionalKellySize({
+        ? getCapitalAwareSizing({
             bankrollSol: balance.sol,
+            solPriceUsd: balance.sol_price || 0,
             baseDeployAmountSol: preKellyAmount,
             trades: recentTrades,
             context: {
@@ -1358,10 +1359,12 @@ export async function runScreeningCycle({ silent = false } = {}) {
               tokenEdgeScore,
               holderStructureRisk: security?.holder_analysis?.holder_structure_risk || security?.rug_signals?.holder_structure_risk || "LOW",
             },
+            regime: marketIntel.condition,
             fraction: config.kelly?.fraction ?? 0.5,
             minFraction: config.kelly?.minFraction ?? 0.1,
             maxFraction: config.kelly?.maxFraction ?? 0.8,
             minSampleTrades: config.kelly?.minSampleTrades ?? 5,
+            capitalSizing: config.capitalSizing,
           })
         : {
             deploy_amount_sol: preKellyAmount,
@@ -1370,6 +1373,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
             inputs: {},
             used_fallback: true,
             should_skip: false,
+            tier: "MICRO",
+            method: "fallback",
+            capital_usd: 0,
+            capped_at: null,
           };
       const sizedAmount = kelly.deploy_amount_sol || preKellyAmount;
       const conviction = getCoinConviction(token.mint, token);
@@ -1418,7 +1425,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const passed = filterResult.passed && !kelly.should_skip && workflow.llm_can_buy;
       const flags = [...(filterResult.flags || [])];
       if (kelly.should_skip) {
-        flags.push(`Kelly sizing rejected entry (edge=${kelly.kelly_fraction})`);
+        const skipReason = kelly.tier === "MICRO"
+          ? `MICRO tier skip — regime ${marketIntel.condition} tidak kondusif untuk modal kecil`
+          : `Kelly sizing rejected entry (edge=${kelly.kelly_fraction})`;
+        flags.push(skipReason);
       }
       if (workflow.verdict === "shadow") {
         flags.push("Workflow shadow-only: conviction masih terlalu rendah");
@@ -1471,6 +1481,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
           caution_score: candidate.workflow?.caution_score ?? 0,
           conviction_score: candidate.conviction?.conviction_score ?? 0,
           regime_score: candidate.regime?.regime_score ?? 0,
+          sizing_tier: candidate.kelly?.tier ?? null,
+          sizing_method: candidate.kelly?.method ?? null,
+          sizing_capital_usd: candidate.kelly?.capital_usd ?? null,
+          sizing_capped_at: candidate.kelly?.capped_at ?? null,
         });
       }
       recordObservations(scoredCandidates);
