@@ -1,5 +1,3 @@
-"use strict";
-
 import { computeFractionalKellySize } from "./kelly.js";
 
 const DEFAULT_CAPITAL_SIZING = {
@@ -23,13 +21,17 @@ export function getCapitalAwareSizing({
   minSampleTrades = 5,
   capitalSizing = {},
 } = {}) {
-  const cfg = { ...DEFAULT_CAPITAL_SIZING, ...capitalSizing };
+  const cfg = {
+    ...DEFAULT_CAPITAL_SIZING,
+    ...capitalSizing,
+    microFlat: { ...DEFAULT_CAPITAL_SIZING.microFlat, ...(capitalSizing?.microFlat || {}) },
+  };
   const capitalUsd = (bankrollSol || 0) * (solPriceUsd || 0);
 
   // ── MICRO tier ──────────────────────────────────────────────────────────────
   if (capitalUsd < cfg.microThreshold) {
     const flatFraction = (cfg.microFlat || {})[regime] ?? null;
-    if (!flatFraction) {
+    if (flatFraction === null) {
       return {
         deploy_amount_sol: 0,
         kelly_fraction: 0,
