@@ -1,6 +1,7 @@
 import "dotenv/config";
-// Force DRY_RUN regardless of how this entrypoint is invoked.
-process.env.DRY_RUN = "true";
+import { applyExecutionMode } from "./runtime-mode.js";
+// Force unified demo mode regardless of how this entrypoint is invoked.
+applyExecutionMode({ env: { ...process.env, EXECUTION_MODE: "demo" } });
 import { runManagementCycle, runScreeningCycle, runVaultCycle, runDailyReport } from "./index.js";
 import { getPlanSummary, checkSessionGate } from "./trading-plan.js";
 import { getMarketIntelligence } from "./market-intelligence.js";
@@ -21,7 +22,7 @@ function section(title) {
   console.log(sep);
 }
 
-header("PONYOU DRY RUN — " + new Date().toISOString());
+header("PONYOU DEMO MODE — " + new Date().toISOString());
 
 // ── Status awal ─────────────────────────────────────────────
 section("1. Status Awal");
@@ -29,7 +30,7 @@ const plan = getPlanSummary();
 const market = getMarketIntelligence();
 const gate = checkSessionGate();
 
-console.log(`Mode         : DRY RUN`);
+console.log(`Mode         : DEMO`);
 console.log(`Market       : ${market.condition} — ${market.description || ""}` );
 console.log(`Plan         : ${plan ? `Day ${plan.day}/${plan.days_total} | P&L: ${plan.today_pnl_pct}% | Capital: ${plan.calibrated ? `$${plan.today_start_usd}` : "(uncalibrated)"}` : "Belum diinisialisasi"}`);
 console.log(`Session Gate : ${gate.paused ? `PAUSED — ${gate.reason} (${gate.resume_in_min}m lagi)` : "RUNNING"}`);
@@ -50,17 +51,17 @@ try {
 }
 
 // ── Management Cycle ───────────────────────────────────────
-section("3. Management Cycle (DRY RUN)");
+section("3. Management Cycle (DEMO)");
 const mgmt = await runManagementCycle({ silent: true });
 console.log(`  Hasil: ${mgmt}`);
 
 // ── Screening Cycle ────────────────────────────────────────
-section("4. Screening Cycle (DRY RUN)");
+section("4. Screening Cycle (DEMO)");
 const screen = await runScreeningCycle({ silent: true });
 console.log(`  Hasil: ${screen}`);
 
 // ── Vault Check ────────────────────────────────────────────
-section("5. Vault Check (DRY RUN)");
+section("5. Vault Check (DEMO)");
 const vault = await runVaultCycle({ silent: true });
 console.log(`  Hasil: ${vault ? JSON.stringify(vault) : "Vault tidak dikonfigurasi / belum jatuh tempo"}`);
 
@@ -70,6 +71,6 @@ const report = await runDailyReport({ silent: true });
 console.log(`  Hasil: ${report ? "Report generated ✓" : "Report disabled atau error"}`);
 
 // ── Summary ────────────────────────────────────────────────
-header("DRY RUN SELESAI");
+header("DEMO MODE SELESAI");
 console.log("Semua siklus berjalan tanpa transaksi nyata.\n");
 process.exit(0);

@@ -9,7 +9,7 @@ import { VersionedTransaction, Keypair, Connection, PublicKey } from "@solana/we
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
-import { getActiveWallet } from "./wallet-manager.js";
+import { getActiveWallet, getWalletByAddress } from "./wallet-manager.js";
 import { submitSwapBundle, awaitBundleLanding, isJitoEnabled } from "./jito.js";
 
 const ULTRA_BASE   = "https://ultra-api.jup.ag";
@@ -93,17 +93,20 @@ async function getDecimals(mint) {
  * Swap tokens via Jupiter Ultra API.
  * Supports SOL → Token and Token → SOL.
  */
-export async function swapToken({ token_in, token_out, amount, slippage = 0.5, wallet: walletOverride = null }) {
+export async function swapToken({ token_in, token_out, amount, slippage = 0.5, wallet: walletOverride = null, wallet_address = null }) {
   if (process.env.DRY_RUN === "true") {
     return {
       dry_run: true,
-      would_swap: { token_in, token_out, amount, slippage },
+      would_swap: { token_in, token_out, amount, slippage, wallet_address },
+      wallet_address,
       message: "DRY RUN — no transaction sent",
     };
   }
 
   try {
-    const wallet      = walletOverride || getWallet();
+    const walletFromAddress = wallet_address ? getWalletByAddress(wallet_address)?.keypair || null : null;
+    const wallet      = walletOverride || walletFromAddress || getWallet();
+    const activeWalletAddress = wallet_address || wallet.publicKey.toString();
     const inputMint   = (token_in  === "SOL") ? SOL_MINT : token_in;
     const outputMint  = (token_out === "SOL") ? SOL_MINT : token_out;
     const decimals    = await getDecimals(inputMint);
@@ -114,7 +117,18 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
     if (isJitoEnabled(config)) {
       const { hash, amount_out, jito_bundle_id } = await swapViaJito({ inputMint, outputMint, amountRaw, slippageBps, wallet });
       log("swap", `Jito OK: ${amount} ${inputMint.slice(0,8)} → ${outputMint.slice(0,8)} | bundle=${jito_bundle_id}`);
-      return { success: true, hash, token_in: inputMint, token_out: outputMint, amount, slippage, amount_out, jito_bundle_id };
+      return {
+        success: true,
+        hash,
+        token_in: inputMint,
+        token_out: outputMint,
+        amount,
+        slippage,
+        amount_out,
+        jito_bundle_id,
+        wallet_address: activeWalletAddress,
+        execution_provider: "jito",
+      };
     }
 
     // ── Step 1: Get order ──────────────────────────────────
@@ -178,12 +192,14 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
       token_out:  outputMint,
       amount,
       slippage,
+      wallet_address: activeWalletAddress,
       amount_out: result.outputAmountResult ?? result.outputAmount ?? result.outAmount ?? null,
       fee_bps:    result.feeBps ?? null,
+      execution_provider: "jupiter_ultra",
     };
   } catch (error) {
     log("swap_error", `Jupiter swap: ${error.message}`);
-    return { success: false, error: error.message };
+    return { success: false, error: error.message, execution_provider: isJitoEnabled(config) ? "jito" : "jupiter_ultra" };
   }
 }
 

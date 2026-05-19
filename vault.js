@@ -104,6 +104,20 @@ export function computeVaultAmount(liquidSol) {
   return { amount_sol: vaultSol, pct, available_sol: available };
 }
 
+export function computeProfitSweepAmount(netProfitUsd, solPriceUsd = 0) {
+  if (!(netProfitUsd > 0) || !(solPriceUsd > 0)) {
+    return { amount_sol: 0, amount_usd: 0, pct: getVaultPct() };
+  }
+  const pct = getVaultPct();
+  const amountUsd = netProfitUsd * pct / 100;
+  const amountSol = amountUsd / solPriceUsd;
+  return {
+    amount_sol: parseFloat(amountSol.toFixed(6)),
+    amount_usd: parseFloat(amountUsd.toFixed(2)),
+    pct,
+  };
+}
+
 /**
  * Transfer SOL ke vault wallet.
  * @param {number} amountSol — jumlah SOL yang dikirim

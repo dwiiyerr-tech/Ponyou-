@@ -1,0 +1,12 @@
+{
+  "analyses": [
+    {
+      "ts": "2026-05-18T16:32:00.952Z",
+      "trigger": "OBSERVATION",
+      "symbol": "?",
+      "market_condition": "COLD",
+      "analysis": "No tool call made.",
+      "lessons_extracted": []
+    }
+  ]
+}

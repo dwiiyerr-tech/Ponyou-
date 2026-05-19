@@ -4,6 +4,8 @@
   "llmBaseUrl": "",
   "llmApiKey": "",
   "llmModel": "minimax/minimax-m2.7",
+  "executionMode": "demo",
+  "_comment_execution_mode": "Gunakan executionMode: demo|live. dryRun tetap didukung sebagai alias lama.",
   "dryRun": true,
 
   "deployAmountSol": 0.5,

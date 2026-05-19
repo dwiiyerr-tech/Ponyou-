@@ -1,0 +1,26 @@
+{
+  "trades": [
+    {
+      "ts": "2026-05-19T01:18:35.557Z",
+      "primary_cause": "pick"
+    },
+    {
+      "ts": "2026-05-19T01:18:35.557Z",
+      "primary_cause": "timing"
+    },
+    {
+      "ts": "2026-05-19T01:18:35.557Z",
+      "primary_cause": "execution"
+    },
+    {
+      "ts": "2026-05-19T01:18:35.558Z",
+      "primary_cause": "mixed"
+    }
+  ],
+  "summary": {
+    "pick": 1,
+    "timing": 1,
+    "execution": 1,
+    "mixed": 1
+  }
+}

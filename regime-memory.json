@@ -1,0 +1,18 @@
+{
+  "regimes": {
+    "HOT|MID_CAP|TECH|active": {
+      "key": "HOT|MID_CAP|TECH|active",
+      "market_condition": "HOT",
+      "tier": "MID_CAP",
+      "narrative": "TECH",
+      "verdict": "active",
+      "observation_count": 1,
+      "trade_count": 1,
+      "win_count": 1,
+      "loss_count": 0,
+      "cumulative_signal_score": 64,
+      "cumulative_outcome_delta": 10,
+      "last_seen_at": "2026-01-01T00:00:00.000Z"
+    }
+  }
+}

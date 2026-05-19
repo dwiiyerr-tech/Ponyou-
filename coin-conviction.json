@@ -1,0 +1,23 @@
+{
+  "coins": {
+    "mintDecay": {
+      "mint": "mintDecay",
+      "symbol": "DECAY",
+      "observation_count": 1,
+      "passed_count": 1,
+      "failed_count": 0,
+      "gem_count": 1,
+      "trash_count": 0,
+      "rug_count": 0,
+      "win_count": 1,
+      "loss_count": 0,
+      "cumulative_signal_score": 83.63,
+      "cumulative_outcome_delta": 29,
+      "last_signal_score": 83.63,
+      "last_seen_at": "2026-01-01T00:00:00.000Z",
+      "last_market_condition": "HOT",
+      "narratives": []
+    }
+  },
+  "narratives": {}
+}

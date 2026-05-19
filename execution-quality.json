@@ -1,0 +1,19 @@
+{
+  "routes": {
+    "walletC|jito|sell|single|HOT": {
+      "key": "walletC|jito|sell|single|HOT",
+      "wallet_address": "walletC",
+      "provider": "jito",
+      "mode": "sell",
+      "split": false,
+      "market_condition": "HOT",
+      "attempts": 1,
+      "successes": 1,
+      "failures": 0,
+      "cumulative_latency_ms": 1500,
+      "cumulative_slippage": 1,
+      "cumulative_quality_delta": 8,
+      "last_seen_at": "2026-05-19T01:18:34.359Z"
+    }
+  }
+}
