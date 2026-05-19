@@ -13,6 +13,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { log } from "../logger.js";
 
 const HELIUS_BASE = "https://api.helius.xyz/v0";
+const SHYFT_BASE = "https://api.shyft.to/sol/v1";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
@@ -186,6 +187,77 @@ async function fetchHeliusTxns(address, apiKey, limit = 30, type = null) {
   }
 }
 
+export async function fetchShyftHolders(mint, apiKey, limit = 20) {
+  try {
+    const url = `${SHYFT_BASE}/token/holders?network=mainnet-beta&token_address=${mint}&size=${limit}`;
+    const res = await fetch(url, { headers: { "x-api-key": apiKey } });
+    if (!res.ok) throw new Error(`Shyft holders ${res.status}`);
+
+    const body = await res.json();
+    const holders = Array.isArray(body?.result)
+      ? body.result
+      : Array.isArray(body?.result?.holders)
+        ? body.result.holders
+        : Array.isArray(body?.holders)
+          ? body.holders
+          : [];
+
+    return holders
+      .map(h => ({
+        owner: h.owner || h.owner_address || h.address || h.wallet || h.holder,
+        amount: Number(h.amount ?? h.balance ?? h.quantity ?? h.ui_amount ?? 0),
+      }))
+      .filter(h => h.owner);
+  } catch (e) {
+    log("rug_signal_warn", `shyftHolders ${mint.slice(0, 8)}: ${e.message}`);
+    return [];
+  }
+}
+
+function getShyftTxTimestamp(tx) {
+  const raw = tx.timestamp ?? tx.blockTime ?? tx.block_time ?? tx.time;
+  if (Number.isFinite(Number(raw))) return Number(raw);
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+}
+
+export async function getFreshFundedCountShyft(mint, apiKey) {
+  try {
+    const holders = await fetchShyftHolders(mint, apiKey);
+    let fresh = 0;
+    let scanned = 0;
+    const sevenDaysAgo = Math.floor(Date.now() / 1000) - (7 * 24 * 3600);
+
+    for (const holder of holders) {
+      try {
+        const url = `${SHYFT_BASE}/transaction/history?network=mainnet-beta&account=${holder.owner}&tx_num=10`;
+        const res = await fetch(url, { headers: { "x-api-key": apiKey } });
+        if (!res.ok) throw new Error(`Shyft tx history ${res.status}`);
+
+        const body = await res.json();
+        const txns = Array.isArray(body?.result)
+          ? body.result
+          : Array.isArray(body?.result?.transactions)
+            ? body.result.transactions
+            : Array.isArray(body?.transactions)
+              ? body.transactions
+              : [];
+        if (!txns.length) continue;
+
+        scanned++;
+        const firstTs = getShyftTxTimestamp(txns[0]);
+        if (firstTs && firstTs >= sevenDaysAgo) fresh++;
+      } catch (e) {
+        log("rug_signal_warn", `shyftFreshFunded ${holder.owner.slice(0, 8)}: ${e.message}`);
+      }
+    }
+
+    return { fresh_funded_holders: fresh, scanned, _source: "shyft" };
+  } catch (e) {
+    return { fresh_funded_holders: 0, scanned: 0, _source: "shyft", _error: e.message };
+  }
+}
+
 /**
  * For each top holder, find their earliest SOL receive (= account funding).
  * Count holders funded within `maxAgeHours` of token launch.
@@ -195,6 +267,8 @@ export async function getFreshFundedCount(holderOwners, apiKey, launchTs, maxAge
 
   let fresh = 0;
   let scanned = 0;
+  let errorCount = 0;
+  let lastError = null;
   const cutoff = launchTs - (maxAgeHours * 3600);
 
   for (const owner of holderOwners.slice(0, 8)) {
@@ -210,10 +284,17 @@ export async function getFreshFundedCount(holderOwners, apiKey, launchTs, maxAge
       }
       if (earliestFunding !== Infinity && earliestFunding >= cutoff) fresh++;
     } catch (e) {
+      errorCount++;
+      lastError = e.message;
       log("rug_signal_warn", `freshFunded ${owner.slice(0, 8)}: ${e.message}`);
     }
   }
-  return { fresh_funded_holders: fresh, scanned };
+  return {
+    fresh_funded_holders: fresh,
+    scanned,
+    _error_count: errorCount,
+    _error: lastError,
+  };
 }
 
 /**
@@ -225,6 +306,8 @@ export async function getSameFunderCluster(holderOwners, apiKey) {
 
   const funderCounts = new Map();
   let scanned = 0;
+  let errorCount = 0;
+  let lastError = null;
 
   for (const owner of holderOwners.slice(0, 10)) {
     try {
@@ -241,6 +324,8 @@ export async function getSameFunderCluster(holderOwners, apiKey) {
         }
       }
     } catch (e) {
+      errorCount++;
+      lastError = e.message;
       log("rug_signal_warn", `sameFunder ${owner.slice(0, 8)}: ${e.message}`);
     }
   }
@@ -250,7 +335,13 @@ export async function getSameFunderCluster(holderOwners, apiKey) {
   for (const [funder, count] of funderCounts.entries()) {
     if (count > maxCluster) { maxCluster = count; commonFunder = funder; }
   }
-  return { same_funder_holders: maxCluster, common_funder: commonFunder, scanned };
+  return {
+    same_funder_holders: maxCluster,
+    common_funder: commonFunder,
+    scanned,
+    _error_count: errorCount,
+    _error: lastError,
+  };
 }
 
 /**
@@ -362,19 +453,54 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
 
   const apiKey = process.env.HELIUS_API_KEY;
   const heliusOK = apiKey && apiKey !== "dummy-helius-key";
+  const heliusExpected = !!(heliusOK && (holderOwners.length > 0 || launchTs));
 
   const extensions = await getMintExtensions(connection, mint);
 
   let fresh = { fresh_funded_holders: 0 };
   let sybil = { same_funder_holders: 0, common_funder: null };
   let bundle = { bundle_buyers_pct: 0, bundle_wallets: 0 };
+  let heliusDegraded = false;
+  let heliusReason = null;
+  let heliusErrorCount = 0;
+  let shyftFallbackUsed = false;
 
-  if (heliusOK && holderOwners.length > 0) {
+  if (heliusExpected && heliusCircuitOpen()) {
+    // Try Shyft fallback first.
+    const shyftKey = process.env.SHYFT_API_KEY;
+    if (shyftKey && holderOwners.length > 0) {
+      try {
+        fresh = await getFreshFundedCountShyft(mint, shyftKey);
+        shyftFallbackUsed = true;
+        heliusReason = "helius_circuit_open:shyft_fallback_used";
+        log("rug_signal_info", `Shyft fallback: fresh_funded=${fresh.fresh_funded_holders}`);
+      } catch (e) {
+        heliusDegraded = true;
+        heliusReason = `Helius circuit open, Shyft fallback failed: ${e.message}`;
+      }
+    } else {
+      heliusDegraded = true;
+      heliusReason = "Helius circuit open, no Shyft key configured";
+    }
+  }
+
+  if (!shyftFallbackUsed && !heliusDegraded && heliusOK && holderOwners.length > 0) {
     fresh = await getFreshFundedCount(holderOwners, apiKey, launchTs || Math.floor(Date.now() / 1000));
     sybil = await getSameFunderCluster(holderOwners, apiKey);
+    heliusErrorCount += Number(fresh?._error_count || 0) + Number(sybil?._error_count || 0);
+    heliusReason = fresh?._error || sybil?._error || heliusReason;
+    if ((Number(fresh?._error_count || 0) > 0 && Number(fresh?.scanned || 0) === 0) ||
+        (Number(sybil?._error_count || 0) > 0 && Number(sybil?.scanned || 0) === 0)) {
+      heliusDegraded = true;
+    }
   }
-  if (heliusOK && launchTs) {
+  if (!shyftFallbackUsed && !heliusDegraded && heliusOK && launchTs) {
     bundle = await getBundleBuyersPct(mint, apiKey, launchTs);
+    if (bundle?._error) {
+      heliusDegraded = true;
+      heliusReason = bundle._error;
+      heliusErrorCount += 1;
+    }
   }
 
   const lp = getLpLockStatus(dsPair);
@@ -388,6 +514,10 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
     ...lp,
     ...wash,
     _helius_used: heliusOK,
+    _helius_expected: heliusExpected,
+    _helius_degraded: heliusDegraded,
+    _helius_reason: heliusReason,
+    _helius_error_count: heliusErrorCount,
     _ts: Date.now(),
   };
 

@@ -2,6 +2,7 @@ import "dotenv/config";
 import cron from "node-cron";
 import readline from "readline";
 import { agentLoop } from "./agent.js";
+import AgentRouter from "./agent-router.js";
 import { log } from "./logger.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { discoverTokens, getSolanaGasFee, swapToken as gmgnSwap, getTokenSecurityDetails, getTokenKlines } from "./tools/gmgn.js";
@@ -10,9 +11,10 @@ import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recor
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape } from "./telegram.js";
 import {
-  strategy, checkROI, checkTrailingStop, run4FilterProtocol, getMcapTier, getTierExecutionProfile,
-  getEffectiveStopLoss, getEffectiveImmediateTakeProfit, checkPartialTP,
+  strategy, checkROI, run4FilterProtocol, getMcapTier, getTierExecutionProfile,
+  checkPartialTP,
 } from "./strategy.js";
+import { buildRiskPolicy, evaluateExitPolicy } from "./risk-policy.js";
 import {
   getStrategy, listStrategies, setActiveStrategy, setStrategyOverride,
   getActiveStrategyId, STRATEGY_IDS,
@@ -89,14 +91,43 @@ import { resolveExecutionMode } from "./runtime-mode.js";
 import { getCapitalAwareSizing } from "./capital-sizing.js";
 import { evaluateCandidateDecision } from "./decision-workflow.js";
 import { recordDecision } from "./decision-log.js";
+import { assertOperationalReadiness, formatReadinessReport } from "./readiness.js";
+import {
+  readAutomationCommand, publishAutomationState, persistAutomationPreference,
+  issueSupervisorCommand, publishSupervisorState, readSupervisorState,
+} from "./automation-control.js";
 
 log("startup", "Ponyou AI Agent starting...");
 const executionMode = resolveExecutionMode();
 log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " (demo/dry-run unified)" : ""}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
 
+// Initialize multi-agent router for research/narrative tasks.
+const agentRouter = new AgentRouter({
+  callLLM: async (messages) => {
+    const userMsg = messages.find(m => m.role === "user")?.content || "";
+    const { content } = await agentLoop(userMsg, 5, [], "GENERAL", config.llm.generalModel, 1024);
+    return content;
+  },
+  rufloEnabled: false, // disable ruflo for now
+});
+log("startup", `AgentRouter initialized — Gemini: ${!!process.env.GEMINI_API_KEY}, Codex: true`);
+
 // ─── Init Multi-Wallet ────────────────────────────────────────
 initWalletManager();
+const startupReadiness = assertOperationalReadiness({
+  executionMode,
+  runtime: {
+    hasActiveWallet: !!getActiveWallet(),
+  },
+});
+for (const warning of startupReadiness.warnings || []) {
+  log("readiness_warn", warning);
+}
+log("readiness", startupReadiness.summary);
+if ((startupReadiness.warnings || []).length > 0) {
+  log("readiness", formatReadinessReport(startupReadiness));
+}
 
 // ─── Auto-init trading plan ───────────────────────────────────
 if (!getTradingPlan() && config.pilot.enabled) {
@@ -232,6 +263,11 @@ async function handleStrategyTelegramCommand(text) {
     const trail = active.trailing_stop?.enabled ? "on" : "off";
     const ptp   = active.partial_tp?.enabled ? `${active.partial_tp.sell_pct}%@+${active.partial_tp.at_pct}%` : "off";
     const confirm = config.trading.confirmMode ? "🟡 ON" : "🟢 OFF";
+    const automation = cronStarted ? "🟢 ON" : "🔴 OFF";
+    const supervisor = readSupervisorState();
+    const agentPower = supervisor?.desiredRunning
+      ? (supervisor?.agentRunning ? "🟢 ON" : "🟡 BOOTING")
+      : "🔴 OFF";
     const planLine = plan
       ? `Day ${plan.day}/${plan.days_total} · PnL ${fmt.pct(plan.today_pnl_pct ?? 0)} · target +${plan.daily_target_pct}%`
       : `belum diinisialisasi`;
@@ -243,9 +279,11 @@ async function handleStrategyTelegramCommand(text) {
       `SL ${slPct}% · trail ${trail} · partTP ${ptp} · LLM ${active.use_llm ? "on" : "off"}`,
       ``,
       `<b>Confirm</b> · ${confirm} · pending ${pending.length}`,
+      `<b>Agent Power</b> · ${agentPower}`,
+      `<b>Automation</b> · ${automation}`,
       `<b>Plan</b> · ${planLine}`,
       fmt.divider(),
-      fmt.it("/strategy /strategies /stratset /confirm /pending /yes /no /pnl /status"),
+      fmt.it("/strategy /strategies /stratset /confirm /auto /agent /pending /yes /no /pnl /status"),
     ];
     await sendHTML(lines.join("\n"));
     return true;
@@ -302,6 +340,31 @@ async function handleStrategyTelegramCommand(text) {
     }
     const parsed = setStrategyOverride(id, key, value);
     await sendHTML(`✅ <code>${id}.${key} = ${parsed}</code> (hot-applied)`);
+    return true;
+  }
+
+  if (cmd === "/agent") {
+    const mode = (parts[1] || "").toLowerCase();
+    if (mode === "on" || mode === "off") {
+      const enabled = mode === "on";
+      issueSupervisorCommand({ action: "set_power", enabled, source: "telegram" });
+      publishSupervisorState({ desiredRunning: enabled, source: "telegram_command" });
+      await sendHTML(`✅ Agent process power <b>${enabled ? "ON" : "OFF"}</b> command queued to supervisor.`);
+    } else {
+      await sendHTML(`Usage: <code>/agent on</code> or <code>/agent off</code>`);
+    }
+    return true;
+  }
+
+  if (cmd === "/auto") {
+    const mode = (parts[1] || "").toLowerCase();
+    if (mode === "on" || mode === "off") {
+      const enabled = mode === "on";
+      setAutomationEnabled(enabled, "telegram", true);
+      await sendHTML(`✅ Automation <b>${enabled ? "ON" : "OFF"}</b> — persisted and applied to runtime.`);
+    } else {
+      await sendHTML(`Automation is <b>${cronStarted ? "ON" : "OFF"}</b>\nUsage: <code>/auto on</code> or <code>/auto off</code>`);
+    }
     return true;
   }
 
@@ -440,9 +503,10 @@ async function executePendingIntent(id) {
   let result;
   const swapStartedAt = Date.now();
   try {
-    result = await gmgnSwap(args);
+    result = await gmgnSwap({ ...args, executionContext: { source: "pending-intent", approvedIntent: true } });
   } catch (e) {
     consumeIntent(id, "failed", { error: e.message });
+    recordSwapOutcome({ success: false });
     recordExecutionQuality({
       walletAddress: args.wallet_address || getActiveWallet()?.address || null,
       provider: "auto",
@@ -457,6 +521,7 @@ async function executePendingIntent(id) {
   }
 
   const succeeded = result?.success || result?.dry_run;
+  recordSwapOutcome({ success: !!succeeded });
   recordExecutionQuality({
     walletAddress: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
     provider: result?.execution_provider || "auto",
@@ -475,11 +540,13 @@ async function executePendingIntent(id) {
   // Wire up position tracking the same way the screening LLM path does.
   let symbol = args.token_out?.slice(0, 8) || "TOKEN";
   let initial_value_usd = 0;
+  let solPriceUsd = 0;
   try {
     const tokenInfo = await getTokenInfo({ query: args.token_out });
     symbol = tokenInfo?.results?.[0]?.symbol || symbol;
     const balance = await getWalletBalances();
-    initial_value_usd = (args.amount || 0) * (balance?.sol_price || 0);
+    solPriceUsd = balance?.sol_price || 0;
+    initial_value_usd = (args.amount || 0) * solPriceUsd;
   } catch (e) {
     log("intent_warn", `metadata fetch failed for #${id}: ${e.message}`);
   }
@@ -487,47 +554,32 @@ async function executePendingIntent(id) {
   // Await the disk flush: if the bot crashes between swap-success and persist,
   // we'd lose track of the freshly-deployed position. Critical for confirm-mode
   // BUYs where the user explicitly approved a real swap.
-  await trackPosition({
-    position: args.token_out,
-    pool: "gmgn",
-    pool_name: symbol,
-    amount_sol: args.amount,
-    initial_value_usd,
-    signal_snapshot: {
-      mint: args.token_out,
-      symbol,
-      market_condition: getMarketIntelligence().condition,
-      workflow: { verdict: "manual" },
-      execution_context: {
+  const executions = Array.isArray(result?.executions) && result.executions.length > 0
+    ? result.executions
+    : [{
         wallet_address: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
-        provider: result?.execution_provider || "auto",
-        slippage: Number(args.slippage || result?.slippage || 0),
-      },
-    },
-    wallet_address: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
-  });
-  if (result?.split_execution && Array.isArray(result.executions)) {
-    for (const exec of result.executions.slice(1)) {
-      await trackPosition({
-        position: args.token_out,
-        pool: "gmgn",
-        pool_name: symbol,
-        amount_sol: exec.amount || 0,
-        initial_value_usd: (exec.amount || 0) * (balance?.sol_price || 0),
-        signal_snapshot: {
-          mint: args.token_out,
-          symbol,
-          market_condition: getMarketIntelligence().condition,
-          workflow: { verdict: "manual" },
-          execution_context: {
-            wallet_address: exec.wallet_address || null,
-            provider: result?.execution_provider || "auto",
-            slippage: Number(args.slippage || result?.slippage || 0),
-          },
+        amount: args.amount,
+      }];
+  for (const exec of executions) {
+    await trackPosition({
+      position: args.token_out,
+      pool: "gmgn",
+      pool_name: symbol,
+      amount_sol: exec.amount || 0,
+      initial_value_usd: (exec.amount || 0) * solPriceUsd,
+      signal_snapshot: {
+        mint: args.token_out,
+        symbol,
+        market_condition: getMarketIntelligence().condition,
+        workflow: { verdict: "manual" },
+        execution_context: {
+          wallet_address: exec.wallet_address || result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
+          provider: result?.execution_provider || "auto",
+          slippage: Number(args.slippage || result?.slippage || 0),
         },
-        wallet_address: exec.wallet_address || null,
-      });
-    }
+      },
+      wallet_address: exec.wallet_address || result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
+    });
   }
   recordTrade(null);
   consumeIntent(id, "executed", { result: result?.hash || result?.signature || "ok" });
@@ -707,10 +759,11 @@ async function runSuccessAnalysis(tradeContext) {
 
   try {
     const { content } = await agentLoop(prompt, 5, [], "GENERAL", config.llm.generalModel, 1024);
-    const result = recordLossAnalysis({ // Reuse recordLossAnalysis for simplicity
+    const result = recordLossAnalysis({
       lossContext: tradeContext,
       analysisText: stripThink(content),
       marketCondition: marketCond,
+      analysisRole: "SUCCESS_ANALYSIS",
     });
     log("learning", `Analisis sukses selesai. ${result.lessons_added} lessons ditambahkan.`);
   } catch (e) {
@@ -741,6 +794,7 @@ export async function runContinuousLearningCycle() {
       lossContext: { exit_reason: "OBSERVATION" },
       analysisText: stripThink(content),
       marketCondition: getMarketIntelligence().condition,
+      analysisRole: "OBSERVATION_ANALYSIS",
     });
     
     if (telegramEnabled() && result.lessons_added > 0) {
@@ -868,12 +922,13 @@ async function checkDeterministicExits(tokens) {
   const exits = [];
   const market = getMarketIntelligence();
   const condition = market.condition || "NORMAL";
-  const effectiveStopLoss = getEffectiveStopLoss(config.management.stopLossPct);
-  const immediateTakeProfit = getEffectiveImmediateTakeProfit(
-    config.management.takeProfitPct ?? config.management.autoTakeProfitPct
-  );
 
   for (const token of tokens) {
+    const riskPolicy = buildRiskPolicy({
+      marketCondition: condition,
+      token,
+      config,
+    });
     const tracked = getTrackedPosition(token.position_key || token.mint, token.wallet_address || null);
     if (!tracked) continue;
 
@@ -889,13 +944,23 @@ async function checkDeterministicExits(tokens) {
       updatePeakPnl(token.position_key || token.mint, currentPnlPct, token.wallet_address || null);
     }
 
-    if (currentPnlPct / 100 <= effectiveStopLoss) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: `Stop Loss: ${currentPnlPct.toFixed(2)}% (SL ${(effectiveStopLoss * 100).toFixed(0)}%)`, pnl_pct: currentPnlPct, is_loss: true, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
+    const exitPolicy = evaluateExitPolicy({
+      pnlPct: currentPnlPct,
+      peakPnlPct: tracked.peak_pnl_pct || 0,
+      policy: riskPolicy,
+    });
+
+    if (exitPolicy.hardCutLoss) {
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.hardCutLossReason, pnl_pct: currentPnlPct, is_loss: true, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
       continue;
     }
-    // Immediate take-profit override (hybrid mode): user-config takeProfitPct triggers any time
-    if (immediateTakeProfit != null && currentPnlPct / 100 >= immediateTakeProfit) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: `Immediate TP: ${currentPnlPct.toFixed(2)}% (TP ${(immediateTakeProfit * 100).toFixed(0)}%)`, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
+    if (exitPolicy.hardStopLoss) {
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.hardStopLossReason, pnl_pct: currentPnlPct, is_loss: true, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
+      continue;
+    }
+    // Immediate take-profit override (hybrid mode): policy takeProfitPct triggers any time
+    if (exitPolicy.takeProfit) {
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.takeProfitReason, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
       continue;
     }
 
@@ -941,9 +1006,8 @@ async function checkDeterministicExits(tokens) {
       exits.push({ mint: token.mint, symbol: token.symbol, reason: roiCheck.reason, pnl_pct: currentPnlPct, is_loss: currentPnlPct < 0, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
       continue;
     }
-    const tsCheck = checkTrailingStop(currentPnlPct, tracked.peak_pnl_pct || 0);
-    if (tsCheck.exit) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: tsCheck.reason, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
+    if (exitPolicy.trailingStop) {
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.trailingStopReason, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
     }
   }
   return exits;
@@ -1160,6 +1224,9 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
         onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
         onToolFinish: async ({ name, result }) => {
           await liveMessage?.toolFinish(name, result, !result?.error);
+          if (name === "gmgn_swap") {
+            recordSwapOutcome({ success: !!(result?.success || result?.dry_run) });
+          }
           if (name === "gmgn_swap" && (result.success || result.dry_run)) {
             const tokenOut = result.token_out || result.would_swap?.token_out;
             const tokenIn = result.token_in || result.would_swap?.token_in;
@@ -1256,15 +1323,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return "Market DEAD — skip entries";
     }
 
-    // Auto market adaptation
-    if (config.pilot.autoAdaptToMarket) {
-      const adj = getRecommendedAdjustments(marketIntel.condition);
-      if (!adj.skip_entry) {
-        const safeFields = ["minHolders","minMcap","maxMcap","minVolume","maxBundlePct","maxTop10Pct","minTokenFeesSol","maxBotHoldersPct"];
-        for (const f of safeFields) {
-          if (adj[f] != null) config.screening[f] = adj[f];
-        }
-      }
+    // Auto market adaptation now only informs ranking/notes; it must not
+    // mutate live screening config in-place.
+    const marketAdjustments = config.pilot.autoAdaptToMarket
+      ? getRecommendedAdjustments(marketIntel.condition)
+      : null;
+    if (marketAdjustments?.skip_entry) {
+      _screeningBusy = false;
+      return `Market adaptation recommends skip_entry for ${marketIntel.condition}`;
     }
 
     // ─── Filter + Rug Memory ─────────────────────
@@ -1350,7 +1416,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       ));
       const kelly = config.kelly?.enabled
         ? getCapitalAwareSizing({
-            bankrollSol: balance.sol,
+            bankrollSol: walletSol,
             solPriceUsd: balance.sol_price || 0,
             baseDeployAmountSol: preKellyAmount,
             trades: recentTrades,
@@ -1377,9 +1443,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
             method: "fallback",
             capital_usd: 0,
             capped_at: null,
-          };
+      };
       const sizedAmount = kelly.deploy_amount_sol || preKellyAmount;
       const conviction = getCoinConviction(token.mint, token);
+      // agentRouter.invoke() available for research delegation — see agent-router.js
       const narrativeTags = Array.isArray(token.narrative_tags)
         ? token.narrative_tags
         : [];
@@ -1558,6 +1625,9 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
         onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
         onToolFinish: async ({ name, result }) => {
           await liveMessage?.toolFinish(name, result, !result?.error);
+          if (name === "gmgn_swap") {
+            recordSwapOutcome({ success: !!(result?.success || result?.dry_run) });
+          }
           if (name === "gmgn_swap" && (result.success || result.dry_run)) {
             const token = passingCandidates.find(c =>
               c.mint === result.token_out || c.mint === result.would_swap?.token_out
@@ -1833,19 +1903,6 @@ if (isTTY) {
   _ttyInterface = rl;
   setInterval(() => { if (!busy) { rl.setPrompt(buildPrompt()); rl.prompt(true); } }, 10_000);
 
-  function launchCron() {
-    if (!cronStarted) {
-      startCronJobs();
-    }
-  }
-
-  async function runBusy(fn) {
-    if (busy) return;
-    busy = true; rl.pause();
-    try { await fn(); } catch (e) { console.error(e.message); }
-    finally { busy = false; rl.setPrompt(buildPrompt()); rl.resume(); rl.prompt(); }
-  }
-
   const plan = getPlanSummary();
   const market = getMarketIntelligence();
   const vault = getVaultStatus();
@@ -1859,70 +1916,6 @@ if (isTTY) {
   console.log(`║  Vault: ${vault.configured ? `${vault.vault_pct}% tiap ${vault.interval_days}hr | ${vaultDue.days_remaining?.toFixed(1)}hr lagi` : "belum dikonfigurasi".padEnd(30)} ║`);
   console.log(`╚══════════════════════════════════════════════════════════╝\n`);
   console.log(`Perintah CLI: /pilot check, /auto on|off, /off (shutdown), /smart (scan smart money)\n`);
-
-  launchCron();
-
-  startPolling(async (msg) => {
-    const text = msg?.text?.trim();
-    if (!text) return;
-
-    // Command handling in Telegram
-    if (text === "/pnl") {
-      const history = getPerformanceHistory({ limit: 10 });
-      const table = formatPnLTable(history);
-      await sendHTML(table);
-      return;
-    }
-
-    if (text === "/status") {
-      const plan = getPlanSummary();
-      const market = getMarketIntelligence();
-      const planLine = plan
-        ? `Day ${plan.day}/${plan.days_total} · PnL ${fmt.pct(plan.today_pnl_pct ?? 0)}`
-        : fmt.it("plan belum diinisialisasi");
-      const msg = [
-        `📊 <b>Status</b>`,
-        planLine,
-        `Market · ${htmlEscape(market.condition)}`,
-      ].join("\n");
-      await sendHTML(msg);
-      return;
-    }
-
-    // Charon-style command handler (strategy presets, confirm-mode intents, hot config).
-    if (text.startsWith("/")) {
-      const handled = await handleStrategyTelegramCommand(text).catch(e => {
-        sendHTML(`❌ Command error: ${e.message}`).catch(() => {});
-        return true;
-      });
-      if (handled) return;
-    }
-
-    if (busy) return;
-    busy = true;
-    let liveMsg = null;
-    try {
-      liveMsg = await createLiveMessage("🤖 Ponyou", "Memproses…");
-
-      const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, "GENERAL", null, null, {
-        onThinkingStart: async () => { /* sudah dimulai oleh createLiveMessage */ },
-        onToolStart: async ({ name }) => { await liveMsg?.toolStart(name); },
-        onToolFinish: async ({ name, result }) => { await liveMsg?.toolFinish(name, result, !result?.error); },
-      });
-
-      sessionHistory.push({ role: "user", content: text }, { role: "assistant", content });
-      if (sessionHistory.length > MAX_HISTORY) sessionHistory.splice(0, 2);
-
-      const clean = stripThink(content) || "";
-      if (liveMsg) await liveMsg.finalize(clean);
-      else await sendMessage(clean);
-    } catch (e) {
-      const errLine = `❌ <b>Error</b>\n<code>${htmlEscape(e.message)}</code>`;
-      if (liveMsg) await liveMsg.finalize(errLine);
-      else await sendHTML(errLine);
-    }
-    finally { busy = false; refreshPrompt(); }
-  });
 
   rl.prompt();
   rl.on("line", async (line) => {
@@ -1942,10 +1935,10 @@ if (isTTY) {
       if (cmd === "auto") {
         const mode = args[0]?.toLowerCase();
         if (mode === "on") {
-          startCronJobs();
+          setAutomationEnabled(true, "cli", true);
           console.log("Automation ENABLED.");
         } else if (mode === "off") {
-          stopCronJobs();
+          setAutomationEnabled(false, "cli", true);
           console.log("Automation DISABLED.");
         } else {
           console.log("Usage: /auto on|off");
@@ -2003,4 +1996,133 @@ if (isTTY) {
 function refreshPrompt() {
   if (_ttyInterface) { _ttyInterface.setPrompt(buildPrompt()); _ttyInterface.prompt(true); }
 }
+let _lastAutomationCommandId = null;
+
+function publishRuntimeAutomationState(source = "runtime") {
+  return publishAutomationState({
+    enabled: cronStarted,
+    cronStarted,
+    telegramPolling: telegramEnabled(),
+    source,
+  });
+}
+
+function setAutomationEnabled(enabled, source = "runtime", persist = false) {
+  if (enabled) startCronJobs();
+  else stopCronJobs();
+  if (persist) persistAutomationPreference(enabled);
+  publishRuntimeAutomationState(source);
+  return cronStarted;
+}
+
+function syncAutomationBootState() {
+  const desired = config.automation?.enabled !== false;
+  if (desired && !cronStarted) startCronJobs();
+  if (!desired && cronStarted) stopCronJobs();
+  publishRuntimeAutomationState("boot");
+}
+
+function processAutomationCommand() {
+  const cmd = readAutomationCommand();
+  if (!cmd?.id || cmd.id === _lastAutomationCommandId) return;
+  _lastAutomationCommandId = cmd.id;
+
+  if (cmd.action === "set_enabled" && typeof cmd.enabled === "boolean") {
+    setAutomationEnabled(cmd.enabled, cmd.source || "external", false);
+    log("automation", `External automation command: ${cmd.enabled ? "ON" : "OFF"} (${cmd.source || "external"})`);
+  }
+}
+
+async function runBusy(fn) {
+  if (busy) return;
+  busy = true;
+  _ttyInterface?.pause();
+  try { await fn(); }
+  catch (e) { console.error(e.message); }
+  finally {
+    busy = false;
+    refreshPrompt();
+    _ttyInterface?.resume();
+  }
+}
+
+async function handleIncomingTelegramMessage(msg) {
+  const text = msg?.text?.trim();
+  if (!text) return;
+
+  if (text === "/pnl") {
+    const history = getPerformanceHistory({ limit: 10 });
+    const table = formatPnLTable(history);
+    await sendHTML(table);
+    return;
+  }
+
+  if (text === "/status") {
+    const plan = getPlanSummary();
+    const market = getMarketIntelligence();
+    const planLine = plan
+      ? `Day ${plan.day}/${plan.days_total} · PnL ${fmt.pct(plan.today_pnl_pct ?? 0)}`
+      : fmt.it("plan belum diinisialisasi");
+    const autoLine = cronStarted ? "🟢 ON" : "🔴 OFF";
+    const message = [
+      `📊 <b>Status</b>`,
+      planLine,
+      `Market · ${htmlEscape(market.condition)}`,
+      `Automation · ${autoLine}`,
+    ].join("\n");
+    await sendHTML(message);
+    return;
+  }
+
+  if (text.startsWith("/")) {
+    const handled = await handleStrategyTelegramCommand(text).catch(e => {
+      sendHTML(`❌ Command error: ${e.message}`).catch(() => {});
+      return true;
+    });
+    if (handled) return;
+  }
+
+  if (busy) return;
+  busy = true;
+  let liveMsg = null;
+  try {
+    liveMsg = await createLiveMessage("🤖 Ponyou", "Memproses…");
+
+    const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, "GENERAL", null, null, {
+      onThinkingStart: async () => {},
+      onToolStart: async ({ name }) => { await liveMsg?.toolStart(name); },
+      onToolFinish: async ({ name, result }) => {
+        await liveMsg?.toolFinish(name, result, !result?.error);
+        if (name === "gmgn_swap") {
+          recordSwapOutcome({ success: !!(result?.success || result?.dry_run) });
+        }
+      },
+    });
+
+    sessionHistory.push({ role: "user", content: text }, { role: "assistant", content });
+    if (sessionHistory.length > MAX_HISTORY) sessionHistory.splice(0, 2);
+
+    const clean = stripThink(content) || "";
+    if (liveMsg) await liveMsg.finalize(clean);
+    else await sendMessage(clean);
+  } catch (e) {
+    const errLine = `❌ <b>Error</b>\n<code>${htmlEscape(e.message)}</code>`;
+    if (liveMsg) await liveMsg.finalize(errLine);
+    else await sendHTML(errLine);
+  } finally {
+    busy = false;
+    refreshPrompt();
+  }
+}
+
+function ensureTelegramAutomationSurface() {
+  if (telegramEnabled()) {
+    startPolling(handleIncomingTelegramMessage);
+  }
+}
+
+syncAutomationBootState();
+ensureTelegramAutomationSurface();
+setInterval(processAutomationCommand, 2000);
+
 registerCronRestarter(() => { if (cronStarted) startCronJobs(); });
