@@ -47,7 +47,7 @@ function classifyTask(prompt) {
     return { agent: "gemini", confidence: +(scores.gemini / total).toFixed(2), reason: "research" };
   }
   if (scores.claude > 0) {
-    return { agent: "claude", confidence: +(0.65 + scores.claude * 0.08).toFixed(2), reason: "trading" };
+    return { agent: "claude", confidence: +Math.min(0.95, 0.65 + scores.claude * 0.08).toFixed(2), reason: "trading" };
   }
   return { agent: "claude", confidence: 0.55, reason: "default" };
 }
@@ -62,6 +62,25 @@ class AgentRouter {
 
   classify(prompt) {
     return classifyTask(prompt);
+  }
+
+  selectAgent(prompt, { preferAgent, minConfidence = 0.7, safetySensitive = false } = {}) {
+    const cls = this.classify(prompt);
+    if (VALID_AGENTS.has(preferAgent)) {
+      return { agent: preferAgent, confidence: 1, reason: "override", classified: cls };
+    }
+
+    let agent = cls.agent;
+    let reason = cls.reason;
+    let confidence = cls.confidence;
+
+    if ((safetySensitive || cls.confidence < minConfidence) && cls.agent !== "claude") {
+      agent = "claude";
+      reason = safetySensitive ? "safety_sensitive" : "low_confidence_escalation";
+      confidence = Math.max(confidence, minConfidence);
+    }
+
+    return { agent, confidence, reason, classified: cls };
   }
 
   _updateStats(agent, durationMs, hadError) {
@@ -81,42 +100,69 @@ class AgentRouter {
     return typeof r === "string" ? r.trim() : String(r ?? "").trim();
   }
 
-  async _callGemini(prompt, timeoutMs = 90_000) {
+  async _callGemini(prompt, timeoutMs = 60_000) {
     const { stdout } = await execFile(this.geminiBin, ["-p", prompt], {
       timeout: timeoutMs,
       maxBuffer: 2 * 1024 * 1024,
     });
-    return String(stdout || "").trim();
+    const result = String(stdout || "").trim();
+    if (!result) throw new Error("Empty response from agent");
+    return result;
   }
 
-  async _callCodex(prompt, timeoutMs = 120_000) {
+  async _callCodex(prompt, timeoutMs = 90_000) {
     const bins = ["/home/ubuntu/.npm-global/bin/codex", "codex"].filter(Boolean);
     let lastErr;
     for (const bin of bins) {
       try {
         const { stdout } = await execFile(bin, [prompt], { timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024 });
-        return String(stdout || "").trim();
+        const result = String(stdout || "").trim();
+        if (!result) throw new Error("Empty response from agent");
+        return result;
       } catch (e) { lastErr = e; }
     }
     throw lastErr || new Error("Codex binary not found");
   }
 
-  async invoke(prompt, { preferAgent, systemPrompt, timeoutMs } = {}) {
-    const cls = this.classify(prompt);
-    const agent = VALID_AGENTS.has(preferAgent) ? preferAgent : cls.agent;
-    const reason = VALID_AGENTS.has(preferAgent) ? "override" : cls.reason;
-    const confidence = VALID_AGENTS.has(preferAgent) ? 1 : cls.confidence;
+  async invoke(prompt, { preferAgent, systemPrompt, timeoutMs, confidenceGate = {} } = {}) {
+    const selection = this.selectAgent(prompt, {
+      preferAgent,
+      minConfidence: confidenceGate.minConfidence ?? 0.7,
+      safetySensitive: confidenceGate.safetySensitive ?? false,
+    });
+    const { agent, confidence, reason } = selection;
     const t0 = Date.now();
     try {
       let result = "";
-      if (agent === "gemini") result = await this._callGemini(prompt, timeoutMs);
-      else if (agent === "codex") result = await this._callCodex(prompt, timeoutMs);
-      else result = await this._callClaude(prompt, systemPrompt);
+      let lastError = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
+          if (agent === "gemini") result = await this._callGemini(prompt, timeoutMs);
+          else if (agent === "codex") result = await this._callCodex(prompt, timeoutMs);
+          else result = await this._callClaude(prompt, systemPrompt);
+          lastError = null;
+          break;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+      // Jika retry fail dan agent bukan claude, coba fallback ke claude
+      if (lastError && agent !== "claude") {
+        try {
+          result = await this._callClaude(prompt, systemPrompt);
+          console.warn(`[Router] Fallback to claude after ${agent} failed: ${lastError.message}`);
+          lastError = null;
+        } catch (fallbackErr) {
+          lastError = fallbackErr;
+        }
+      }
+      if (lastError) throw lastError;
 
       const durationMs = Date.now() - t0;
       this._updateStats(agent, durationMs, false);
       console.log(`[Router] → ${agent} (${reason}: ${confidence}) [${durationMs}ms]`);
-      return { result, agent, durationMs, error: null };
+      return { result, agent, durationMs, error: null, classified: selection.classified, selected: selection };
     } catch (err) {
       const durationMs = Date.now() - t0;
       const message = err instanceof Error ? err.message : String(err);
