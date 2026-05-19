@@ -34,7 +34,7 @@ describe("getCapitalAwareSizing — MICRO tier (capitalUsd < 50)", () => {
     });
     expect(result.tier).toBe("MICRO");
     expect(result.method).toBe("regime-flat");
-    expect(result.skipped).toBe(false);
+    expect(result.should_skip).toBe(false);
     expect(result.effective_fraction).toBeCloseTo(0.15);
     // deploy = min(0.15 * 0.15, 0.5) = 0.0225
     expect(result.deploy_amount_sol).toBeCloseTo(0.0225, 3);
@@ -53,7 +53,7 @@ describe("getCapitalAwareSizing — MICRO tier (capitalUsd < 50)", () => {
     expect(result.effective_fraction).toBeCloseTo(0.08);
     // deploy = min(0.15 * 0.08, 0.5) = 0.012
     expect(result.deploy_amount_sol).toBeCloseTo(0.012, 3);
-    expect(result.skipped).toBe(false);
+    expect(result.should_skip).toBe(false);
   });
 
   it("skips entry for DEAD regime", () => {
@@ -65,7 +65,7 @@ describe("getCapitalAwareSizing — MICRO tier (capitalUsd < 50)", () => {
       capitalSizing: DEFAULT_CFG,
     });
     expect(result.tier).toBe("MICRO");
-    expect(result.skipped).toBe(true);
+    expect(result.should_skip).toBe(true);
     expect(result.deploy_amount_sol).toBe(0);
   });
 
@@ -77,7 +77,7 @@ describe("getCapitalAwareSizing — MICRO tier (capitalUsd < 50)", () => {
       regime: "COLD",
       capitalSizing: DEFAULT_CFG,
     });
-    expect(result.skipped).toBe(true);
+    expect(result.should_skip).toBe(true);
     expect(result.deploy_amount_sol).toBe(0);
   });
 
@@ -140,7 +140,7 @@ describe("getCapitalAwareSizing — GROWTH tier ($50–$200)", () => {
     expect(result.tier).toBe("GROWTH");
     expect(result.method).toBe("half-kelly");
     expect(result.used_fallback).toBe(false);
-    expect(result.skipped).toBe(false);
+    expect(result.should_skip).toBe(false);
     expect(result.deploy_amount_sol).toBeGreaterThan(0);
     // Should be under 20% cap = 0.5 * 0.20 = 0.10
     expect(result.deploy_amount_sol).toBeLessThanOrEqual(0.10);
