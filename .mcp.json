@@ -9,6 +9,11 @@
       "command": "node",
       "args": ["/home/ubuntu/ponyou/mcp-server.js"],
       "description": "Ponyou data tools — market, positions, lessons, regime, performance"
+    },
+    "ruflo": {
+      "command": "node",
+      "args": ["/home/ubuntu/ponyou/node_modules/.bin/ruflo", "mcp", "start"],
+      "description": "Ruflo orchestration — memory (semantic search), agent routing, swarm coordination"
     }
   }
 }
