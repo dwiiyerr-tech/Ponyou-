@@ -5,6 +5,8 @@ import { getRugMemorySummary } from "./lessons.js";
 import { getLearningModeStatus, getLearningStatusSummary } from "./learning-mode.js";
 import { getVaultStatus, isVaultDue } from "./vault.js";
 import { getNarrativeHeatPrompt } from "./tools/narratives.js";
+import { getRegimeAssessment } from "./regime-memory.js";
+import { getAttributionPromptLine } from "./trade-attribution.js";
 
 const j = (o) => JSON.stringify(o); // compact, no whitespace
 
@@ -41,8 +43,17 @@ export function buildSystemPrompt(agentType, portfolio, positions, stateSummary 
 
   const narrativeHeatLine = getNarrativeHeatPrompt();
   const narrativeBlock = narrativeHeatLine ? `[NARRATIVE] ${narrativeHeatLine}` : "";
+  const defaultRegime = getRegimeAssessment({
+    market_condition: market.condition,
+    tier_execution: { tier: "MIXED" },
+    workflow: { verdict: profitMode ? "active" : "watch" },
+    conviction: { narrative_cluster: { narrative: "OTHER" } },
+  });
+  const regimeBlock = `[REGIME] ${defaultRegime.marketCondition}/${defaultRegime.tier}/${defaultRegime.narrative}/${defaultRegime.verdict} | ${defaultRegime.stance} score:${defaultRegime.regime_score} conf:${defaultRegime.confidence_score}`;
+  const attributionLine = getAttributionPromptLine();
+  const attributionBlock = attributionLine ? `[ATTRIBUTION] ${attributionLine}` : "";
 
-  const contextLines = [planBlock, learningBlock, marketBlock, vaultBlock, rugBlock, narrativeBlock]
+  const contextLines = [planBlock, learningBlock, marketBlock, vaultBlock, rugBlock, narrativeBlock, regimeBlock, attributionBlock]
     .filter(Boolean).join("\n");
 
   // ─── MANAGER ──────────────────────────────────────────────

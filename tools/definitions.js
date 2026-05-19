@@ -207,7 +207,8 @@ export const tools = [
           token_in: { type: "string", description: "Input token mint or 'SOL'." },
           token_out: { type: "string", description: "Output token mint or 'SOL'." },
           amount: { type: "number", description: "Amount in decimal form (e.g. 0.5 for 0.5 SOL)." },
-          slippage: { type: "number", default: 0.5, description: "Slippage tolerance in percentage." }
+          slippage: { type: "number", default: 0.5, description: "Slippage tolerance in percentage." },
+          wallet_address: { type: "string", description: "Optional specific wallet address to execute the swap from in multi-wallet mode." }
         },
         required: ["token_in", "token_out", "amount"]
       }
@@ -252,6 +253,33 @@ export const tools = [
       name: "get_wallet_balance",
       description: "Get SOL and SPL token balances for the configured wallet.",
       parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "scan_rent_refunds",
+      description: "Scan empty SPL token accounts that can be closed to reclaim Solana rent.",
+      parameters: {
+        type: "object",
+        properties: {
+          owner: { type: "string", description: "Optional owner wallet address." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "claim_rent_refunds",
+      description: "Close empty SPL token accounts and reclaim rent refunds using the current wallet or configured fee payer.",
+      parameters: {
+        type: "object",
+        properties: {
+          owner: { type: "string", description: "Optional owner wallet address." },
+          limit: { type: "number", default: 10, description: "Maximum number of token accounts to close in one run." }
+        }
+      }
     }
   },
 

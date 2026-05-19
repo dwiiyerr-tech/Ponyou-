@@ -6,6 +6,7 @@ import {
   checkTrailingStop,
   checkPartialTP,
   getMcapTier,
+  getTierExecutionProfile,
 } from "../strategy.js";
 
 describe("getEffectiveStopLoss", () => {
@@ -122,5 +123,19 @@ describe("getMcapTier", () => {
       expect(typeof tier.guidance).toBe("string");
       expect(tier.desc.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("getTierExecutionProfile", () => {
+  it("uses sell-only mode for high-cap tokens", () => {
+    const profile = getTierExecutionProfile(60_000_000);
+    expect(profile.sell_only).toBe(true);
+    expect(profile.use_technicals).toBe(false);
+  });
+
+  it("uses technicals for micro caps", () => {
+    const profile = getTierExecutionProfile(500_000);
+    expect(profile.sell_only).toBe(false);
+    expect(profile.use_technicals).toBe(true);
   });
 });

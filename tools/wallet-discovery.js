@@ -16,7 +16,8 @@ import { fileURLToPath } from "url";
 import { log } from "../logger.js";
 import { discoverTokens } from "./dexscreener.js";
 import { listSmartWallets, addSmartWallet } from "../smart-wallets.js";
-import { heliusAcquire, heliusRelease } from "./rug-signals.js";
+import { heliusAcquire, heliusRelease, heliusCircuitOpen } from "./rug-signals.js";
+import { getAdaptiveSmartWalletContext, evaluateSmartWalletCandidate, selectSmartWalletCandidates } from "../smart-wallet-strategy.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DISCOVERED_FILE = path.join(__dirname, "../discovered-wallets.json");
@@ -84,6 +85,7 @@ async function getTopOwners(connection, mint, limit = 15) {
 
 async function fetchHeliusTxns(address, apiKey, limit = 50) {
   const url = `${HELIUS_BASE}/addresses/${address}/transactions?api-key=${apiKey}&limit=${limit}&type=SWAP`;
+  // heliusAcquire throws immediately if circuit breaker is open (too many 429s)
   await heliusAcquire();
   try {
     const res = await fetch(url);
@@ -269,6 +271,7 @@ export async function discoverSmartWallets({
     .filter(([addr]) => !existing.has(addr));
 
   log("discovery", `Candidates after dedup: ${candidates.length}`);
+  const adaptiveContext = getAdaptiveSmartWalletContext();
 
   // Stage 3 — score each candidate via Helius (capped to control credits)
   const SCAN_CAP = Math.min(candidates.length, 40);
@@ -276,6 +279,10 @@ export async function discoverSmartWallets({
   const results = [];
 
   for (let i = 0; i < SCAN_CAP; i++) {
+    if (heliusCircuitOpen()) {
+      log("discovery", `Helius circuit open — stopping wallet scoring early (${i}/${SCAN_CAP} done)`);
+      break;
+    }
     const [addr, sourcesSet] = candidates[i];
     try {
       const txns = await fetchHeliusTxns(addr, apiKey, 50);
@@ -292,6 +299,8 @@ export async function discoverSmartWallets({
         stats.realized_pnl_sol >= min_realized_pnl_sol &&
         stats.avg_hold_seconds <= max_avg_hold_seconds;
 
+      const sourceTokens = [...new Set([...(discovered[addr]?.source_tokens || []), ...sourcesSet])];
+
       const entry = {
         address: addr,
         first_seen_at: discovered[addr]?.first_seen_at || new Date().toISOString(),
@@ -300,19 +309,24 @@ export async function discoverSmartWallets({
         bot_filter: botReason,
         qualifies,
         promoted: discovered[addr]?.promoted || false,
-        source_tokens: [...new Set([...(discovered[addr]?.source_tokens || []), ...sourcesSet])],
+        source_tokens: sourceTokens,
       };
+      entry.selection = evaluateSmartWalletCandidate(entry, adaptiveContext);
 
       discovered[addr] = entry;
       results.push(entry);
 
-      if (qualifies && auto_add && !entry.promoted) {
+      if (qualifies && entry.selection.selected && auto_add && !entry.promoted) {
         addSmartWallet({
           address: addr,
           label: `auto:wr${Math.round(stats.winrate * 100)}_pnl${stats.realized_pnl_sol.toFixed(2)}SOL_n${stats.completed_trades}`,
+          source_tokens: sourceTokens,
+          stats,
+          selection: entry.selection,
+          notes: entry.selection.reasons.join("; "),
         });
         entry.promoted = true;
-        log("discovery", `Promoted ${addr.slice(0, 8)} — winrate ${stats.winrate}, ${stats.realized_pnl_sol} SOL`);
+        log("discovery", `Promoted ${addr.slice(0, 8)} — score ${entry.selection.score}, winrate ${stats.winrate}, ${stats.realized_pnl_sol} SOL`);
       }
     } catch (e) {
       log("discovery_warn", `score ${addr.slice(0, 8)}: ${e.message}`);
@@ -321,17 +335,24 @@ export async function discoverSmartWallets({
 
   saveDiscovered(discovered);
 
-  const qualified = results.filter(r => r.qualifies);
+  const ranked = selectSmartWalletCandidates(results, adaptiveContext);
+  const ruleQualified = ranked.filter(r => r.qualifies);
+  const qualified = ranked.filter(r => r.qualifies && r.selection?.selected);
+  const recommended = ranked.filter(r => r.selection?.selected);
   const summary = {
     seeds_used: seeds.length,
     candidates_collected: candidates.length,
-    candidates_scored: results.length,
+    candidates_scored: ranked.length,
     qualified: qualified.length,
-    promoted: auto_add ? qualified.length : 0,
+    rule_qualified: ruleQualified.length,
+    recommended: recommended.length,
+    promoted: auto_add ? recommended.filter(r => r.promoted).length : 0,
     saved_to: "discovered-wallets.json",
+    market_condition: adaptiveContext.marketCondition,
+    observation_confidence: adaptiveContext.observationSummary.confidence,
   };
 
-  log("discovery", `Done — ${summary.qualified}/${summary.candidates_scored} qualified${auto_add ? ` (${summary.promoted} promoted)` : ""}`);
+  log("discovery", `Done — ${summary.recommended}/${summary.candidates_scored} recommended, ${summary.qualified} promoted-grade${auto_add ? ` (${summary.promoted} promoted)` : ""}`);
 
   return {
     summary,
@@ -344,6 +365,20 @@ export async function discoverSmartWallets({
       unique_tokens: r.stats.unique_tokens,
       source_tokens: r.source_tokens,
       promoted: r.promoted,
+      selection: r.selection,
+    })),
+    discovered: ranked.map(r => ({
+      address: r.address,
+      winrate: r.stats.winrate,
+      completed_trades: r.stats.completed_trades,
+      realized_pnl_sol: r.stats.realized_pnl_sol,
+      avg_hold_seconds: r.stats.avg_hold_seconds,
+      unique_tokens: r.stats.unique_tokens,
+      source_tokens: r.source_tokens,
+      promoted: r.promoted,
+      qualifies: r.qualifies && r.selection?.selected,
+      rule_qualified: r.qualifies,
+      selection: r.selection,
     })),
   };
 }

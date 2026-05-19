@@ -221,3 +221,41 @@ export function getMcapTier(mcap) {
     guidance: "Lawan algoritma institusi. Volatilitas tinggi tapi terkontrol. Fokus pada likuiditas besar dan hindari trade emosional."
   };
 }
+
+export function getTierExecutionProfile(mcap) {
+  const tier = getMcapTier(mcap);
+  if (tier.tier === "NEW_PAIR") {
+    return {
+      ...tier,
+      use_holder_filters: true,
+      use_technicals: false,
+      size_multiplier: 1.0,
+      sell_only: false,
+    };
+  }
+  if (tier.tier === "MICRO_CAP") {
+    return {
+      ...tier,
+      use_holder_filters: false,
+      use_technicals: true,
+      size_multiplier: 1.0,
+      sell_only: false,
+    };
+  }
+  if (tier.tier === "MID_CAP") {
+    return {
+      ...tier,
+      use_holder_filters: false,
+      use_technicals: true,
+      size_multiplier: 1.25,
+      sell_only: false,
+    };
+  }
+  return {
+    ...tier,
+    use_holder_filters: false,
+    use_technicals: false,
+    size_multiplier: 0,
+    sell_only: true,
+  };
+}

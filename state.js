@@ -19,6 +19,15 @@ const STATE_FILE = path.join(__dirname, "state.json");
 const MAX_RECENT_EVENTS = 20;
 const MAX_INSTRUCTION_LENGTH = 280;
 
+export function buildPositionKey(position, wallet_address = null) {
+  return wallet_address ? `${position}::${wallet_address}` : position;
+}
+
+function parsePositionKey(positionKey = "") {
+  const [position, wallet_address] = String(positionKey).split("::");
+  return { position, wallet_address: wallet_address || null };
+}
+
 function sanitizeStoredText(text, maxLen = MAX_INSTRUCTION_LENGTH) {
   if (text == null) return null;
   const cleaned = String(text)
@@ -87,7 +96,9 @@ export function trackPosition({
   wallet_address = null,
 }) {
   const state = load();
-  state.positions[position] = {
+  const position_key = buildPositionKey(position, wallet_address);
+  state.positions[position_key] = {
+    position_key,
     position,
     pool,
     pool_name,
@@ -103,9 +114,9 @@ export function trackPosition({
     notes: [],
     peak_pnl_pct: 0,
   };
-  pushEvent(state, { action: "deploy", position, pool_name: pool_name || pool });
+  pushEvent(state, { action: "deploy", position, position_key, pool_name: pool_name || pool, wallet_address });
   const saved = save(state);
-  log("state", `Tracked new position: ${position} in pool ${pool}`);
+  log("state", `Tracked new position: ${position_key} in pool ${pool}`);
   return saved;
 }
 
@@ -123,31 +134,60 @@ function pushEvent(state, event) {
 /**
  * Mark a position as closed.
  */
-export function recordClose(position_address, reason) {
+function findPositionKeys(state, position, wallet_address = null, openOnly = false) {
+  const matches = [];
+  for (const [key, pos] of Object.entries(state.positions || {})) {
+    if (pos.position !== position && key !== position) continue;
+    if (wallet_address && pos.wallet_address !== wallet_address) continue;
+    if (openOnly && pos.closed) continue;
+    matches.push(key);
+  }
+  return matches;
+}
+
+export function listTrackedPositions(position = null, { wallet_address = null, open_only = false } = {}) {
   const state = load();
-  const pos = state.positions[position_address];
-  if (!pos) return null;
-  pos.closed = true;
-  pos.closed_at = new Date().toISOString();
-  pos.notes.push(`Closed at ${pos.closed_at}: ${reason}`);
-  pushEvent(state, { action: "close", position: position_address, pool_name: pos.pool_name || pos.pool, reason });
-  const saved = save(state);
-  log("state", `Position ${position_address} marked closed: ${reason}`);
-  return saved;
+  const all = Object.values(state.positions || {});
+  return all.filter(pos => {
+    if (position && pos.position !== position && pos.position_key !== position) return false;
+    if (wallet_address && pos.wallet_address !== wallet_address) return false;
+    if (open_only && pos.closed) return false;
+    return true;
+  });
+}
+
+export function recordClose(position_address, reason, wallet_address = null) {
+  const state = load();
+  const keys = state.positions[position_address]
+    ? [position_address]
+    : findPositionKeys(state, position_address, wallet_address, true);
+  if (keys.length === 0) return null;
+  for (const key of keys) {
+    const pos = state.positions[key];
+    pos.closed = true;
+    pos.closed_at = new Date().toISOString();
+    pos.notes.push(`Closed at ${pos.closed_at}: ${reason}`);
+    pushEvent(state, { action: "close", position: pos.position, position_key: key, pool_name: pos.pool_name || pos.pool, reason, wallet_address: pos.wallet_address });
+    log("state", `Position ${key} marked closed: ${reason}`);
+  }
+  return save(state);
 }
 
 /**
  * Mark a position as having had its partial-TP executed.
  * Prevents duplicate partial sells on subsequent management cycles.
  */
-export function markPartialTPDone(position_address) {
+export function markPartialTPDone(position_address, wallet_address = null) {
   const state = load();
-  const pos = state.positions[position_address];
+  const key = state.positions[position_address]
+    ? position_address
+    : findPositionKeys(state, position_address, wallet_address, true)[0];
+  const pos = key ? state.positions[key] : null;
   if (!pos) return false;
   pos.partial_tp_done = true;
   pos.partial_tp_done_at = new Date().toISOString();
   const saved = save(state);
-  log("state", `Position ${position_address} partial-TP marked done`);
+  log("state", `Position ${key} partial-TP marked done`);
   // Returning the promise lets callers await durability; the truthy value
   // also preserves the prior boolean-style contract for fire-and-forget callers.
   return saved;
@@ -159,20 +199,23 @@ export function markPartialTPDone(position_address) {
  */
 export function setPositionInstruction(position_address, instruction) {
   const state = load();
-  const pos = state.positions[position_address];
+  const pos = state.positions[position_address] || findPositionKeys(state, position_address, null, false).map(k => state.positions[k])[0];
   if (!pos) return false;
   pos.instruction = sanitizeStoredText(instruction);
   save(state);
-  log("state", `Position ${position_address} instruction set: ${pos.instruction}`);
+  log("state", `Position ${pos.position_key || position_address} instruction set: ${pos.instruction}`);
   return true;
 }
 
 /**
  * Get a single tracked position.
  */
-export function getTrackedPosition(position_address) {
+export function getTrackedPosition(position_address, wallet_address = null) {
   const state = load();
-  return state.positions[position_address] || null;
+  if (state.positions[position_address]) return state.positions[position_address] || null;
+  const matches = findPositionKeys(state, position_address, wallet_address, true);
+  if (matches.length === 1) return state.positions[matches[0]] || null;
+  return matches.length > 0 ? state.positions[matches[0]] || null : null;
 }
 
 /**
@@ -183,9 +226,12 @@ export function getTrackedPosition(position_address) {
  *
  * Returns the save promise so callers can await durability if they care.
  */
-export function updatePeakPnl(position_address, peak_pnl_pct) {
+export function updatePeakPnl(position_address, peak_pnl_pct, wallet_address = null) {
   const state = load();
-  const pos = state.positions[position_address];
+  const key = state.positions[position_address]
+    ? position_address
+    : findPositionKeys(state, position_address, wallet_address, true)[0];
+  const pos = key ? state.positions[key] : null;
   if (!pos) return null;
   if (!(peak_pnl_pct > (pos.peak_pnl_pct || 0))) return null;
   pos.peak_pnl_pct = peak_pnl_pct;
@@ -205,6 +251,7 @@ export function getStateSummary() {
     closed_positions: closed.length,
     positions: open.map((p) => ({
       position: p.position,
+      position_key: p.position_key || buildPositionKey(p.position, p.wallet_address),
       pool: p.pool,
       pool_name: p.pool_name,
       amount_sol: p.amount_sol,
@@ -212,6 +259,7 @@ export function getStateSummary() {
       deployed_at: p.deployed_at,
       peak_pnl_pct: p.peak_pnl_pct,
       instruction: p.instruction || null,
+      wallet_address: p.wallet_address || null,
     })),
     last_updated: state.lastUpdated,
     recent_events: (state.recentEvents || []).slice(-10),
@@ -250,7 +298,9 @@ export function syncOpenPositions(active_addresses) {
 
   for (const posId in state.positions) {
     const pos = state.positions[posId];
-    if (pos.closed || activeSet.has(posId)) continue;
+    const normalizedKey = pos.position_key || buildPositionKey(pos.position, pos.wallet_address);
+    const legacyMatch = activeSet.has(pos.position);
+    if (pos.closed || activeSet.has(posId) || activeSet.has(normalizedKey) || legacyMatch) continue;
 
     // Grace period: newly deployed positions may not be indexed yet
     const deployedAt = pos.deployed_at ? new Date(pos.deployed_at).getTime() : 0;
@@ -263,8 +313,13 @@ export function syncOpenPositions(active_addresses) {
     pos.closed_at = new Date().toISOString();
     pos.notes.push(`Auto-closed during state sync (not found on-chain)`);
     changed = true;
-    log("state", `Position ${posId} auto-closed (missing from on-chain data)`);
+    log("state", `Position ${normalizedKey} auto-closed (missing from on-chain data)`);
   }
 
   if (changed) save(state);
+}
+
+export function _resetStateForTests() {
+  _stateCache = null;
+  _writeQueue = Promise.resolve();
 }

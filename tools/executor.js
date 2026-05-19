@@ -9,6 +9,7 @@ import {
   getTokenKlines
 } from "./gmgn.js";
 import { getWalletBalances } from "./wallet.js";
+import { scanRefundableTokenAccounts, closeRefundableTokenAccounts } from "../rent-refund.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons, recordRug, scoreRugRisk, getRugMemorySummary } from "../lessons.js";
 import { setPositionInstruction, getTrackedPosition } from "../state.js";
 import { getPlanSummary, initTradingPlan, pauseSession, advanceDay, checkSessionGate, isInProfitMode, getDynamicPositionLimit } from "../trading-plan.js";
@@ -30,6 +31,7 @@ import { resolveTicker, listTickers, registerTicker } from "./ticker-registry.js
 import { getTokenInfo, getTokenHolders, getTokenNarrative } from "./token.js";
 import { config } from "../config.js";
 import { getRecentDecisions } from "../decision-log.js";
+import { rankWalletExecutionCandidates, recordExecutionQuality } from "../execution-quality-memory.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -41,7 +43,8 @@ import { log, logAction } from "../logger.js";
 import { notifyDeploy, notifyClose, notifySwap, sendHTML, isEnabled as telegramEnabled } from "../telegram.js";
 import { createPendingIntent } from "../intents.js";
 import { getStrategy } from "../strategies.js";
-import { getActiveWallet, markWalletError } from "./wallet-manager.js";
+import { getActiveWallet, markWalletError, buildAdaptiveTradeWalletPlan, getWalletByAddress, isMultiWalletEnabled } from "./wallet-manager.js";
+import { listTrackedPositions } from "../state.js";
 
 // Registered by index.js so update_config can restart cron jobs when intervals change
 let _cronRestarter = null;
@@ -111,17 +114,95 @@ function normalizeConfigValue(key, value) {
   return coerceFiniteNumber(value, key);
 }
 
+async function adaptiveGmgnSwap(args = {}) {
+  const tokenIn = args.token_in;
+  const tokenOut = args.token_out;
+  const amount = Number(args.amount || 0);
+  const marketCondition = getMarketIntelligence().condition;
+  if (args.wallet_address || !isMultiWalletEnabled() || !(amount > 0)) {
+    return gmgnSwap(args);
+  }
+
+  if (tokenIn === "SOL" && tokenOut && tokenOut !== "SOL") {
+    const existing = listTrackedPositions(tokenOut, { open_only: true });
+    const mode = existing.length > 0 ? "dca" : "entry";
+    const plan = buildAdaptiveTradeWalletPlan(tokenOut, amount, mode);
+    if (plan.selected_wallets.length === 0) return { success: false, error: "No eligible wallet found for adaptive swap" };
+    const rankedWallets = rankWalletExecutionCandidates(plan.selected_wallets, {
+      mode,
+      split: plan.split,
+      marketCondition,
+      provider: "auto",
+      slippage: Number(args.slippage || 0),
+    });
+
+    if (plan.split && rankedWallets.length > 1) {
+      const executions = [];
+      for (const slot of rankedWallets) {
+        const result = await gmgnSwap({
+          ...args,
+          amount: slot.amount_sol,
+          wallet_address: slot.address,
+          wallet: getWalletByAddress(slot.address)?.keypair || null,
+        });
+        executions.push({ wallet_address: slot.address, amount: slot.amount_sol, ...result });
+        if (!(result.success || result.dry_run)) {
+          return { success: false, error: result.error || "split execution failed", executions, token_in: tokenIn, token_out: tokenOut };
+        }
+      }
+      return {
+        success: true,
+        split_execution: true,
+        token_in: tokenIn,
+        token_out: tokenOut,
+        amount,
+        executions,
+        wallet_address: executions[0]?.wallet_address || null,
+      };
+    }
+
+    const slot = rankedWallets[0];
+    return gmgnSwap({
+      ...args,
+      wallet_address: slot.address,
+      wallet: getWalletByAddress(slot.address)?.keypair || null,
+    });
+  }
+
+  if (tokenOut === "SOL" && tokenIn && tokenIn !== "SOL") {
+    const plan = buildAdaptiveTradeWalletPlan(tokenIn, amount, "sell");
+    const rankedWallets = rankWalletExecutionCandidates(plan.selected_wallets, {
+      mode: "sell",
+      split: false,
+      marketCondition,
+      provider: "auto",
+      slippage: Number(args.slippage || 0),
+    });
+    const slot = rankedWallets[0];
+    if (!slot) return { success: false, error: `No wallet with open position for ${tokenIn}` };
+    return gmgnSwap({
+      ...args,
+      wallet_address: slot.address,
+      wallet: getWalletByAddress(slot.address)?.keypair || null,
+    });
+  }
+
+  return gmgnSwap(args);
+}
+
 // Map tool names to implementations
 const toolMap = {
   get_solana_gas_fee: getSolanaGasFee,
   discover_tokens: discoverTokens,
   get_token_security_details: getTokenSecurityDetails,
-  gmgn_swap: gmgnSwap,
+  gmgn_swap: adaptiveGmgnSwap,
   get_smart_money_rank: getSmartMoneyRank,
   get_smart_money_inflow: getSmartMoneyInflow,
   get_trending_narratives: getTrendingNarratives,
   get_token_klines: getTokenKlines,
   get_wallet_balance: getWalletBalances,
+  scan_rent_refunds: scanRefundableTokenAccounts,
+  claim_rent_refunds: closeRefundableTokenAccounts,
   get_token_info: getTokenInfo,
   get_token_holders: getTokenHolders,
   get_token_narrative: getTokenNarrative,
@@ -402,6 +483,19 @@ export async function executeTool(name, args) {
       if (activeWallet?.address) markWalletError(activeWallet.address);
     }
 
+    if (name === "gmgn_swap") {
+      recordExecutionQuality({
+        walletAddress: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
+        provider: result?.execution_provider || "auto",
+        mode: args.token_in === "SOL" ? "buy" : (args.token_out === "SOL" ? "sell" : "swap"),
+        split: !!result?.split_execution,
+        marketCondition: getMarketIntelligence().condition,
+        slippage: Number(args.slippage || result?.slippage || 0),
+        success,
+        latencyMs: duration,
+      });
+    }
+
     if (success && name === "gmgn_swap") {
       notifySwap({
         inputSymbol: args.token_in === "SOL" ? "SOL" : args.token_in?.slice(0, 8),
@@ -419,6 +513,16 @@ export async function executeTool(name, args) {
     if (name === "gmgn_swap") {
       const activeWallet = getActiveWallet();
       if (activeWallet?.address) markWalletError(activeWallet.address);
+      recordExecutionQuality({
+        walletAddress: args.wallet_address || activeWallet?.address || null,
+        provider: "auto",
+        mode: args.token_in === "SOL" ? "buy" : (args.token_out === "SOL" ? "sell" : "swap"),
+        split: false,
+        marketCondition: getMarketIntelligence().condition,
+        slippage: Number(args.slippage || 0),
+        success: false,
+        latencyMs: duration,
+      });
     }
     return { error: error.message, tool: name };
   }
@@ -494,4 +598,3 @@ function summarizeResult(result) {
   if (str == null) return null;
   return str.length > 1000 ? str.slice(0, 1000) + "..." : result;
 }
-

@@ -11,6 +11,8 @@ import bs58 from "bs58";
 import { log } from "../logger.js";
 import { recordCounter } from "../metrics.js";
 import { config } from "../config.js";
+import { analyzeCapitalAwareWalletPlan } from "../multi-wallet-allocation.js";
+import { planWalletExecution } from "../wallet-strategy.js";
 
 // status: 'hot' = aktif | 'cold' = cooldown | 'disabled' = manual off
 const _wallets = new Map(); // address → { keypair, label, status, capital_pct, error_count, cold_until }
@@ -96,6 +98,18 @@ export function getAllWallets() {
   }));
 }
 
+export function getWalletByAddress(address) {
+  const w = _wallets.get(address);
+  if (!w) return null;
+  return {
+    keypair: w.keypair,
+    address,
+    label: w.label,
+    capital_pct: w.capital_pct,
+    status: w.status,
+  };
+}
+
 /** Tandai wallet aktif sebagai cold lalu rotasi ke wallet hot berikutnya */
 export function rotateWallet(reason = "") {
   if (!_activeAddress) return;
@@ -154,6 +168,47 @@ export function getWalletCapitalSol(walletAddress, totalSol) {
   const w = _wallets.get(walletAddress);
   if (!w) return totalSol;
   return parseFloat((totalSol * w.capital_pct / 100).toFixed(6));
+}
+
+export function buildCapitalAwareWalletPlan(totalSol, desiredAmountSol, maxEntries = 1) {
+  if (!isMultiWalletEnabled()) {
+    const active = getActiveWallet();
+    return {
+      spread_ready: false,
+      total_sol: totalSol,
+      desired_amount_sol: desiredAmountSol,
+      viable_wallets: active ? 1 : 0,
+      selected_wallets: active ? [{
+        address: active.address,
+        label: active.label,
+        deploy_amount_sol: desiredAmountSol,
+        capital_pct: active.capital_pct,
+        free_sol: totalSol,
+      }] : [],
+      summary: active ? "Single-wallet mode" : "No wallet available",
+    };
+  }
+
+  return analyzeCapitalAwareWalletPlan({
+    wallets: getAllWallets(),
+    totalSol,
+    desiredAmountSol,
+    reserveSol: config.management.gasReserve ?? 0.2,
+    maxEntries: Math.min(maxEntries, config.multiWallet?.maxWalletsPerBatch ?? 2),
+    minTotalSol: config.multiWallet?.autoSpreadMinTotalSol ?? 3,
+    minWalletDeploySol: config.multiWallet?.minWalletDeploySol ?? 0.25,
+  });
+}
+
+export function buildAdaptiveTradeWalletPlan(tokenMint, amountSol, mode = "entry") {
+  return planWalletExecution({
+    wallets: getAllWallets(),
+    tokenMint,
+    amountSol,
+    mode,
+    maxWallets: config.multiWallet?.maxWalletsPerBatch ?? 2,
+    splitThresholdSol: config.multiWallet?.autoSpreadMinTotalSol ?? 5,
+  });
 }
 
 export function isMultiWalletEnabled() {

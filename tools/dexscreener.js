@@ -6,6 +6,8 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { log } from "../logger.js";
 import { listSmartWallets } from "../smart-wallets.js";
+import { recordSmartWalletSnapshot, summarizeSmartWalletHistory } from "../smart-wallet-history.js";
+import { analyzeHolderStructure } from "../holder-memory.js";
 import { gatherRugSignals } from "./rug-signals.js";
 import { classifyNarrative, summarizeNarrative } from "./narratives.js";
 
@@ -216,7 +218,7 @@ export async function getTokenSecurityDetails({ mint }) {
       } catch {}
     }
 
-    const holders = topAccounts.map(a => {
+    let holders = topAccounts.map(a => {
       const ui = parseFloat(a.uiAmount ?? a.uiAmountString ?? 0) || 0;
       return {
         address:     a.address,
@@ -227,9 +229,6 @@ export async function getTokenSecurityDetails({ mint }) {
         token_amount: ui,
       };
     });
-
-    const top10Pct    = holders.slice(0, 10).reduce((s, h) => s + (h.pct || 0), 0);
-    const dustHolders = holders.filter(h => (h.sol_balance || 0) < 0.2);
 
     const sec = {
       freeze_authority: mintData.freezeAuthority   || null,
@@ -256,13 +255,40 @@ export async function getTokenSecurityDetails({ mint }) {
         const parsedHolders = await connection.getMultipleParsedAccounts(
           topAccounts.map(a => new PublicKey(a.address))
         );
-        holderOwners = parsedHolders.value
-          .map(acc => acc?.data?.parsed?.info?.owner)
-          .filter(Boolean);
+        const holderOwnerByIndex = parsedHolders.value
+          .map(acc => acc?.data?.parsed?.info?.owner || null);
+        const tokenAccountOwners = {};
+        holderOwnerByIndex.forEach((owner, i) => {
+          tokenAccountOwners[topAccounts[i]?.address] = owner;
+        });
+
+        const uniqueOwnerAddresses = [...new Set(holderOwnerByIndex.filter(Boolean))];
+        if (uniqueOwnerAddresses.length > 0) {
+          const ownerKeys = uniqueOwnerAddresses.map(address => new PublicKey(address));
+          const ownerInfos = await connection.getMultipleAccountsInfo(ownerKeys);
+          ownerInfos.forEach((acc, i) => {
+            solBalances[ownerKeys[i].toString()] = acc ? acc.lamports / 1e9 : 0;
+          });
+
+          holders = holders.map(h => {
+            const ownerAddress = tokenAccountOwners[h.address];
+            return {
+              ...h,
+              sol_balance: ownerAddress ? (solBalances[ownerAddress] ?? 0) : 0,
+            };
+          });
+        } else {
+          holders = holders.map(h => ({ ...h, sol_balance: 0 }));
+        }
+
+        holderOwners = holderOwnerByIndex.filter(Boolean);
       } catch (e) {
         log("security_warn", `Could not resolve holder owners: ${e.message}`);
       }
     }
+
+    const top10Pct    = holders.slice(0, 10).reduce((s, h) => s + (h.pct || 0), 0);
+    const dustHolders = holders.filter(h => (h.sol_balance || 0) < 0.2);
 
     // Layer 1+2 rug signals (Token-2022 extensions + Helius-powered)
     const launchTs = dsPair?.pairCreatedAt ? Math.floor(dsPair.pairCreatedAt / 1000) : null;
@@ -273,11 +299,28 @@ export async function getTokenSecurityDetails({ mint }) {
       launchTs,
       dsPair,
     });
+    const holderAnalysis = analyzeHolderStructure({
+      rugSignals: {
+        top10_concentration_pct: parseFloat(top10Pct.toFixed(2)),
+        dust_holders: dustHolders.length,
+        ...enrichedSignals,
+      },
+      holders,
+      token: {
+        mcap: dsPair?.marketCap || dsPair?.fdv || 0,
+        hot_level: dsPair ? Math.min(3, Math.ceil((dsPair.boosts?.active || 0) / 200)) : 0,
+        narrative_tags: dsPair ? classifyNarrative({
+          symbol: dsPair.baseToken?.symbol,
+          name: dsPair.baseToken?.name,
+        }) : [],
+      },
+    });
 
     return {
       mint,
       security: sec,
       holders,
+      holder_analysis: holderAnalysis,
       rug_signals: {
         top10_concentration_pct: parseFloat(top10Pct.toFixed(2)),
         dust_holders:            dustHolders.length,
@@ -286,6 +329,11 @@ export async function getTokenSecurityDetails({ mint }) {
         freeze_authority:        !!sec.freeze_authority,
         mint_authority:          !!sec.mint_authority,
         creator_pct:             null,
+        max_holder_pct:          holderAnalysis.max_holder_pct,
+        hidden_wallet_control_score: holderAnalysis.hidden_wallet_control_score,
+        holder_structure_risk:   holderAnalysis.holder_structure_risk,
+        context_allows_concentration: holderAnalysis.context_allows_concentration,
+        holder_context_note:     holderAnalysis.summary,
         ...enrichedSignals,
       },
       // Bonus DexScreener data if available
@@ -449,6 +497,12 @@ export async function getTrendingNarratives() {
 // ─── Smart Money (Helius-based) ───────────────────────────────
 
 const HELIUS_BASE = "https://api.helius.xyz/v0";
+const SMART_MONEY_TF_SECONDS = {
+  "1h": 3600,
+  "24h": 86400,
+  "7d": 604800,
+  "30d": 2592000,
+};
 
 async function fetchHeliusTxns(address, apiKey, limit = 50) {
   const url = `${HELIUS_BASE}/addresses/${address}/transactions?api-key=${apiKey}&limit=${limit}&type=SWAP`;
@@ -457,23 +511,170 @@ async function fetchHeliusTxns(address, apiKey, limit = 50) {
   return res.json();
 }
 
+function numberOrZero(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function extractTokenAmount(transfer = {}) {
+  return numberOrZero(
+    transfer.tokenAmount?.uiAmount ??
+    transfer.tokenAmount?.uiAmountString ??
+    transfer.tokenAmount ??
+    transfer.amount
+  );
+}
+
 function parseSolanaSwap(tx) {
-  // Helius enriched transaction: tokenTransfers array
+  const feePayer = tx.feePayer;
   const transfers = tx.tokenTransfers || [];
   const nativeTransfers = tx.nativeTransfers || [];
 
-  // Find the output token (what wallet received)
-  const received = transfers.filter(t => t.toUserAccount && t.mint !== SOL_MINT);
-  const sent = transfers.filter(t => t.fromUserAccount && t.mint !== SOL_MINT);
+  const received = transfers.filter(t =>
+    t.toUserAccount === feePayer &&
+    t.mint !== SOL_MINT
+  );
+  const sent = transfers.filter(t =>
+    t.fromUserAccount === feePayer &&
+    t.mint !== SOL_MINT
+  );
+
+  const solOut = nativeTransfers
+    .filter(t => t.fromUserAccount === feePayer)
+    .reduce((sum, t) => sum + numberOrZero(t.amount), 0) / 1e9;
+
+  const solIn = nativeTransfers
+    .filter(t => t.toUserAccount === feePayer)
+    .reduce((sum, t) => sum + numberOrZero(t.amount), 0) / 1e9;
 
   if (received.length === 0 && sent.length === 0) return null;
+
+  const tokenTransfer = received[0] || sent[0];
+  const tokenAmount = extractTokenAmount(tokenTransfer);
+  const type = received.length > 0 ? "buy" : "sell";
+  const solValue = type === "buy" ? solOut : solIn;
 
   return {
     signature: tx.signature,
     timestamp: tx.timestamp,
-    type: received.length > 0 ? "buy" : "sell",
-    token_mint: received[0]?.mint || sent[0]?.mint,
-    amount_usd: tx.fee ? tx.fee / 1e9 : 0, // rough proxy
+    type,
+    token_mint: tokenTransfer?.mint,
+    token_amount: tokenAmount,
+    sol_value: solValue,
+    unit_price_sol: tokenAmount > 0 ? solValue / tokenAmount : 0,
+    fee_lamports: numberOrZero(tx.fee),
+  };
+}
+
+function analyzeSmartWalletPerformance(swaps = []) {
+  if (!Array.isArray(swaps) || swaps.length === 0) {
+    return {
+      trade_count: 0,
+      realized_pnl_sol: 0,
+      winrate: 0,
+      avg_hold_minutes: 0,
+      unique_tokens: 0,
+      buy_count: 0,
+      sell_count: 0,
+      open_positions: 0,
+      conviction_score: 0,
+      buy_pressure: 0.5,
+      last_trade_at: null,
+    };
+  }
+
+  const sorted = [...swaps]
+    .filter(s => s?.token_mint && s?.timestamp)
+    .sort((a, b) => a.timestamp - b.timestamp);
+  const byMint = new Map();
+  for (const swap of sorted) {
+    if (!byMint.has(swap.token_mint)) byMint.set(swap.token_mint, []);
+    byMint.get(swap.token_mint).push(swap);
+  }
+
+  let realizedPnlSol = 0;
+  let wins = 0;
+  let losses = 0;
+  let totalHoldSeconds = 0;
+  let completedTrades = 0;
+  let openPositions = 0;
+
+  for (const mintSwaps of byMint.values()) {
+    const buyQueue = [];
+
+    for (const swap of mintSwaps) {
+      if (swap.type === "buy" && swap.token_amount > 0 && swap.sol_value > 0) {
+        buyQueue.push({
+          remaining: swap.token_amount,
+          cost_per_token: swap.sol_value / swap.token_amount,
+          ts: swap.timestamp,
+        });
+        continue;
+      }
+
+      if (swap.type !== "sell" || swap.token_amount <= 0 || swap.sol_value <= 0 || buyQueue.length === 0) {
+        continue;
+      }
+
+      let remainingToMatch = swap.token_amount;
+      let matchedCost = 0;
+      let matchedAmount = 0;
+      let earliestBuyTs = null;
+      const sellPricePerToken = swap.sol_value / swap.token_amount;
+
+      while (remainingToMatch > 0 && buyQueue.length > 0) {
+        const head = buyQueue[0];
+        const take = Math.min(head.remaining, remainingToMatch);
+        matchedCost += take * head.cost_per_token;
+        matchedAmount += take;
+        earliestBuyTs = earliestBuyTs || head.ts;
+        head.remaining -= take;
+        remainingToMatch -= take;
+        if (head.remaining <= 1e-9) buyQueue.shift();
+      }
+
+      if (matchedAmount > 0) {
+        const proceeds = matchedAmount * sellPricePerToken;
+        const pnl = proceeds - matchedCost;
+        realizedPnlSol += pnl;
+        completedTrades += 1;
+        if (pnl > 0) wins += 1;
+        else losses += 1;
+        if (earliestBuyTs) totalHoldSeconds += Math.max(0, swap.timestamp - earliestBuyTs);
+      }
+    }
+
+    if (buyQueue.length > 0) openPositions += 1;
+  }
+
+  const buyCount = sorted.filter(s => s.type === "buy").length;
+  const sellCount = sorted.filter(s => s.type === "sell").length;
+  const winrate = completedTrades > 0 ? wins / completedTrades : 0;
+  const avgHoldMinutes = completedTrades > 0 ? totalHoldSeconds / completedTrades / 60 : 0;
+  const uniqueTokens = byMint.size;
+  const buyPressure = buyCount + sellCount > 0 ? buyCount / (buyCount + sellCount) : 0.5;
+  const diversificationPenalty = completedTrades > 0 ? Math.min(1.2, uniqueTokens / completedTrades) : 1.2;
+  const convictionScore = Math.max(0, Math.min(100,
+    Math.round(
+      winrate * 45 +
+      Math.min(20, completedTrades * 2) +
+      Math.max(0, 20 - diversificationPenalty * 10) +
+      Math.max(0, Math.min(15, buyPressure * 15))
+    )
+  ));
+
+  return {
+    trade_count: completedTrades,
+    realized_pnl_sol: Number(realizedPnlSol.toFixed(4)),
+    winrate: Number(winrate.toFixed(3)),
+    avg_hold_minutes: Number(avgHoldMinutes.toFixed(1)),
+    unique_tokens: uniqueTokens,
+    buy_count: buyCount,
+    sell_count: sellCount,
+    open_positions: openPositions,
+    conviction_score: convictionScore,
+    buy_pressure: Number(buyPressure.toFixed(3)),
+    last_trade_at: sorted[sorted.length - 1]?.timestamp || null,
   };
 }
 
@@ -492,7 +693,7 @@ export async function getSmartMoneyRank({ timeframe = "24h" } = {}) {
     return { timeframe, wallets: [], note: "No wallets tracked. Use add_smart_wallet tool to add wallets." };
   }
 
-  const cutoff = Date.now() / 1000 - (timeframe === "24h" ? 86400 : timeframe === "7d" ? 604800 : 3600);
+  const cutoff = Date.now() / 1000 - (SMART_MONEY_TF_SECONDS[timeframe] || SMART_MONEY_TF_SECONDS["24h"]);
   const results = [];
 
   for (const wallet of wallets.slice(0, 10)) { // cap at 10 to avoid rate limits
@@ -500,24 +701,31 @@ export async function getSmartMoneyRank({ timeframe = "24h" } = {}) {
       const txns = await fetchHeliusTxns(wallet.address, apiKey, 50);
       const recentTxns = txns.filter(tx => tx.timestamp >= cutoff);
       const swaps = recentTxns.map(parseSolanaSwap).filter(Boolean);
-
-      const buys = swaps.filter(s => s.type === "buy");
-      const sells = swaps.filter(s => s.type === "sell");
+      const performance = analyzeSmartWalletPerformance(swaps);
+      recordSmartWalletSnapshot(wallet.address, { ...performance, timeframe });
+      const history = summarizeSmartWalletHistory(wallet.address, { timeframe, limit: 12 });
 
       results.push({
         address: wallet.address,
         label: wallet.label,
+        follow_mode: wallet.follow_mode || wallet.selection?.follow_mode || "shadow",
+        selection_score: wallet.selection?.score ?? null,
         swap_count: swaps.length,
-        buy_count: buys.length,
-        sell_count: sells.length,
-        unique_tokens: new Set(swaps.map(s => s.token_mint)).size,
+        ...performance,
+        history,
       });
     } catch (e) {
       log("smart_money_warn", `Helius fetch for ${wallet.address.slice(0, 8)}: ${e.message}`);
     }
   }
 
-  results.sort((a, b) => b.swap_count - a.swap_count);
+  results.sort((a, b) =>
+    (b.realized_pnl_sol - a.realized_pnl_sol) ||
+    (b.winrate - a.winrate) ||
+    ((b.history?.stability_score || 0) - (a.history?.stability_score || 0)) ||
+    (b.conviction_score - a.conviction_score) ||
+    (b.swap_count - a.swap_count)
+  );
   return { timeframe, wallets: results, source: "helius" };
 }
 
@@ -537,11 +745,16 @@ export async function getSmartMoneyInflow({ timeframe = "1h" } = {}) {
   }
 
   const cutoff = Date.now() / 1000 - (timeframe === "1h" ? 3600 : timeframe === "6h" ? 21600 : 86400);
-  const tokenAccum = new Map(); // mint → { wallets: Set, buy_count, sell_count }
+  const tokenAccum = new Map(); // mint → { wallets: Set, buy_count, sell_count, weighted_buy_score }
 
   for (const wallet of wallets.slice(0, 10)) {
     try {
       const txns = await fetchHeliusTxns(wallet.address, apiKey, 30);
+      const history = summarizeSmartWalletHistory(wallet.address, { timeframe: "24h", limit: 12 });
+      const walletWeight =
+        1 +
+        ((wallet.selection?.score || 0) / 100) +
+        ((history.stability_score || 0) / 150);
       const recentSwaps = txns
         .filter(tx => tx.timestamp >= cutoff)
         .map(parseSolanaSwap)
@@ -550,12 +763,14 @@ export async function getSmartMoneyInflow({ timeframe = "1h" } = {}) {
       for (const swap of recentSwaps) {
         if (!swap.token_mint) continue;
         if (!tokenAccum.has(swap.token_mint)) {
-          tokenAccum.set(swap.token_mint, { wallets: new Set(), buy_count: 0, sell_count: 0 });
+          tokenAccum.set(swap.token_mint, { wallets: new Set(), buy_count: 0, sell_count: 0, weighted_buy_score: 0 });
         }
         const entry = tokenAccum.get(swap.token_mint);
         entry.wallets.add(wallet.address);
-        if (swap.type === "buy") entry.buy_count++;
-        else entry.sell_count++;
+        if (swap.type === "buy") {
+          entry.buy_count++;
+          entry.weighted_buy_score += walletWeight;
+        } else entry.sell_count++;
       }
     } catch (e) {
       log("smart_money_warn", `Helius inflow for ${wallet.address.slice(0, 8)}: ${e.message}`);
@@ -569,10 +784,16 @@ export async function getSmartMoneyInflow({ timeframe = "1h" } = {}) {
       buy_count: data.buy_count,
       sell_count: data.sell_count,
       buy_pressure: data.buy_count / (data.buy_count + data.sell_count || 1),
+      weighted_buy_score: Number(data.weighted_buy_score.toFixed(3)),
     }))
     .filter(t => t.buy_count > t.sell_count) // only net buyers
-    .sort((a, b) => b.wallet_count - a.wallet_count || b.buy_count - a.buy_count)
+    .sort((a, b) => b.weighted_buy_score - a.weighted_buy_score || b.wallet_count - a.wallet_count || b.buy_count - a.buy_count)
     .slice(0, 20);
 
   return { timeframe, tokens, source: "helius", wallets_tracked: wallets.length };
 }
+
+export const _internalSmartMoney = {
+  parseSolanaSwap,
+  analyzeSmartWalletPerformance,
+};

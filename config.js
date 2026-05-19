@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { applyExecutionMode } from "./runtime-mode.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -25,9 +26,9 @@ if (u.walletKey) process.env.WALLET_PRIVATE_KEY ||= u.walletKey;
 if (u.llmModel)  process.env.LLM_MODEL          ||= u.llmModel;
 if (u.llmBaseUrl) process.env.LLM_BASE_URL      ||= u.llmBaseUrl;
 if (u.llmApiKey)  process.env.LLM_API_KEY       ||= u.llmApiKey;
-if (u.dryRun !== undefined) process.env.DRY_RUN ||= String(u.dryRun);
 if (u.publicApiKey) process.env.PUBLIC_API_KEY ||= u.publicApiKey;
 if (u.agentMeridianApiUrl) process.env.AGENT_MERIDIAN_API_URL ||= u.agentMeridianApiUrl;
+applyExecutionMode({ userConfig: u });
 
 const indicatorUserConfig = u.chartIndicators ?? {};
 
@@ -85,6 +86,29 @@ export const config = {
     maxDeployAmount: u.maxDeployAmount ?? 50,
   },
 
+  kelly: {
+    enabled:         u.kellyEnabled ?? true,
+    fraction:        u.kellyFraction ?? 0.5,
+    minFraction:     u.kellyMinFraction ?? 0.1,
+    maxFraction:     u.kellyMaxFraction ?? 0.8,
+    minSampleTrades: u.kellyMinSampleTrades ?? 5,
+  },
+
+  decisionWorkflow: {
+    enabled: u.decisionWorkflowEnabled ?? true,
+    probeSizeFraction: u.probeSizeFraction ?? 0.35,
+    minConvictionScore: u.minConvictionScore ?? 35,
+    minConvictionConfidence: u.minConvictionConfidence ?? 20,
+    activeConvictionScore: u.activeConvictionScore ?? 65,
+    activeConvictionConfidence: u.activeConvictionConfidence ?? 45,
+  },
+
+  regimeMemory: {
+    enabled: u.regimeMemoryEnabled ?? true,
+    tailwindMultiplierCap: u.regimeTailwindMultiplierCap ?? 1.15,
+    headwindMultiplierFloor: u.regimeHeadwindMultiplierFloor ?? 0.4,
+  },
+
   // ─── Trading Mode ────────────────────────
   // confirmMode: when true, every BUY (SOL → token) is parked as a
   // pending intent and requires Telegram /yes <id> approval.
@@ -135,6 +159,7 @@ export const config = {
     // Lihat strategy.getEffectiveStopLoss / getEffectiveImmediateTakeProfit.
     stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? null,
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? null,
+    autoTakeProfitPct:     u.autoTakeProfitPct     ?? 50,
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
@@ -144,6 +169,7 @@ export const config = {
     trailingTriggerPct:    u.trailingTriggerPct    ?? 3,    // activate trailing at X% PnL
     trailingDropPct:       u.trailingDropPct       ?? 1.5,  // close when drops X% from peak
     pnlSanityMaxDiffPct:   u.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
+    antiGreedCooldownHours: u.antiGreedCooldownHours ?? u.repeatDeployCooldownHours ?? 12,
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? false,
   },
@@ -200,6 +226,10 @@ export const config = {
     enabled:            u.multiWalletEnabled      ?? false,
     rotationMaxErrors:  u.multiWalletMaxErrors     ?? 3,
     rotationCooldownMs: (u.multiWalletCooldownMin  ?? 10) * 60_000,
+    autoSpreadEnabled:  u.multiWalletAutoSpreadEnabled ?? true,
+    autoSpreadMinTotalSol: u.multiWalletAutoSpreadMinTotalSol ?? 3,
+    minWalletDeploySol: u.multiWalletMinWalletDeploySol ?? 0.25,
+    maxWalletsPerBatch: u.multiWalletMaxWalletsPerBatch ?? 2,
     // Array of { key: "bs58...", label: "Wallet A", capital_pct: 60 }
     // capital_pct harus total 100. Jika kosong → single-wallet fallback.
     wallets: Array.isArray(u.wallets) ? u.wallets : [],

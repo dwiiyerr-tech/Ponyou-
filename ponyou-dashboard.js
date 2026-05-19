@@ -115,7 +115,7 @@ function drawDashboard() {
   const statusContent = `
     Status: ${positions > 0 ? `${colors.green}TRADING${colors.reset}` : `${colors.dim}IDLE${colors.reset}`}
     Open Positions: ${positions}
-    Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}
+    Mode: ${process.env.EXECUTION_MODE === "demo" || process.env.DRY_RUN === "true" ? "DEMO" : "LIVE"}
     Configuration: ${config.llmProvider ? "✅" : "❌"}
   `;
   drawBox("STATUS", statusContent.trim());

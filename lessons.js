@@ -10,6 +10,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { matchPatterns, learnPatterns } from "./tools/rug-patterns.js";
+import { getHolderMemoryRules } from "./holder-memory.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LESSONS_FILE = path.join(__dirname, "lessons.json");
@@ -110,15 +111,16 @@ export function getLessonsForPrompt({ agentType, maxItems = 12 } = {}) {
   const general = list.filter(l => !l.pinned && (!l.role || l.role === "all"));
 
   const combined = [...pinned, ...roleSpecific, ...general].slice(0, maxItems);
-  if (combined.length === 0) return "";
-
   const lines = combined.map(l => {
     const pin = l.pinned ? "[PINNED] " : "";
     const tags = l.tags.length ? ` [${l.tags.join(",")}]` : "";
     const winRate = l.times_applied > 0 ? ((l.success_count / l.times_applied) * 100).toFixed(0) : "N/A";
     return `• ${pin}${l.rule}${tags} (${winRate}% WR, ${l.times_applied} uses)`;
   });
-  return lines.join("\n");
+  const structuralMemory = getHolderMemoryRules().map(rule => `• [MARKET STRUCTURE] ${rule}`);
+  if (lines.length === 0 && structuralMemory.length === 0) return "";
+  const merged = [...structuralMemory, ...lines].slice(0, maxItems + structuralMemory.length);
+  return merged.join("\n");
 }
 
 // ─── Lesson Effectiveness Tracking ────────────────────────────
@@ -202,6 +204,7 @@ export function recordTradeOutcome({
   hold_minutes,
   exit_reason,
   rug_detected = false,
+  attribution = null,
 }) {
   const perf = loadPerf();
   perf.trades.push({
@@ -215,6 +218,7 @@ export function recordTradeOutcome({
     exit_reason,
     rug_detected,
     win: (pnl_pct || 0) > 0,
+    attribution,
   });
   // Keep last 500 trades
   if (perf.trades.length > 500) perf.trades = perf.trades.slice(-500);
@@ -392,19 +396,38 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {} }) {
   }
 
   // ─── Standard rug signals ────────────────────────────────
-  if (rs.top10_concentration_pct > 70) { score += 20; reasons.push(`Top10 holds ${rs.top10_concentration_pct}%`); }
+  if (rs.top10_concentration_pct > 70) {
+    if (rs.context_allows_concentration) {
+      score += 8; reasons.push(`Top10 holds ${rs.top10_concentration_pct}% but context is strong enough that this is caution, not auto-rug`);
+    } else {
+      score += 20; reasons.push(`Top10 holds ${rs.top10_concentration_pct}%`);
+    }
+  }
   if (rs.fresh_funded_holders >= 5)    { score += 15; reasons.push(`${rs.fresh_funded_holders} holders funded <24h`); }
   if (rs.dust_holders >= 5)            { score += 10; reasons.push(`${rs.dust_holders} top holders almost empty SOL`); }
   if (rs.freeze_authority)             { score += 15; reasons.push("Freeze authority active"); }
   if (rs.mint_authority)               { score += 15; reasons.push("Mint authority active"); }
   if (rs.is_honeypot)                  { score += 40; reasons.push("Is honeypot"); }
   if (rs.creator_pct > 20)             { score += 20; reasons.push(`Creator holds ${rs.creator_pct}%`); }
+  if (rs.max_holder_pct > 10 && !rs.context_allows_concentration) {
+    score += 10; reasons.push(`Single holder controls ${rs.max_holder_pct}% in weak context`);
+  }
 
   // ─── Layer 2: Helius behavioural signals ─────────────────
   if (rs.bundle_buyers_pct > 30)       { score += 25; reasons.push(`${rs.bundle_buyers_pct}% bought in launch window — bundle snipers`); }
   if (rs.same_funder_holders >= 3)     { score += 20; reasons.push(`${rs.same_funder_holders} top holders share funder ${rs.common_funder?.slice(0, 8)} — sybil cluster`); }
   if (rs.lp_locked === false)          { score += 15; reasons.push("LP not locked"); }
   if (rs.wash_score >= 30)             { score += 10; reasons.push(`Wash trade pattern (ratio ${rs.buy_sell_ratio})`); }
+  if (rs.hidden_wallet_control_score >= 70) {
+    score += 22; reasons.push(`Hidden wallet control score ${rs.hidden_wallet_control_score}/100 — concentration may be disguised across wallets`);
+  } else if (rs.hidden_wallet_control_score >= 40) {
+    score += 12; reasons.push(`Hidden wallet control score ${rs.hidden_wallet_control_score}/100`);
+  }
+  if (rs.holder_structure_risk === "HIGH") {
+    score += 15; reasons.push(rs.holder_context_note || "Holder structure looks coordinated");
+  } else if (rs.holder_structure_risk === "MEDIUM") {
+    score += 8; reasons.push(rs.holder_context_note || "Holder structure needs caution");
+  }
 
   // ─── Layer 3: Pattern fingerprint matches ────────────────
   const patternMatches = matchPatterns(rs);

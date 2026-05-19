@@ -24,6 +24,7 @@ import {
   startTimer, elapsedMs, recordLatency, recordCounter,
 } from "./metrics.js";
 import { log } from "./logger.js";
+import { recordExecutionQuality } from "./execution-quality-memory.js";
 
 const DEFAULT_GATE = {
   enabled: false,
@@ -87,6 +88,8 @@ export async function executeFastBuy({
   deployAmountSol,
   slippage = 1.0,
   solPriceUsd = 0,
+  wallet = null,
+  walletAddress = null,
 } = {}) {
   if (!token?.mint) {
     return { success: false, error: "missing token.mint" };
@@ -103,11 +106,24 @@ export async function executeFastBuy({
     token_out: token.mint,
     amount: deployAmountSol,
     slippage,
+    wallet,
+    wallet_address: walletAddress,
   });
 
   const succeeded = !!(result?.success || result?.dry_run);
   recordSwapOutcome({ success: succeeded });
-  recordLatency("fast_buy_swap_ms", elapsedMs(t));
+  const latencyMs = elapsedMs(t);
+  recordLatency("fast_buy_swap_ms", latencyMs);
+  recordExecutionQuality({
+    walletAddress: result?.wallet_address || walletAddress || null,
+    provider: result?.execution_provider || "auto",
+    mode: "buy",
+    split: false,
+    marketCondition: token.market_condition || "UNKNOWN",
+    slippage,
+    success: succeeded,
+    latencyMs,
+  });
 
   if (succeeded) {
     recordCounter("fast_buy_succeeded");
@@ -117,6 +133,22 @@ export async function executeFastBuy({
       pool_name: token.symbol || token.mint.slice(0, 8),
       amount_sol: deployAmountSol,
       initial_value_usd: deployAmountSol * (solPriceUsd || 0),
+      signal_snapshot: {
+        mint: token.mint,
+        symbol: token.symbol,
+        market_condition: token.market_condition || "UNKNOWN",
+        rug_score: token.rug_score || 0,
+        conviction: token.conviction || null,
+        regime: token.regime || null,
+        workflow: token.workflow || null,
+        kelly: token.kelly || null,
+        execution_context: {
+          wallet_address: result?.wallet_address || walletAddress || null,
+          provider: result?.execution_provider || "auto",
+          slippage,
+        },
+      },
+      wallet_address: walletAddress,
     });
     log(
       "fast_buy",
@@ -150,6 +182,7 @@ export async function runFastTrackBatch({
   deployAmountSol,
   solPriceUsd = 0,
   maxNew = 1,
+  walletPlan = [],
 } = {}) {
   const deployed = [];
   const skipped = [];
@@ -166,16 +199,31 @@ export async function runFastTrackBatch({
       remaining.push(token);
       continue;
     }
-    const result = await executeFastBuy({
-      token,
-      deployAmountSol,
-      solPriceUsd,
-    });
-    if (result?.success || result?.dry_run) {
-      deployed.push(token);
-    } else {
-      // execution failed — fall through to LLM (it may try a different size)
-      remaining.push(token);
+    const executionSlots = walletPlan.length > 0
+      ? walletPlan.slice(0, Math.max(1, maxNew - deployed.length))
+      : [null];
+    let executedAny = false;
+    const tokenBudgetSol = token.volatility_adjusted_size || deployAmountSol;
+    const perWalletAmount = executionSlots.length > 1
+      ? Number((tokenBudgetSol / executionSlots.length).toFixed(4))
+      : tokenBudgetSol;
+
+    for (const walletSlot of executionSlots) {
+      if (deployed.length >= maxNew) break;
+      const result = await executeFastBuy({
+        token,
+        deployAmountSol: walletSlot ? perWalletAmount : tokenBudgetSol,
+        solPriceUsd,
+        wallet: walletSlot?.keypair || null,
+        walletAddress: walletSlot?.address || null,
+      });
+      if (result?.success || result?.dry_run) {
+        deployed.push({ ...token, wallet_address: walletSlot?.address || result?.wallet_address || null });
+        executedAny = true;
+      } else if (!executedAny) {
+        remaining.push(token);
+        break;
+      }
     }
   }
 

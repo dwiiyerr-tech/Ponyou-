@@ -10,7 +10,7 @@ import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recor
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape } from "./telegram.js";
 import {
-  strategy, checkROI, checkTrailingStop, run4FilterProtocol, getMcapTier,
+  strategy, checkROI, checkTrailingStop, run4FilterProtocol, getMcapTier, getTierExecutionProfile,
   getEffectiveStopLoss, getEffectiveImmediateTakeProfit, checkPartialTP,
 } from "./strategy.js";
 import {
@@ -34,7 +34,7 @@ import { runFastTrackBatch } from "./fast-buy.js";
 import { startGeyserStream } from "./geyser.js";
 import {
   initWalletManager, getActiveWallet, markWalletError,
-  resetWalletErrors, getWalletCapitalSol, isMultiWalletEnabled, getAllWallets,
+  resetWalletErrors, getWalletCapitalSol, isMultiWalletEnabled, getAllWallets, buildCapitalAwareWalletPlan, getWalletByAddress,
 } from "./tools/wallet-manager.js";
 
 import {
@@ -59,6 +59,14 @@ import {
   recordObservations, processObservations, buildObservationAnalysisPrompt,
   buildSuccessAnalysisPrompt
 } from "./learning-continuous.js";
+import {
+  getCoinConviction, recordCoinObservation, recordObservationOutcomes, recordTradeConvictionOutcome,
+} from "./conviction-memory.js";
+import {
+  buildTokenRegime, getRegimeAssessment, recordRegimeObservation, recordRegimeTradeOutcome,
+} from "./regime-memory.js";
+import { recordExecutionQuality, getExecutionQualityAssessment } from "./execution-quality-memory.js";
+import { assessTradeAttribution, recordTradeAttribution } from "./trade-attribution.js";
 import { harvestMarketRugs } from "./tools/rug-harvester.js";
 import { recordNarrativeOutcome } from "./tools/narratives.js";
 import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
@@ -66,8 +74,9 @@ import { discoverSmartWallets } from "./tools/wallet-discovery.js";
 import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
   isVaultDue, computeVaultAmount, executeVaultTransfer,
-  recordVaultTransfer, getVaultStatus, buildVaultNotification,
+  recordVaultTransfer, getVaultStatus, buildVaultNotification, computeProfitSweepAmount,
 } from "./vault.js";
+import { isTokenOnCooldown, setTokenCooldown } from "./trade-cooldowns.js";
 import {
   generateDailyReport, formatReportTelegram, wasTodayReported,
 } from "./daily-report.js";
@@ -76,9 +85,14 @@ import {
   analyzeMomentum, checkEntryConfirmation, adjustSizeByRSI,
   checkTrendBreakExit, getMomentumScore,
 } from "./momentum-analysis.js";
+import { resolveExecutionMode } from "./runtime-mode.js";
+import { computeFractionalKellySize } from "./kelly.js";
+import { evaluateCandidateDecision } from "./decision-workflow.js";
+import { recordDecision } from "./decision-log.js";
 
 log("startup", "Ponyou AI Agent starting...");
-log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
+const executionMode = resolveExecutionMode();
+log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " (demo/dry-run unified)" : ""}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
 
 // ─── Init Multi-Wallet ────────────────────────────────────────
@@ -122,6 +136,60 @@ function buildPrompt() {
   const learnStr = learn.active ? ` | 🧠LEARN ${learn.resume_in_min}m` : "";
   const market = getMarketIntelligence();
   return `[mgmt:${mgmt}|scrn:${scrn}${planStr}${learnStr}|${market.condition}]\n> `;
+}
+
+async function getPortfolioSnapshot() {
+  if (!isMultiWalletEnabled()) {
+    const balance = await getWalletBalances();
+    const tokens = (balance.tokens || []).map(token => ({
+      ...token,
+      wallet_address: balance.wallet || null,
+      position_key: balance.wallet ? `${token.mint}::${balance.wallet}` : token.mint,
+    }));
+    return {
+      ...balance,
+      tokens,
+      wallet_balances: [balance],
+    };
+  }
+
+  const wallets = getAllWallets().filter(w => w.status !== "disabled");
+  const balances = await Promise.all(
+    wallets.map(w => getWalletBalances(w.address).catch(() => ({
+      wallet: w.address, sol: 0, sol_price: 0, sol_usd: 0, usdc: 0, tokens: [], total_usd: 0, error: "Wallet fetch failed",
+    })))
+  );
+
+  const aggregate = {
+    wallet: null,
+    sol: 0,
+    sol_price: balances.find(b => b.sol_price > 0)?.sol_price || 0,
+    sol_usd: 0,
+    usdc: 0,
+    tokens: [],
+    total_usd: 0,
+    wallet_balances: balances,
+  };
+
+  for (const balance of balances) {
+    aggregate.sol += balance.sol || 0;
+    aggregate.sol_usd += balance.sol_usd || 0;
+    aggregate.usdc += balance.usdc || 0;
+    aggregate.total_usd += balance.total_usd || 0;
+    for (const token of balance.tokens || []) {
+      aggregate.tokens.push({
+        ...token,
+        wallet_address: balance.wallet || null,
+        position_key: balance.wallet ? `${token.mint}::${balance.wallet}` : token.mint,
+      });
+    }
+  }
+
+  aggregate.sol = Number(aggregate.sol.toFixed(6));
+  aggregate.sol_usd = Number(aggregate.sol_usd.toFixed(2));
+  aggregate.usdc = Number(aggregate.usdc.toFixed(2));
+  aggregate.total_usd = Number(aggregate.total_usd.toFixed(2));
+  return aggregate;
 }
 
 let _cronTasks = [];
@@ -370,14 +438,35 @@ async function executePendingIntent(id) {
   await sendHTML(`⏳ Eksekusi #${id}…`);
   const { args } = intent;
   let result;
+  const swapStartedAt = Date.now();
   try {
     result = await gmgnSwap(args);
   } catch (e) {
     consumeIntent(id, "failed", { error: e.message });
+    recordExecutionQuality({
+      walletAddress: args.wallet_address || getActiveWallet()?.address || null,
+      provider: "auto",
+      mode: args.token_in === "SOL" ? "buy" : "sell",
+      split: false,
+      marketCondition: getMarketIntelligence().condition,
+      slippage: Number(args.slippage || 0),
+      success: false,
+      latencyMs: Date.now() - swapStartedAt,
+    });
     return sendHTML(`❌ #${id} swap failed\n${fmt.code(e.message)}`);
   }
 
   const succeeded = result?.success || result?.dry_run;
+  recordExecutionQuality({
+    walletAddress: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
+    provider: result?.execution_provider || "auto",
+    mode: args.token_in === "SOL" ? "buy" : "sell",
+    split: !!result?.split_execution,
+    marketCondition: getMarketIntelligence().condition,
+    slippage: Number(args.slippage || result?.slippage || 0),
+    success: !!succeeded,
+    latencyMs: Date.now() - swapStartedAt,
+  });
   if (!succeeded) {
     consumeIntent(id, "failed", { error: result?.error || "unknown" });
     return sendHTML(`❌ #${id} swap rejected\n${fmt.code(JSON.stringify(result).slice(0, 200))}`);
@@ -404,7 +493,42 @@ async function executePendingIntent(id) {
     pool_name: symbol,
     amount_sol: args.amount,
     initial_value_usd,
+    signal_snapshot: {
+      mint: args.token_out,
+      symbol,
+      market_condition: getMarketIntelligence().condition,
+      workflow: { verdict: "manual" },
+      execution_context: {
+        wallet_address: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
+        provider: result?.execution_provider || "auto",
+        slippage: Number(args.slippage || result?.slippage || 0),
+      },
+    },
+    wallet_address: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
   });
+  if (result?.split_execution && Array.isArray(result.executions)) {
+    for (const exec of result.executions.slice(1)) {
+      await trackPosition({
+        position: args.token_out,
+        pool: "gmgn",
+        pool_name: symbol,
+        amount_sol: exec.amount || 0,
+        initial_value_usd: (exec.amount || 0) * (balance?.sol_price || 0),
+        signal_snapshot: {
+          mint: args.token_out,
+          symbol,
+          market_condition: getMarketIntelligence().condition,
+          workflow: { verdict: "manual" },
+          execution_context: {
+            wallet_address: exec.wallet_address || null,
+            provider: result?.execution_provider || "auto",
+            slippage: Number(args.slippage || result?.slippage || 0),
+          },
+        },
+        wallet_address: exec.wallet_address || null,
+      });
+    }
+  }
   recordTrade(null);
   consumeIntent(id, "executed", { result: result?.hash || result?.signature || "ok" });
 
@@ -606,6 +730,8 @@ export async function runContinuousLearningCycle() {
     return;
   }
 
+  recordObservationOutcomes(results);
+
   const prompt = buildObservationAnalysisPrompt(results);
   if (!prompt) return;
 
@@ -743,10 +869,12 @@ async function checkDeterministicExits(tokens) {
   const market = getMarketIntelligence();
   const condition = market.condition || "NORMAL";
   const effectiveStopLoss = getEffectiveStopLoss(config.management.stopLossPct);
-  const immediateTakeProfit = getEffectiveImmediateTakeProfit(config.management.takeProfitPct);
+  const immediateTakeProfit = getEffectiveImmediateTakeProfit(
+    config.management.takeProfitPct ?? config.management.autoTakeProfitPct
+  );
 
   for (const token of tokens) {
-    const tracked = getTrackedPosition(token.mint);
+    const tracked = getTrackedPosition(token.position_key || token.mint, token.wallet_address || null);
     if (!tracked) continue;
 
     const ageMinutes = (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000;
@@ -758,16 +886,16 @@ async function checkDeterministicExits(tokens) {
     // a restart wipes the cache and resets the trailing-stop reference to 0.
     if (currentPnlPct > (tracked.peak_pnl_pct || 0)) {
       tracked.peak_pnl_pct = currentPnlPct;
-      updatePeakPnl(token.mint, currentPnlPct);
+      updatePeakPnl(token.position_key || token.mint, currentPnlPct, token.wallet_address || null);
     }
 
     if (currentPnlPct / 100 <= effectiveStopLoss) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: `Stop Loss: ${currentPnlPct.toFixed(2)}% (SL ${(effectiveStopLoss * 100).toFixed(0)}%)`, pnl_pct: currentPnlPct, is_loss: true });
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: `Stop Loss: ${currentPnlPct.toFixed(2)}% (SL ${(effectiveStopLoss * 100).toFixed(0)}%)`, pnl_pct: currentPnlPct, is_loss: true, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
       continue;
     }
     // Immediate take-profit override (hybrid mode): user-config takeProfitPct triggers any time
     if (immediateTakeProfit != null && currentPnlPct / 100 >= immediateTakeProfit) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: `Immediate TP: ${currentPnlPct.toFixed(2)}% (TP ${(immediateTakeProfit * 100).toFixed(0)}%)`, pnl_pct: currentPnlPct, is_loss: false });
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: `Immediate TP: ${currentPnlPct.toFixed(2)}% (TP ${(immediateTakeProfit * 100).toFixed(0)}%)`, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
       continue;
     }
 
@@ -776,12 +904,24 @@ async function checkDeterministicExits(tokens) {
     if (partial.trigger && token.balance > 0) {
       const sellAmount = token.balance * (partial.sell_pct / 100);
       log("strategy", `PARTIAL TP: ${token.symbol} — ${partial.reason}`);
+      const partialStartAt = Date.now();
       const partialRes = await gmgnSwap({
         token_in: token.mint, token_out: "SOL",
         amount: sellAmount, slippage: 1.0,
+        wallet: token.wallet_address ? getWalletByAddress(token.wallet_address)?.keypair || null : null,
+      });
+      recordExecutionQuality({
+        walletAddress: token.wallet_address || null,
+        provider: partialRes?.execution_provider || "auto",
+        mode: "sell",
+        split: false,
+        marketCondition: getMarketIntelligence().condition,
+        slippage: 1.0,
+        success: !!(partialRes.success || partialRes.dry_run),
+        latencyMs: Date.now() - partialStartAt,
       });
       if (partialRes.success || partialRes.dry_run) {
-        markPartialTPDone(token.mint);
+        markPartialTPDone(token.position_key || token.mint, token.wallet_address || null);
         if (telegramEnabled()) {
           sendHTML(
             `💰 <b>Partial TP</b> · ${htmlEscape(token.symbol || "?")}\n` +
@@ -798,12 +938,12 @@ async function checkDeterministicExits(tokens) {
 
     const roiCheck = checkROI(ageMinutes, currentPnlPct, condition);
     if (roiCheck.exit) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: roiCheck.reason, pnl_pct: currentPnlPct, is_loss: currentPnlPct < 0 });
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: roiCheck.reason, pnl_pct: currentPnlPct, is_loss: currentPnlPct < 0, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
       continue;
     }
     const tsCheck = checkTrailingStop(currentPnlPct, tracked.peak_pnl_pct || 0);
     if (tsCheck.exit) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: tsCheck.reason, pnl_pct: currentPnlPct, is_loss: false });
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: tsCheck.reason, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
     }
   }
   return exits;
@@ -829,14 +969,14 @@ export async function runManagementCycle({ silent = false } = {}) {
       liveMessage = await createLiveMessage("🔄 Management", "Evaluating positions...");
     }
 
-    const balance = await getWalletBalances();
+    const balance = await getPortfolioSnapshot();
     const tokens = (balance.tokens || []).filter(t => t.usd >= 0.1 && t.symbol !== "SOL");
 
     // Refresh session P&L
     const totalUsd = (balance.sol_usd || 0) + tokens.reduce((s, t) => s + (t.usd || 0), 0);
     await refreshSessionPnl(totalUsd);
 
-    syncOpenPositions(tokens.map(t => t.mint));
+    syncOpenPositions(tokens.map(t => t.position_key || t.mint));
 
     if (tokens.length === 0) {
       mgmtReport = "No open token positions.";
@@ -847,33 +987,107 @@ export async function runManagementCycle({ silent = false } = {}) {
     const deterministicExits = await checkDeterministicExits(tokens);
     for (const exit of deterministicExits) {
       log("strategy", `EXIT: ${exit.symbol} — ${exit.reason}`);
-      const tokenData = tokens.find(t => t.mint === exit.mint);
+      const tokenData = tokens.find(t => (t.position_key || t.mint) === (exit.position_key || exit.mint));
+      const exitStartAt = Date.now();
       const res = await gmgnSwap({
         token_in: exit.mint, token_out: "SOL",
         amount: tokenData?.balance, slippage: 1.0,
+        wallet: exit.wallet_address ? getWalletByAddress(exit.wallet_address)?.keypair || null : null,
       });
       recordSwapOutcome({ success: !!(res.success || res.dry_run) });
+      recordExecutionQuality({
+        walletAddress: exit.wallet_address || null,
+        provider: res?.execution_provider || "auto",
+        mode: "sell",
+        split: false,
+        marketCondition: getMarketIntelligence().condition,
+        slippage: 1.0,
+        success: !!(res.success || res.dry_run),
+        latencyMs: Date.now() - exitStartAt,
+      });
       if (res.success || res.dry_run) {
         // Await close-flush: a crash before this lands on disk means the next
         // management cycle would re-attempt the exit on a position already
         // sold, hitting Jupiter with zero balance. Cheap insurance.
-        await recordClose(exit.mint, exit.reason);
+        await recordClose(exit.position_key || exit.mint, exit.reason, exit.wallet_address || null);
         recordTrade(!exit.is_loss);
         recordCounter("swaps_executed");
 
         // Record performance
-        const tracked = getTrackedPosition(exit.mint);
+        const tracked = getTrackedPosition(exit.position_key || exit.mint, exit.wallet_address || null);
         const tradePnl = exit.pnl_pct || 0;
+        const holdMinutes = tracked ? (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000 : 0;
+        const executionQuality = getExecutionQualityAssessment({
+          walletAddress: exit.wallet_address || tracked?.wallet_address || null,
+          provider: res?.execution_provider || tracked?.signal_snapshot?.execution_context?.provider || "auto",
+          mode: "sell",
+          split: false,
+          marketCondition: tokenData?.market_condition || getMarketIntelligence().condition,
+          slippage: Number(tracked?.signal_snapshot?.execution_context?.slippage || 1.0),
+        });
+        const attribution = assessTradeAttribution({
+          tracked,
+          exit: {
+            ...exit,
+            hold_minutes: holdMinutes,
+            exit_reason: exit.reason,
+          },
+          tokenData,
+          executionQuality,
+        });
         recordTradeOutcome({
           mint: exit.mint,
           symbol: exit.symbol,
           entry_usd: tracked?.initial_value_usd,
           exit_usd: tokenData?.usd,
           pnl_pct: tradePnl,
-          hold_minutes: tracked ? (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000 : 0,
+          hold_minutes: holdMinutes,
           exit_reason: exit.reason,
           rug_detected: exit.reason.includes("Rug"),
+          attribution,
         });
+        recordTradeAttribution({
+          mint: exit.mint,
+          symbol: exit.symbol,
+          pnl_pct: tradePnl,
+          hold_minutes: holdMinutes,
+          exit_reason: exit.reason,
+          ...attribution,
+        });
+        recordTradeConvictionOutcome({
+          mint: exit.mint,
+          symbol: exit.symbol,
+          pnl_pct: tradePnl,
+          exit_reason: exit.reason,
+        });
+        recordRegimeTradeOutcome({
+          marketCondition: tokenData?.market_condition || getMarketIntelligence().condition,
+          tier: tokenData?.tier_execution?.tier || tokenData?.tier?.label || "UNKNOWN",
+          narrative: tokenData?.conviction?.narrative_cluster?.narrative || (Array.isArray(tokenData?.narrative_tags) ? (typeof tokenData.narrative_tags[0] === "string" ? tokenData.narrative_tags[0] : tokenData.narrative_tags[0]?.narrative) : null) || "OTHER",
+          verdict: tracked?.signal_snapshot?.workflow?.verdict || "active",
+          pnl_pct: tradePnl,
+        });
+
+        const tpTriggered = /immediate tp|roi|trailing stop/i.test(exit.reason || "") && (exit.pnl_pct || 0) >= (config.management.autoTakeProfitPct ?? 50);
+        if (tpTriggered) {
+          const cooldownHours = config.management.antiGreedCooldownHours ?? 12;
+          setTokenCooldown(exit.mint, cooldownHours, "auto_tp");
+          const profitSweep = computeProfitSweepAmount(
+            Math.max(0, (tokenData?.usd || 0) - (tracked?.initial_value_usd || 0)),
+            balance.sol_price || 0
+          );
+          if (profitSweep.amount_sol > 0) {
+            const sweepResult = await executeVaultTransfer(profitSweep.amount_sol, balance.sol_price || 0);
+            if (sweepResult.dry_run) {
+              recordVaultTransfer({
+                amount_sol: sweepResult.amount_sol,
+                amount_usd: sweepResult.amount_usd,
+                tx: sweepResult.tx,
+                vault_wallet: sweepResult.vault_wallet,
+              });
+            }
+          }
+        }
 
         // Feed narrative engine — credit/penalize the narrative(s) this trade belongs to
         try {
@@ -930,7 +1144,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     }
 
     // ─── Step 2: LLM management ──────────────────
-    const remainingBalance = await getWalletBalances();
+    const remainingBalance = await getPortfolioSnapshot();
     const remainingTokens = (remainingBalance.tokens || []).filter(t => t.usd >= 0.1 && t.symbol !== "SOL");
 
     if (remainingTokens.length > 0) {
@@ -949,8 +1163,9 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
           if (name === "gmgn_swap" && (result.success || result.dry_run)) {
             const tokenOut = result.token_out || result.would_swap?.token_out;
             const tokenIn = result.token_in || result.would_swap?.token_in;
+            const walletAddress = result.wallet_address || result.would_swap?.wallet_address || null;
             if (tokenOut === "SOL" || tokenOut === "So11111111111111111111111111111111111111112") {
-              await recordClose(tokenIn, "LLM Manager Decision");
+              await recordClose(tokenIn, "LLM Manager Decision", walletAddress);
               recordTrade(true); // assume LLM exits for profit
             }
           }
@@ -996,7 +1211,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       liveMessage = await createLiveMessage("🔍 Screening", "Scanning alpha...");
     }
 
-    const balance = await getWalletBalances();
+    const balance = await getPortfolioSnapshot();
     const openTokens = (balance.tokens || []).filter(t => t.usd >= 0.1 && t.symbol !== "SOL");
 
     // ─── Profit-aware position limit ──────────────
@@ -1016,11 +1231,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return `Max positions reached (${openTokens.length}/${positionLimit})`;
     }
 
+    const recentTrades = getPerformanceHistory({ limit: 30 });
     const activeWallet = getActiveWallet();
     const walletSol = isMultiWalletEnabled() && activeWallet
       ? getWalletCapitalSol(activeWallet.address, balance.sol)
       : balance.sol;
     const deployAmount = computeDeployAmount(walletSol, { solPriceUsd: balance.sol_price });
+    const walletPlanSummary = buildCapitalAwareWalletPlan(
+      balance.sol,
+      deployAmount,
+      Math.min(config.fastTrack.maxNewPerCycle ?? 1, config.multiWallet?.maxWalletsPerBatch ?? 2)
+    );
     const gasFee = await getSolanaGasFee();
     const discovery = await discoverTokens({ timeframe: "1m" });
     const candidates = discovery.tokens || [];
@@ -1050,6 +1271,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const scoredCandidates = [];
     for (const token of candidates.slice(0, 8)) {
       if (isTokenBlacklisted(token.mint)) continue;
+      if (isTokenOnCooldown(token.mint)) continue;
       if (token.creator && isDevBlocked(token.creator)) continue;
 
       const security = await getTokenSecurityDetails({ mint: token.mint });
@@ -1069,6 +1291,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const tokenInfo = await getTokenInfo({ query: token.mint });
       const globalFees = tokenInfo.results?.[0]?.global_fees_sol || 0;
       const tierInfo = getMcapTier(token.mcap);
+      const tierExec = getTierExecutionProfile(token.mcap);
+      if (tierExec.sell_only) {
+        log("filter", `${token.symbol}: SKIP sell-only tier ${tierExec.tier}`);
+        continue;
+      }
       const enhancedToken = { ...token, global_fees_sol: globalFees, tier: tierInfo };
 
       const filterResult = await run4FilterProtocol(enhancedToken, security, gasFee);
@@ -1081,7 +1308,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       let volatilityPercentile = 50;
       let volatilityAdjustedSize = deployAmount;
 
-      if (config.indicators.enabled) {
+      if (config.indicators.enabled && tierExec.use_technicals) {
         log("screening", `${token.symbol}: Fetching klines for momentum analysis...`);
         const klineData = await getTokenKlines({
           mint: token.mint,
@@ -1114,28 +1341,150 @@ export async function runScreeningCycle({ silent = false } = {}) {
         }
       }
 
+      const preKellyAmount = parseFloat(((volatilityAdjustedSize || deployAmount) * (tierExec.size_multiplier || 1)).toFixed(4));
+      const tokenEdgeScore = Math.max(5, Math.min(95,
+        100 -
+        (rugRisk.score || 0) +
+        Math.max(0, momentumScore / 4) +
+        (filterResult.passed ? 8 : -5)
+      ));
+      const kelly = config.kelly?.enabled
+        ? computeFractionalKellySize({
+            bankrollSol: balance.sol,
+            baseDeployAmountSol: preKellyAmount,
+            trades: recentTrades,
+            context: {
+              marketCondition: marketIntel.condition,
+              tokenEdgeScore,
+              holderStructureRisk: security?.holder_analysis?.holder_structure_risk || security?.rug_signals?.holder_structure_risk || "LOW",
+            },
+            fraction: config.kelly?.fraction ?? 0.5,
+            minFraction: config.kelly?.minFraction ?? 0.1,
+            maxFraction: config.kelly?.maxFraction ?? 0.8,
+            minSampleTrades: config.kelly?.minSampleTrades ?? 5,
+          })
+        : {
+            deploy_amount_sol: preKellyAmount,
+            kelly_fraction: 0,
+            effective_fraction: 0,
+            inputs: {},
+            used_fallback: true,
+            should_skip: false,
+          };
+      const sizedAmount = kelly.deploy_amount_sol || preKellyAmount;
+      const conviction = getCoinConviction(token.mint, token);
+      const narrativeTags = Array.isArray(token.narrative_tags)
+        ? token.narrative_tags
+        : [];
+      const workflow = config.decisionWorkflow?.enabled
+        ? evaluateCandidateDecision({
+            token: {
+              ...enhancedToken,
+              ...filterResult,
+              rug_score: rugRisk.score,
+              kelly,
+              momentum_entry_pass: momentumEntry.pass,
+              volatility_adjusted_size: sizedAmount,
+            },
+            conviction,
+            marketCondition: marketIntel.condition,
+            probeSizeFraction: config.decisionWorkflow?.probeSizeFraction ?? 0.35,
+          })
+        : {
+            verdict: "active",
+            caution_score: 0,
+            reasons: [],
+            size_multiplier: 1,
+            recommended_amount_sol: sizedAmount,
+            fast_track_eligible: true,
+            llm_can_buy: true,
+          };
+      const preRegimeAmount = workflow.recommended_amount_sol || sizedAmount;
+      const regime = config.regimeMemory?.enabled
+        ? getRegimeAssessment({
+            ...enhancedToken,
+            narrative_tags: narrativeTags,
+            conviction,
+            workflow,
+            market_condition: marketIntel.condition,
+            tier_execution: tierExec,
+          })
+        : {
+            regime_score: 0,
+            confidence_score: 0,
+            stance: "unknown",
+            size_multiplier: 1,
+          };
+      const passed = filterResult.passed && !kelly.should_skip && workflow.llm_can_buy;
+      const flags = [...(filterResult.flags || [])];
+      if (kelly.should_skip) {
+        flags.push(`Kelly sizing rejected entry (edge=${kelly.kelly_fraction})`);
+      }
+      if (workflow.verdict === "shadow") {
+        flags.push("Workflow shadow-only: conviction masih terlalu rendah");
+      }
+      if (workflow.verdict === "skip") {
+        flags.push(`Workflow skip: ${workflow.reasons.join(", ") || "caution score terlalu tinggi"}`);
+      }
+
+      let recommendedAmount = preRegimeAmount;
+      if (config.regimeMemory?.enabled) {
+        const cap = config.regimeMemory?.tailwindMultiplierCap ?? 1.15;
+        const floor = config.regimeMemory?.headwindMultiplierFloor ?? 0.4;
+        const sizeMultiplier = Math.max(floor, Math.min(cap, regime.size_multiplier || 1));
+        recommendedAmount = Number((preRegimeAmount * sizeMultiplier).toFixed(4));
+      }
+
       scoredCandidates.push({
         ...enhancedToken, ...filterResult,
+        passed,
+        flags,
         rug_score: rugRisk.score,
         rug_reasons: rugRisk.reasons,
         market_condition: marketIntel.condition,
         profit_mode: isInProfitMode(),
+        tier_execution: tierExec,
+        kelly,
+        conviction,
+        regime,
+        workflow,
         technicals,
         momentum_score: momentumScore,
         momentum_entry_pass: momentumEntry.pass,
         volatility_percentile: volatilityPercentile,
-        volatility_adjusted_size: volatilityAdjustedSize,
+        volatility_adjusted_size: recommendedAmount,
+        recommended_deploy_amount_sol: recommendedAmount,
       });
     }
 
     // Catat semua candidates (termasuk yang tidak lolos) untuk belajar nanti
     if (scoredCandidates.length > 0) {
+      for (const candidate of scoredCandidates) {
+        recordCoinObservation(candidate);
+        recordRegimeObservation(candidate);
+        recordDecision({
+          type: "screening_candidate",
+          mint: candidate.mint,
+          symbol: candidate.symbol,
+          passed: candidate.passed,
+          verdict: candidate.workflow?.verdict || "active",
+          caution_score: candidate.workflow?.caution_score ?? 0,
+          conviction_score: candidate.conviction?.conviction_score ?? 0,
+          regime_score: candidate.regime?.regime_score ?? 0,
+        });
+      }
       recordObservations(scoredCandidates);
       // Build ticker registry — learn symbol→mint mappings from real market data
       try { bulkRegisterTickers(scoredCandidates); } catch (e) { log("ticker_error", e.message); }
     }
 
-    let passingCandidates = scoredCandidates.filter(c => c.passed);
+    let passingCandidates = scoredCandidates
+      .filter(c => c.passed)
+      .sort((a, b) =>
+        (b.conviction?.conviction_score || 0) - (a.conviction?.conviction_score || 0) ||
+        (a.workflow?.caution_score || 0) - (b.workflow?.caution_score || 0) ||
+        (b.kelly?.effective_fraction || 0) - (a.kelly?.effective_fraction || 0)
+      );
     const planSummary = getPlanSummary();
 
     // ─── Fast-track lane (skip LLM for unambiguous BUYs) ────────
@@ -1146,17 +1495,26 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const slotsLeft = Math.max(0, positionLimit - openTokens.length);
       const maxNew = Math.min(config.fastTrack.maxNewPerCycle ?? 1, slotsLeft);
       if (maxNew > 0) {
+        const fastTrackCandidates = passingCandidates.filter(c => c.workflow?.fast_track_eligible !== false);
+        const walletPlan = (config.multiWallet?.autoSpreadEnabled ? walletPlanSummary.selected_wallets : [])
+          .slice(0, maxNew)
+          .map(slot => ({ ...slot, keypair: getWalletByAddress(slot.address)?.keypair || null }));
+        if (walletPlanSummary.spread_ready) {
+          log("wallet_mgr", `Capital-aware plan: ${walletPlanSummary.summary}`);
+        }
         const batch = await runFastTrackBatch({
-          candidates: passingCandidates,
+          candidates: fastTrackCandidates,
           fastTrackConfig: config.fastTrack,
           deployAmountSol: deployAmount,
           solPriceUsd: balance.sol_price || 0,
           maxNew,
+          walletPlan,
         });
         if (batch.deployed.length > 0) {
           log("fast_track", `Deployed ${batch.deployed.length} via fast-track: ${batch.deployed.map(t => t.symbol).join(", ")}`);
         }
-        passingCandidates = batch.remaining;
+        const deployedMints = new Set(batch.deployed.map(t => t.mint));
+        passingCandidates = passingCandidates.filter(c => !deployedMints.has(c.mint));
       }
     }
 
@@ -1173,7 +1531,14 @@ Posisi aktif: ${openTokens.length}/${positionLimit}
 CANDIDATES (lolos 4-filter + rug check):
 ${JSON.stringify(passingCandidates)}
 
-Pilih yang TERBAIK dan lakukan gmgn_swap.
+WORKFLOW KEPUTUSAN HATI-HATI:
+1. Default adalah SKIP jika conviction lemah, caution tinggi, atau edge belum jelas.
+2. `workflow.verdict=probe` berarti hanya boleh entry kecil sesuai `recommended_deploy_amount_sol`.
+3. `workflow.verdict=active` berarti boleh entry normal sesuai `recommended_deploy_amount_sol`.
+4. Jangan override `Kelly` negatif. Jika `kelly.should_skip=true`, jangan buy.
+5. Prioritaskan coin dengan conviction yang dibangun dari observasi berulang, bukan FOMO snapshot.
+
+Pilih yang TERBAIK dan lakukan gmgn_swap hanya jika edge jelas.
 ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
       `, config.llm.screenerMaxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
         onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
@@ -1184,13 +1549,37 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
               c.mint === result.token_out || c.mint === result.would_swap?.token_out
             );
             if (token) {
-              await trackPosition({
-                position: token.mint,
-                pool: "gmgn",
-                pool_name: token.symbol,
-                amount_sol: deployAmount,
-                initial_value_usd: (deployAmount * (balance.sol_price || 0)) || 0,
-              });
+              const executions = Array.isArray(result.executions) && result.executions.length > 0
+                ? result.executions
+                : [{
+                    wallet_address: result.wallet_address || result.would_swap?.wallet_address || getActiveWallet()?.address || null,
+                    amount: deployAmount,
+                  }];
+              for (const exec of executions) {
+                await trackPosition({
+                  position: token.mint,
+                  pool: "gmgn",
+                  pool_name: token.symbol,
+                  amount_sol: exec.amount || deployAmount,
+                  initial_value_usd: ((exec.amount || deployAmount) * (balance.sol_price || 0)) || 0,
+                  signal_snapshot: {
+                    mint: token.mint,
+                    symbol: token.symbol,
+                    market_condition: token.market_condition || marketIntel.condition,
+                    rug_score: token.rug_score || 0,
+                    conviction: token.conviction || null,
+                    regime: token.regime || null,
+                    workflow: token.workflow || null,
+                    kelly: token.kelly || null,
+                    execution_context: {
+                      wallet_address: exec.wallet_address || null,
+                      provider: result?.execution_provider || "auto",
+                      slippage: Number(result?.slippage || 0),
+                    },
+                  },
+                  wallet_address: exec.wallet_address || null,
+                });
+              }
               recordTrade(null); // outcome unknown yet
             }
           }
@@ -1339,18 +1728,27 @@ function startTurboButtons() {
 
 // ─── Cron Setup ───────────────────────────────────────────────
 
+// Build an explicit minute list offset by 1 so screening never fires on the same
+// minute as management (which uses */N starting at :00).
+// e.g. intervalMin=30 → "1,31", intervalMin=10 → "1,11,21,31,41,51"
+function screeningCronPattern(intervalMin) {
+  const minutes = [];
+  for (let m = 1; m < 60; m += intervalMin) minutes.push(m);
+  return `${minutes.join(",")} * * * *`;
+}
+
 export function startCronJobs() {
   _cronTasks.forEach(t => t.stop());
   const tasks = [];
 
-  // Management (setiap N menit)
+  // Management (setiap N menit, mulai dari :00)
   tasks.push(cron.schedule(`*/${config.schedule.managementIntervalMin} * * * *`, runManagementCycle));
 
-  // Screening (setiap N menit, offset +1 agar tidak tabrakan dengan management cycle di :00/:30)
-  tasks.push(cron.schedule(`1-59/${config.schedule.screeningIntervalMin} * * * *`, runScreeningCycle));
+  // Screening (offset +1 menit dari management agar tidak tabrakan — :01,:31 bukan :00,:30)
+  tasks.push(cron.schedule(screeningCronPattern(config.schedule.screeningIntervalMin), runScreeningCycle));
 
-  // Continuous Learning (setiap 30 menit)
-  tasks.push(cron.schedule("*/30 * * * *", runContinuousLearningCycle));
+  // Continuous Learning (setiap 30 menit, offset +2 agar tidak tabrakan)
+  tasks.push(cron.schedule("2,32 * * * *", runContinuousLearningCycle));
 
   // Market Rug Harvester (tiap 4 jam — proactive learn rug patterns from market)
   tasks.push(cron.schedule("0 */4 * * *", () => {
@@ -1394,6 +1792,17 @@ async function shutdown(signal) {
   _geyserStream = null;
   process.exit(0);
 }
+process.on("unhandledRejection", (reason, promise) => {
+  log("fatal", `Unhandled rejection: ${reason?.message || reason}`);
+  console.error("[unhandledRejection]", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  log("fatal", `Uncaught exception: ${err.message}`);
+  console.error("[uncaughtException]", err);
+  shutdown("uncaughtException");
+});
+
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 

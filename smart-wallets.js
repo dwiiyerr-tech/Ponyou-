@@ -14,12 +14,37 @@ function save(wallets) {
   fs.writeFileSync(WALLETS_FILE, JSON.stringify(wallets, null, 2));
 }
 
-export function addSmartWallet({ address, label = "" } = {}) {
+function normalizeWalletRecord(record = {}, address) {
+  const selection = record.selection && typeof record.selection === "object"
+    ? record.selection
+    : null;
+  return {
+    address,
+    label: record.label || "",
+    added_at: record.added_at || new Date().toISOString(),
+    source_tokens: Array.isArray(record.source_tokens) ? record.source_tokens : [],
+    stats: record.stats && typeof record.stats === "object" ? record.stats : null,
+    selection,
+    follow_mode: record.follow_mode || selection?.follow_mode || "shadow",
+    notes: record.notes || "",
+  };
+}
+
+export function addSmartWallet({ address, label = "", source_tokens = [], stats = null, selection = null, notes = "" } = {}) {
   if (!address) return { error: "address required" };
   const wallets = load();
-  wallets[address] = { address, label, added_at: new Date().toISOString() };
+  wallets[address] = normalizeWalletRecord({
+    ...(wallets[address] || {}),
+    address,
+    label: label || wallets[address]?.label || "",
+    source_tokens: source_tokens.length ? source_tokens : wallets[address]?.source_tokens,
+    stats: stats || wallets[address]?.stats || null,
+    selection: selection || wallets[address]?.selection || null,
+    follow_mode: selection?.follow_mode || wallets[address]?.follow_mode || "shadow",
+    notes: notes || wallets[address]?.notes || "",
+  }, address);
   save(wallets);
-  return { saved: true, address, label };
+  return { saved: true, address, label: wallets[address].label, selection: wallets[address].selection };
 }
 
 export function removeSmartWallet({ address } = {}) {
@@ -33,5 +58,7 @@ export function removeSmartWallet({ address } = {}) {
 }
 
 export function listSmartWallets() {
-  return Object.values(load());
+  return Object.entries(load())
+    .map(([address, record]) => normalizeWalletRecord(record, address))
+    .sort((a, b) => (b.selection?.score || 0) - (a.selection?.score || 0));
 }

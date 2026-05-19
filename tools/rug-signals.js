@@ -93,38 +93,71 @@ export async function getMintExtensions(connection, mintAddress) {
 
 // ─── Layer 2: Helius Behavioural Signals ─────────────────────────
 
-// Concurrency limiter for Helius calls. Free tier nominally allows ~10 req/s,
-// but real-world the /addresses/.../transactions endpoint 429s at ≥8 req/s in
-// bursty workloads (dry-run logs showed multiple 429s at 120ms spacing). Cap
-// to 4 in-flight and throttle to ≥250ms between starts (~4 req/s peak).
+// ─── Helius rate limiter + circuit breaker ────────────────────
 //
-// Why a "next-slot" timestamp instead of (Date.now() - _lastHeliusAt)?
-// The old version sampled _lastHeliusAt before sleeping, so N concurrent
-// acquirers all read the same value, all decided to sleep the same duration,
-// and all fired together — defeating the throttle. Claiming the slot
-// synchronously (advance _heliusNextSlot before any await) makes each caller
-// pick a unique slot, so requests are spaced.
-let _heliusInflight = 0;
-const _heliusQueue = [];
-let _heliusNextSlot = 0;
-const HELIUS_MAX_CONCURRENT = 4;
-const HELIUS_MIN_INTERVAL_MS = 250;
+// Rate limiter: slots spaced HELIUS_MIN_INTERVAL_MS apart, max HELIUS_MAX_CONCURRENT
+// in-flight. Each acquirer claims a future slot synchronously so concurrent
+// callers are serialised rather than thundering-herding.
+//
+// Circuit breaker: after HELIUS_CB_THRESHOLD consecutive 429s the circuit opens
+// for HELIUS_CB_COOLDOWN_MS. During that window heliusAcquire() throws immediately
+// so callers gracefully skip Helius enrichment rather than piling up retries.
+// A single successful response resets the consecutive counter and closes the circuit.
+
+const HELIUS_MAX_CONCURRENT   = 2;
+const HELIUS_MIN_INTERVAL_MS  = 1500;   // ~0.67 req/s — well under free-tier burst
+const HELIUS_CB_THRESHOLD     = 3;      // consecutive 429s before opening
+const HELIUS_CB_COOLDOWN_MS   = 5 * 60 * 1000; // 5-minute cooldown
+
+let _heliusInflight      = 0;
+const _heliusQueue       = [];
+let _heliusNextSlot      = 0;
+let _helius429Streak     = 0;
+let _heliusCBOpenUntil   = 0;           // epoch ms; 0 = circuit closed
+
+export function heliusCircuitOpen() {
+  return Date.now() < _heliusCBOpenUntil;
+}
+
+function helius429Hit() {
+  _helius429Streak++;
+  if (_helius429Streak >= HELIUS_CB_THRESHOLD && !heliusCircuitOpen()) {
+    _heliusCBOpenUntil = Date.now() + HELIUS_CB_COOLDOWN_MS;
+    log("helius_cb", `Circuit OPEN — ${_helius429Streak} consecutive 429s. Pausing Helius calls for 5 min.`);
+  }
+}
+
+function heliusSuccess() {
+  if (_helius429Streak > 0) _helius429Streak = 0;
+  if (heliusCircuitOpen()) {
+    _heliusCBOpenUntil = 0;
+    log("helius_cb", "Circuit CLOSED — Helius responding normally.");
+  }
+}
 
 export async function heliusAcquire() {
-  // Wait for an inflight slot. `while` is used (not `if`) so that re-checking
-  // after wake handles spurious wake-ups; in practice the queue dispatches one
-  // at a time so the loop runs at most once.
+  if (heliusCircuitOpen()) throw new Error("Helius circuit open");
+
+  // Wait for an inflight slot.
   while (_heliusInflight >= HELIUS_MAX_CONCURRENT) {
     await new Promise(resolve => _heliusQueue.push(resolve));
   }
   _heliusInflight++;
 
-  // Claim a unique time-slot synchronously, before any await.
+  // Claim a unique time-slot synchronously before any await.
   const now = Date.now();
   const slot = Math.max(now, _heliusNextSlot);
   _heliusNextSlot = slot + HELIUS_MIN_INTERVAL_MS;
   if (slot > now) {
     await new Promise(r => setTimeout(r, slot - now));
+  }
+
+  // Re-check after sleeping — circuit may have opened while we waited.
+  if (heliusCircuitOpen()) {
+    _heliusInflight--;
+    const next = _heliusQueue.shift();
+    if (next) next();
+    throw new Error("Helius circuit open");
   }
 }
 
@@ -138,23 +171,19 @@ async function fetchHeliusTxns(address, apiKey, limit = 30, type = null) {
   const t = type ? `&type=${type}` : "";
   const url = `${HELIUS_BASE}/addresses/${address}/transactions?api-key=${apiKey}&limit=${limit}${t}`;
 
-  // One retry on 429 with backoff. Free-tier bursts otherwise cascade.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    await heliusAcquire();
-    try {
-      const res = await fetch(url);
-      if (res.status === 429 && attempt === 0) {
-        const retryAfter = Number(res.headers.get("retry-after")) || 1.5;
-        await new Promise(r => setTimeout(r, retryAfter * 1000));
-        continue;
-      }
-      if (!res.ok) throw new Error(`Helius ${res.status}`);
-      return await res.json();
-    } finally {
-      heliusRelease();
+  await heliusAcquire();
+  try {
+    const res = await fetch(url);
+    if (res.status === 429) {
+      helius429Hit();
+      throw new Error("Helius 429");
     }
+    if (!res.ok) throw new Error(`Helius ${res.status}`);
+    heliusSuccess();
+    return await res.json();
+  } finally {
+    heliusRelease();
   }
-  throw new Error("Helius 429 (after retry)");
 }
 
 /**

@@ -4,8 +4,9 @@
  * Ketik: ponyou          → tampil menu
  *        ponyou ui        → TUI launcher
  *        ponyou start     → live trading
- *        ponyou dev       → dry run interaktif
- *        ponyou dry       → one-shot dry run
+ *        ponyou dev       → demo interaktif
+ *        ponyou dry       → alias demo one-shot
+ *        ponyou demo      → demo one-shot
  *        ponyou dashboard → dashboard real-time
  *        ponyou setup     → setup wizard
  *        ponyou status    → status cepat
@@ -22,8 +23,9 @@ const arg = process.argv[2]?.toLowerCase();
 const COMMANDS = [
   { cmd: "ui",        desc: "TUI launcher — menu interaktif penuh",    npm: "ui" },
   { cmd: "dashboard", desc: "Dashboard real-time",                      npm: "dashboard" },
-  { cmd: "dry",       desc: "Dry run one-shot (test semua siklus)",     npm: "dry" },
-  { cmd: "dev",       desc: "Agent interaktif (DRY_RUN=true)",          npm: "dev" },
+  { cmd: "dry",       desc: "Demo one-shot (test semua siklus)",        npm: "dry" },
+  { cmd: "demo",      desc: "Demo one-shot (alias dry)",                npm: "demo" },
+  { cmd: "dev",       desc: "Agent interaktif (EXECUTION_MODE=demo)",   npm: "dev" },
   { cmd: "start",     desc: "Agent live (transaksi nyata)",             npm: "start" },
   { cmd: "setup",     desc: "Setup wizard (konfigurasi awal)",          npm: "setup" },
   { cmd: "status",    desc: "Cek status cepat tanpa menjalankan agent", npm: null },
@@ -44,7 +46,7 @@ function printMenu() {
     const label = `ponyou ${c.cmd}`.padEnd(pad + 9);
     console.log(`  ${G}${label}${R}  ${D}${c.desc}${R}`);
   }
-  console.log(`\n${D}Contoh: ponyou ui | ponyou dry | ponyou dev${R}\n`);
+  console.log(`\n${D}Contoh: ponyou ui | ponyou demo | ponyou dev${R}\n`);
 }
 
 function runNpm(script) {
@@ -81,10 +83,11 @@ function showStatus() {
   const positions = Object.values(state.positions || {}).filter(p => !p.closed);
   const hasWallet = !!env.WALLET_PRIVATE_KEY;
   const hasLlm    = !!(env.OPENROUTER_API_KEY || (env.LLM_BASE_URL && env.LLM_API_KEY));
-  const dryRun    = env.DRY_RUN === "true";
+  const executionMode = (env.EXECUTION_MODE || (env.DRY_RUN === "true" ? "demo" : "live")).toLowerCase();
+  const demoMode = executionMode === "demo";
 
   console.log(`\n${C}${B}🐎 Ponyou Status${R}`);
-  console.log(`  Mode     : ${dryRun ? Y + "DRY RUN (aman)" : G + "LIVE (transaksi nyata)"}${R}`);
+  console.log(`  Mode     : ${demoMode ? Y + "DEMO (aman)" : G + "LIVE (transaksi nyata)"}${R}`);
   console.log(`  Market   : ${B}${intel.currentCondition || "NORMAL"}${R}`);
   console.log(`  Plan     : Day ${plan.day || 1}/${plan.days_total || 30} | P&L: ${plan.today_pnl_pct ?? 0}%`);
   console.log(`  Posisi   : ${positions.length} terbuka`);
