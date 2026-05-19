@@ -27,3 +27,8 @@ pending-intents.json
 active-strategy.json
 
 logs/
+
+# Ruflo / claude-flow runtime dirs
+.swarm/
+.claude-flow/
+ruvector.db

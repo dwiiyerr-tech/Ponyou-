@@ -28,8 +28,10 @@
     "chalk": "^5.6.2",
     "dotenv": "^17.3.1",
     "jsonrepair": "^3.13.3",
+    "neural-trader": "^2.8.11",
     "node-cron": "^3.0.3",
-    "openai": "^4.73.0"
+    "openai": "^4.73.0",
+    "ruflo": "^3.7.0-alpha.69"
   },
   "engines": {
     "node": ">=18.0.0"
