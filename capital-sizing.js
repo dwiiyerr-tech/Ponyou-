@@ -1,9 +1,10 @@
 import { computeFractionalKellySize } from "./kelly.js";
+import { normalizeRegime, REGIMES, isTradingAllowed } from "./market-regime.js";
 
 const DEFAULT_CAPITAL_SIZING = {
   microThreshold: 50,
   fullThreshold: 200,
-  microFlat: { HOT: 0.15, WARM: 0.08 },
+  microFlat: { HOT: 0.15, WARM: 0.08, NORMAL: 0.08 },
   growthCap: 0.20,
   growthFallbackFraction: 0.10,
 };
@@ -21,6 +22,11 @@ export function getCapitalAwareSizing({
   minSampleTrades = 5,
   capitalSizing = {},
 } = {}) {
+  if (!solPriceUsd || solPriceUsd <= 0) {
+    return { should_skip: true, reason: "sol_price_unavailable", tier: "UNKNOWN", deploy_amount_sol: 0 };
+  }
+
+  const marketCondition = normalizeRegime(regime);
   const cfg = {
     ...DEFAULT_CAPITAL_SIZING,
     ...capitalSizing,
@@ -30,7 +36,21 @@ export function getCapitalAwareSizing({
 
   // ── MICRO tier ──────────────────────────────────────────────────────────────
   if (capitalUsd < cfg.microThreshold) {
-    const flatFraction = (cfg.microFlat || {})[regime] ?? null;
+    if (marketCondition === REGIMES.EXTREME) {
+      return {
+        deploy_amount_sol: 0,
+        kelly_fraction: 0,
+        effective_fraction: 0,
+        inputs: {},
+        used_fallback: true,
+        should_skip: true,
+        tier: "MICRO",
+        method: "regime-flat",
+        capital_usd: capitalUsd,
+        capped_at: null,
+      };
+    }
+    const flatFraction = (cfg.microFlat || {})[marketCondition] ?? null;
     if (flatFraction === null) {
       return {
         deploy_amount_sol: 0,
@@ -66,6 +86,10 @@ export function getCapitalAwareSizing({
 
   // ── GROWTH tier — no trade history fallback ─────────────────────────────────
   if (isGrowth && (trades || []).length < minSampleTrades) {
+    if (!isTradingAllowed(marketCondition) || marketCondition === REGIMES.COLD) {
+      return { should_skip: true, reason: "growth_fallback_cold_or_dead", tier: "GROWTH", deploy_amount_sol: 0 };
+    }
+
     const fallbackFraction = cfg.growthFallbackFraction;
     const fallbackAmount = Number(
       Math.min(bankrollSol * fallbackFraction, baseDeployAmountSol > 0 ? baseDeployAmountSol : Infinity).toFixed(4)

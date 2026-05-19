@@ -19,6 +19,7 @@ import { recordCounter } from "./metrics.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FLAG_FILE = path.join(__dirname, "kill-switch.flag");
+const STATE_FILE = new URL("./kill-switch-state.json", import.meta.url).pathname;
 
 const DEFAULT_LIMITS = {
   drawdown_pct: -20,        // session drawdown trip-point
@@ -29,12 +30,76 @@ const DEFAULT_LIMITS = {
 let _sessionStartUsd = null;
 let _consecutiveErrors = 0;
 
+function _loadState() {
+  try {
+    if (!fs.existsSync(STATE_FILE)) return null;
+    return JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function _saveState(state = {}) {
+  const payload = {
+    sessionBaseline: Number.isFinite(state.sessionBaseline) ? state.sessionBaseline : null,
+    tripAt: state.tripAt ?? null,
+    consecutiveErrors: Number.isFinite(state.consecutiveErrors) ? state.consecutiveErrors : 0,
+    savedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(STATE_FILE, JSON.stringify(payload, null, 2));
+}
+
+function _currentTripAt() {
+  const state = readKillState();
+  return state?.tripped_at || state?.tripAt || null;
+}
+
+function _persistState(tripAt = _currentTripAt()) {
+  try {
+    _saveState({
+      sessionBaseline: _sessionStartUsd,
+      tripAt,
+      consecutiveErrors: _consecutiveErrors,
+    });
+  } catch (e) {
+    log("kill_switch_error", `Failed to write state: ${e.message}`);
+  }
+}
+
+function _restoreState() {
+  const saved = _loadState();
+  if (!saved) return;
+
+  if (Number.isFinite(saved.sessionBaseline) && saved.sessionBaseline > 0) {
+    _sessionStartUsd = saved.sessionBaseline;
+  }
+  if (Number.isFinite(saved.consecutiveErrors) && saved.consecutiveErrors >= 0) {
+    _consecutiveErrors = saved.consecutiveErrors;
+  }
+  if (saved.tripAt) {
+    try {
+      if (!fs.existsSync(FLAG_FILE)) {
+        fs.writeFileSync(FLAG_FILE, JSON.stringify({
+          tripped_at: saved.tripAt,
+          reason: "restored",
+          detail: "Restored from kill-switch state file",
+        }, null, 2));
+      }
+    } catch (e) {
+      log("kill_switch_error", `Failed to restore flag: ${e.message}`);
+    }
+  }
+}
+
+_restoreState();
+
 /**
  * Snapshot session-start balance. Called once at startup.
  */
 export function setSessionBaseline(usd) {
   if (!Number.isFinite(usd) || usd <= 0) return;
   _sessionStartUsd = usd;
+  _persistState();
 }
 
 /**
@@ -63,9 +128,11 @@ export function reportBalance(usd, limits = DEFAULT_LIMITS) {
 export function recordSwapOutcome({ success }, limits = DEFAULT_LIMITS) {
   if (success) {
     _consecutiveErrors = 0;
+    _persistState();
     return false;
   }
   _consecutiveErrors += 1;
+  _persistState();
   if (_consecutiveErrors >= limits.consecutive_errors) {
     trip({
       reason: "consecutive_errors",
@@ -81,13 +148,15 @@ export function recordSwapOutcome({ success }, limits = DEFAULT_LIMITS) {
  * a restart doesn't bypass it.
  */
 export function trip({ reason = "manual", detail = "" } = {}) {
+  const trippedAt = new Date().toISOString();
   const payload = {
-    tripped_at: new Date().toISOString(),
+    tripped_at: trippedAt,
     reason,
     detail,
   };
   try {
     fs.writeFileSync(FLAG_FILE, JSON.stringify(payload, null, 2));
+    _persistState(trippedAt);
     log("kill_switch", `🛑 Kill switch tripped: ${reason} — ${detail}`);
     recordCounter("kill_switch_trip");
   } catch (e) {
@@ -120,8 +189,9 @@ export function isKilled() {
 export function reset() {
   try {
     if (fs.existsSync(FLAG_FILE)) fs.unlinkSync(FLAG_FILE);
+    if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
   } catch (e) {
-    log("kill_switch_error", `Failed to clear flag: ${e.message}`);
+    log("kill_switch_error", `Failed to clear kill switch state: ${e.message}`);
   }
   _consecutiveErrors = 0;
   _sessionStartUsd = null;
@@ -134,4 +204,5 @@ export function _resetForTests() {
   _sessionStartUsd = null;
   _consecutiveErrors = 0;
   if (fs.existsSync(FLAG_FILE)) fs.unlinkSync(FLAG_FILE);
+  if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
 }
