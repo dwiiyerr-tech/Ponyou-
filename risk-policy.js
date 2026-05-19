@@ -20,9 +20,9 @@ const DEFAULT_POLICY = Object.freeze({
     hardStopLossPct: -15,
     hardCutLossPct: -25,
     immediateTakeProfitPct: null,
-    trailingTriggerPct: 3,
-    trailingDropPct: 1.5,
-    profitSweepPct: 35,
+    trailingTriggerPct: 5,
+    trailingDropPct: 6,
+    profitSweepPct: 40,
   },
   rug: {
     seedHardBlock: true,
@@ -59,9 +59,9 @@ function adjustByMarket(policy, marketCondition) {
     policy.sizing.hotBoost = 0.15;
     policy.exit.hardStopLossPct = -18;
     policy.exit.hardCutLossPct = -28;
-    policy.exit.trailingTriggerPct = 4;
-    policy.exit.trailingDropPct = 2;
-    policy.exit.profitSweepPct = 45;
+    policy.exit.trailingTriggerPct = 6;
+    policy.exit.trailingDropPct = 8;
+    policy.exit.profitSweepPct = 50;
   } else if (condition === "COLD") {
     policy.entry.probeCautionThreshold = 18;
     policy.entry.probeConfidenceFloor = 40;
@@ -70,8 +70,8 @@ function adjustByMarket(policy, marketCondition) {
     policy.sizing.coldPenalty = 0.15;
     policy.exit.hardStopLossPct = -10;
     policy.exit.hardCutLossPct = -18;
-    policy.exit.trailingTriggerPct = 2.5;
-    policy.exit.trailingDropPct = 1.25;
+    policy.exit.trailingTriggerPct = 4;
+    policy.exit.trailingDropPct = 5;
     policy.exit.profitSweepPct = 30;
   } else if (condition === "DEAD") {
     policy.entry.probeCautionThreshold = 0;
