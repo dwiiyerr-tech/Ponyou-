@@ -94,6 +94,17 @@ export const config = {
     minSampleTrades: u.kellyMinSampleTrades ?? 5,
   },
 
+  capitalSizing: {
+    microThreshold:          u.capitalSizingMicroThreshold  ?? 50,
+    fullThreshold:           u.capitalSizingFullThreshold   ?? 200,
+    microFlat: {
+      HOT:  u.capitalSizingMicroHot      ?? 0.15,
+      WARM: u.capitalSizingMicroWarm     ?? 0.08,
+    },
+    growthCap:               u.capitalSizingGrowthCap        ?? 0.20,
+    growthFallbackFraction:  u.capitalSizingGrowthFallback   ?? 0.10,
+  },
+
   decisionWorkflow: {
     enabled: u.decisionWorkflowEnabled ?? true,
     probeSizeFraction: u.probeSizeFraction ?? 0.35,
