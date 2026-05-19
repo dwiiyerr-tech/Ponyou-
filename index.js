@@ -1547,9 +1547,9 @@ ${JSON.stringify(passingCandidates)}
 
 WORKFLOW KEPUTUSAN HATI-HATI:
 1. Default adalah SKIP jika conviction lemah, caution tinggi, atau edge belum jelas.
-2. `workflow.verdict=probe` berarti hanya boleh entry kecil sesuai `recommended_deploy_amount_sol`.
-3. `workflow.verdict=active` berarti boleh entry normal sesuai `recommended_deploy_amount_sol`.
-4. Jangan override `Kelly` negatif. Jika `kelly.should_skip=true`, jangan buy.
+2. \`workflow.verdict=probe\` berarti hanya boleh entry kecil sesuai \`recommended_deploy_amount_sol\`.
+3. \`workflow.verdict=active\` berarti boleh entry normal sesuai \`recommended_deploy_amount_sol\`.
+4. Jangan override \`Kelly\` negatif. Jika \`kelly.should_skip=true\`, jangan buy.
 5. Prioritaskan coin dengan conviction yang dibangun dari observasi berulang, bukan FOMO snapshot.
 
 Pilih yang TERBAIK dan lakukan gmgn_swap hanya jika edge jelas.
