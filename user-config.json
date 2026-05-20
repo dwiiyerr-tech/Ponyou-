@@ -97,5 +97,18 @@
   "hiveMindApiKey": "",
   "agentId": "",
   "publicApiKey": "",
-  "agentMeridianApiUrl": ""
+  "agentMeridianApiUrl": "",
+  "rugMonitor": {
+    "enabled": true,
+    "pollingIntervalSec": 30,
+    "rateLimitLowSec": 60,
+    "devSellThresholds": { "low": -5, "medium": -20, "high": -50 },
+    "lpMovementThresholds": { "low": -20, "medium": -50, "high": null },
+    "holderDumpThresholds": { "low": -10, "medium": -25, "high": -50 },
+    "actions": {
+      "low": { "type": "tighten_trail", "params": { "trailingDeltaPct": -2 } },
+      "medium": { "type": "sell_partial", "params": { "fraction": 0.5 } },
+      "high": { "type": "sell_all" }
+    }
+  }
 }

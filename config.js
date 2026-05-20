@@ -42,6 +42,28 @@ function nonEmptyString(...values) {
   return null;
 }
 
+export function buildRugMonitorConfig(u = {}) {
+  const rm = u.rugMonitor || {};
+  const t = (block, defaults) => ({
+    low:    block?.low    ?? defaults.low,
+    medium: block?.medium ?? defaults.medium,
+    high:   block?.high   ?? defaults.high,
+  });
+  return {
+    enabled: rm.enabled ?? true,
+    pollingIntervalSec: Number.isFinite(rm.pollingIntervalSec) ? rm.pollingIntervalSec : 30,
+    rateLimitLowSec:    Number.isFinite(rm.rateLimitLowSec)    ? rm.rateLimitLowSec    : 60,
+    devSellThresholds:    t(rm.devSellThresholds,    { low: -5,  medium: -20, high: -50 }),
+    lpMovementThresholds: t(rm.lpMovementThresholds, { low: -20, medium: -50, high: null }),
+    holderDumpThresholds: t(rm.holderDumpThresholds, { low: -10, medium: -25, high: -50 }),
+    actions: {
+      low:    rm.actions?.low    ?? { type: "tighten_trail", params: { trailingDeltaPct: -2 } },
+      medium: rm.actions?.medium ?? { type: "sell_partial",  params: { fraction: 0.5 } },
+      high:   rm.actions?.high   ?? { type: "sell_all" },
+    },
+  };
+}
+
 export const config = {
   // ─── Compound Trading Plan (Pilot) ────────
   pilot: {
@@ -304,6 +326,8 @@ jupiter: {
     requireAllIntervals: indicatorUserConfig.requireAllIntervals ?? false,
     volatilityAdjustmentEnabled: indicatorUserConfig.volatilityAdjustmentEnabled ?? true,
   },
+
+  rugMonitor: buildRugMonitorConfig(u),
 };
 
 // Warn loud jika override SL/TP terlihat berbahaya (mis. -50 yang dulu unused).
