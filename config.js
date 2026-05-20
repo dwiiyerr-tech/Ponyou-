@@ -64,6 +64,33 @@ export function buildRugMonitorConfig(u = {}) {
   };
 }
 
+export function buildExecutionEdgeConfig(u = {}) {
+  const ee = u.executionEdge || {};
+  return {
+    enabled: ee.enabled ?? true,
+    rpcEndpoints: Array.isArray(ee.rpcEndpoints) && ee.rpcEndpoints.length > 0
+      ? ee.rpcEndpoints
+      : [
+          { url: "https://api.mainnet-beta.solana.com", label: "solana-public" },
+          { url: "https://solana-api.projectserum.com", label: "serum" },
+        ],
+    feeOracle: {
+      sampleIntervalMs: Number.isFinite(ee.feeOracle?.sampleIntervalMs) ? ee.feeOracle.sampleIntervalMs : 10000,
+      cacheStaleMs: Number.isFinite(ee.feeOracle?.cacheStaleMs) ? ee.feeOracle.cacheStaleMs : 15000,
+      maxTipLamports: Number.isFinite(ee.feeOracle?.maxTipLamports) ? ee.feeOracle.maxTipLamports : 5_000_000,
+      maxPriorityFeeMicroLamports: Number.isFinite(ee.feeOracle?.maxPriorityFeeMicroLamports) ? ee.feeOracle.maxPriorityFeeMicroLamports : 10_000_000,
+      baseTipLamports: Number.isFinite(ee.feeOracle?.baseTipLamports) ? ee.feeOracle.baseTipLamports : 100_000,
+    },
+    executor: {
+      maxAttempts: Number.isFinite(ee.executor?.maxAttempts) ? ee.executor.maxAttempts : 5,
+      attemptTimeoutMs: Number.isFinite(ee.executor?.attemptTimeoutMs) ? ee.executor.attemptTimeoutMs : 3000,
+      defaultCuLimit: Number.isFinite(ee.executor?.defaultCuLimit) ? ee.executor.defaultCuLimit : 200_000,
+      maxCuLimit: Number.isFinite(ee.executor?.maxCuLimit) ? ee.executor.maxCuLimit : 1_400_000,
+      rpcCallTimeoutMs: Number.isFinite(ee.executor?.rpcCallTimeoutMs) ? ee.executor.rpcCallTimeoutMs : 2000,
+    },
+  };
+}
+
 export const config = {
   // ─── Compound Trading Plan (Pilot) ────────
   pilot: {
@@ -328,6 +355,7 @@ jupiter: {
   },
 
   rugMonitor: buildRugMonitorConfig(u),
+  executionEdge: buildExecutionEdgeConfig(u),
 };
 
 // Warn loud jika override SL/TP terlihat berbahaya (mis. -50 yang dulu unused).

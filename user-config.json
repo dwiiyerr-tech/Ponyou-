@@ -98,6 +98,28 @@
   "agentId": "",
   "publicApiKey": "",
   "agentMeridianApiUrl": "",
+  "jitoEnabled": true,
+  "executionEdge": {
+    "enabled": true,
+    "rpcEndpoints": [
+      { "url": "https://api.mainnet-beta.solana.com", "label": "solana-public" },
+      { "url": "https://solana-api.projectserum.com", "label": "serum" }
+    ],
+    "feeOracle": {
+      "sampleIntervalMs": 10000,
+      "cacheStaleMs": 15000,
+      "maxTipLamports": 5000000,
+      "maxPriorityFeeMicroLamports": 10000000,
+      "baseTipLamports": 100000
+    },
+    "executor": {
+      "maxAttempts": 5,
+      "attemptTimeoutMs": 3000,
+      "defaultCuLimit": 200000,
+      "maxCuLimit": 1400000,
+      "rpcCallTimeoutMs": 2000
+    }
+  },
   "rugMonitor": {
     "enabled": true,
     "pollingIntervalSec": 30,
