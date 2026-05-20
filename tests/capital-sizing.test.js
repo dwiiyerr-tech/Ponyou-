@@ -23,6 +23,23 @@ const HIGH_EDGE_TRADES = [
 ];
 
 describe("getCapitalAwareSizing — MICRO tier (capitalUsd < 50)", () => {
+  it("skips when bankrollSol is zero", () => {
+    const result = getCapitalAwareSizing({
+      bankrollSol: 0,
+      solPriceUsd: 200,
+      baseDeployAmountSol: 0.5,
+      regime: "HOT",
+      capitalSizing: DEFAULT_CFG,
+    });
+
+    expect(result).toEqual({
+      should_skip: true,
+      reason: "zero_bankroll",
+      tier: "UNKNOWN",
+      deploy_amount_sol: 0,
+    });
+  });
+
   it("returns flat 15% of bankroll for HOT regime", () => {
     // bankrollSol=0.15 * solPriceUsd=200 = capitalUsd=30 → MICRO
     const result = getCapitalAwareSizing({

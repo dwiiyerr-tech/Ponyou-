@@ -76,7 +76,7 @@ function _restoreState() {
   if (Number.isFinite(saved.consecutiveErrors) && saved.consecutiveErrors >= 0) {
     _consecutiveErrors = saved.consecutiveErrors;
   }
-  if (saved.tripAt) {
+  if (saved.tripAt && Number.isFinite(saved.sessionBaseline) && saved.sessionBaseline > 0) {
     try {
       if (!fs.existsSync(FLAG_FILE)) {
         fs.writeFileSync(FLAG_FILE, JSON.stringify({
@@ -88,6 +88,8 @@ function _restoreState() {
     } catch (e) {
       log("kill_switch_error", `Failed to restore flag: ${e.message}`);
     }
+  } else if (saved.tripAt && (!Number.isFinite(saved.sessionBaseline) || saved.sessionBaseline <= 0)) {
+    log("kill_switch", `Skipping trip restore: no valid baseline found (baseline=${saved.sessionBaseline})`);
   }
 }
 
@@ -201,8 +203,8 @@ export function reset() {
 // ─── Test helpers ────────────────────────────────────────────────
 
 export function _resetForTests() {
-  _sessionStartUsd = null;
-  _consecutiveErrors = 0;
   if (fs.existsSync(FLAG_FILE)) fs.unlinkSync(FLAG_FILE);
   if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
+  _consecutiveErrors = 0;
+  _sessionStartUsd = null;
 }

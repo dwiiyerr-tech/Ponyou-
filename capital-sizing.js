@@ -26,6 +26,10 @@ export function getCapitalAwareSizing({
     return { should_skip: true, reason: "sol_price_unavailable", tier: "UNKNOWN", deploy_amount_sol: 0 };
   }
 
+  if (!bankrollSol || bankrollSol <= 0) {
+    return { should_skip: true, reason: "zero_bankroll", tier: "UNKNOWN", deploy_amount_sol: 0 };
+  }
+
   const marketCondition = normalizeRegime(regime);
   const cfg = {
     ...DEFAULT_CAPITAL_SIZING,

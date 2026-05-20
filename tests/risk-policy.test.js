@@ -35,6 +35,19 @@ describe("risk policy", () => {
     expect(policy.exit.immediateTakeProfitPct).toBe(18);
   });
 
+  it("falls back to default stop loss when override is outside the valid range", () => {
+    const policy = buildRiskPolicy({
+      marketCondition: "COLD",
+      config: {
+        management: {
+          stopLossPct: 0,
+        },
+      },
+    });
+
+    expect(policy.exit.hardStopLossPct).toBe(-10);
+  });
+
   it("evaluates exit thresholds deterministically", () => {
     const policy = buildRiskPolicy({
       config: {
@@ -52,12 +65,23 @@ describe("risk policy", () => {
     expect(evaluateExitPolicy({ pnlPct: 40, peakPnlPct: 40, policy }).profitSweepEligible).toBe(true);
   });
 
+  it("supports proportional trailing stop drop from peak profit", () => {
+    const policy = buildRiskPolicy();
+    policy.exit.trailingDropMode = "proportional";
+    policy.exit.trailingTriggerPct = 5;
+    policy.exit.trailingDropPct = 6;
+
+    expect(evaluateExitPolicy({ pnlPct: 9.5, peakPnlPct: 10, policy }).trailingStop).toBe(false);
+    expect(evaluateExitPolicy({ pnlPct: 9.4, peakPnlPct: 10, policy }).trailingStop).toBe(true);
+  });
+
   it("describes the policy without mutating it", () => {
     const policy = buildRiskPolicy({ marketCondition: "HOT" });
     const snapshot = describeRiskPolicy(policy);
 
     expect(snapshot.entry.hardBlockRugScore).toBe(policy.entry.hardBlockRugScore);
     expect(snapshot.exit.trailingTriggerPct).toBe(policy.exit.trailingTriggerPct);
+    expect(snapshot.exit.trailingDropMode).toBe("absolute");
     expect(snapshot.rug.learnedReviewRequired).toBe(true);
   });
 });

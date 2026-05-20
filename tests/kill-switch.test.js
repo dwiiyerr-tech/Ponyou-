@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
 import path from "path";
 import {
@@ -13,6 +13,7 @@ import {
 } from "../kill-switch.js";
 
 const FLAG_FILE = path.join(process.cwd(), "kill-switch.flag");
+const STATE_FILE = path.join(process.cwd(), "kill-switch-state.json");
 
 beforeEach(() => {
   _resetForTests();
@@ -20,6 +21,7 @@ beforeEach(() => {
 
 afterEach(() => {
   if (fs.existsSync(FLAG_FILE)) fs.unlinkSync(FLAG_FILE);
+  if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
 });
 
 describe("setSessionBaseline + reportBalance", () => {
@@ -122,5 +124,21 @@ describe("trip + reset + persistence", () => {
     // We can't easily do that with current helpers, so we just verify the
     // file → isKilled relationship.
     expect(isKilled()).toBe(true);
+  });
+
+  it("does not restore a persisted trip without a valid session baseline", async () => {
+    fs.writeFileSync(STATE_FILE, JSON.stringify({
+      sessionBaseline: null,
+      tripAt: "2026-05-20T00:00:00.000Z",
+      consecutiveErrors: 0,
+      savedAt: "2026-05-20T00:00:01.000Z",
+    }, null, 2));
+
+    vi.resetModules();
+    const restored = await import("../kill-switch.js");
+
+    expect(fs.existsSync(FLAG_FILE)).toBe(false);
+    expect(restored.isKilled()).toBe(false);
+    restored._resetForTests();
   });
 });

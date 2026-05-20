@@ -13,7 +13,7 @@ import { log } from "./logger.js";
 import { recordCounter } from "./metrics.js";
 
 // Thresholds
-const LIQUIDITY_REMOVE_THRESHOLD = 0.5;  // >50% liquidity removed = emergency
+const LARGE_TOKEN_REMOVAL = 1_000_000;  // >1M tokens removed in one tx = likely rug
 const PRICE_DROP_THRESHOLD_PCT = -30;    // -30% price drop in single event = emergency
 const SUSPICIOUS_SELL_CLUSTER = 5;       // N sells in rapid succession = warning
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
@@ -23,7 +23,7 @@ const WSOL_MINT = "So11111111111111111111111111111111111111112";
  *
  * @param {object} geyserStream  GeyserStream instance (from geyser.js)
  * @param {()=>object[]} getPositions  Fn returning current open positions array.
- *   Each position: { mint, entry_price, entry_liquidity_usd, ... }
+ *   Each position: { mint, entry_price, ... }
  * @param {object} callbacks
  *   - onEmergencyExit(mint, reason, detail)  Called when exit signal fires
  *   - onSuspiciousActivity(mint, reason, detail)  Called for softer warnings
@@ -74,9 +74,7 @@ export function attachExitMonitor(geyserStream, getPositions, {
       const isSellEvent = event.token_in === mint;
       const isLiquidityRemoval = event.token_out === WSOL_MINT
         && event.token_in === mint
-        && event.amount_in != null
-        && pos.entry_liquidity_usd != null
-        && event.amount_out != null;
+        && event.amount_in != null;
 
       if (isSellEvent) {
         const count = (sellCounts.get(mint) || 0) + 1;
@@ -96,28 +94,15 @@ export function attachExitMonitor(geyserStream, getPositions, {
 
       // Liquidity removal heuristic: large SOL outflow from a pool that holds our token.
       if (isLiquidityRemoval) {
-        // Rough liquidity removal ratio: token amount vs entry supply. Exact pool
-        // liquidity requires pool reserves/SOL price, which the parsed Geyser event
-        // intentionally does not carry.
         const tokenOut = Number(event.amount_in);
-        const entrySupply = Number(pos.entry_supply);
-        if (
-          Number.isFinite(tokenOut)
-          && tokenOut > 0
-          && Number.isFinite(entrySupply)
-          && entrySupply > 0
-        ) {
-          const supplyRatio = tokenOut / entrySupply;
-          if (supplyRatio > LIQUIDITY_REMOVE_THRESHOLD) {
-            recordCounter("geyser_exit_emergency");
-            const pct = (supplyRatio * 100).toFixed(1);
-            log("geyser_exit", `EMERGENCY: liquidity removal detected on ${mint.slice(0, 8)} - ${pct}% of supply moved`);
-            try {
-              onEmergencyExit(mint, "liquidity_removal", `${pct}% of token supply exited pool in single tx`);
-            } catch (e) {
-              recordCounter("geyser_exit_callback_error");
-              log("geyser_exit_error", `Emergency callback failed: ${e?.message || e}`);
-            }
+        if (Number.isFinite(tokenOut) && tokenOut > LARGE_TOKEN_REMOVAL) {
+          recordCounter("geyser_exit_emergency");
+          log("geyser_exit", `EMERGENCY: large token removal on ${mint.slice(0, 8)}: ${tokenOut.toLocaleString()} tokens`);
+          try {
+            onEmergencyExit(mint, "liquidity_removal", `${tokenOut.toLocaleString()} tokens removed in single tx`);
+          } catch (e) {
+            recordCounter("geyser_exit_callback_error");
+            log("geyser_exit_error", `Emergency callback failed: ${e?.message || e}`);
           }
         }
       }
