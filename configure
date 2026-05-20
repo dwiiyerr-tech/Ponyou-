@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-# Quick launcher untuk setup wizard
-node "$(dirname "$0")/setup.js"
