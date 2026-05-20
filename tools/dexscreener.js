@@ -10,6 +10,7 @@ import { recordSmartWalletSnapshot, summarizeSmartWalletHistory } from "../smart
 import { analyzeHolderStructure } from "../holder-memory.js";
 import { gatherRugSignals } from "./rug-signals.js";
 import { classifyNarrative, summarizeNarrative } from "./narratives.js";
+import { discoverBirdeyeTokens, enrichTokensWithBirdeye, isBirdeyeEnabled } from "./birdeye.js";
 
 const DS_BASE = "https://api.dexscreener.com";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -120,6 +121,39 @@ function mapPair(pair, boostAmount = 0, timeframe = "1h") {
 
 // ─── Discovery ────────────────────────────────────────────────
 
+function mergeTokenLists(primary = [], secondary = []) {
+  const tokenMap = new Map();
+  for (const token of primary) {
+    if (!token?.mint) continue;
+    tokenMap.set(token.mint, {
+      ...token,
+      data_sources: Array.from(new Set([...(token.data_sources || []), token.source || "dexscreener"])),
+    });
+  }
+  for (const token of secondary) {
+    if (!token?.mint) continue;
+    const existing = tokenMap.get(token.mint);
+    if (!existing) {
+      tokenMap.set(token.mint, {
+        ...token,
+        data_sources: Array.from(new Set([...(token.data_sources || []), "birdeye"])),
+      });
+      continue;
+    }
+    tokenMap.set(token.mint, {
+      ...existing,
+      price: existing.price || token.price,
+      mcap: existing.mcap || token.mcap,
+      liquidity: existing.liquidity || token.liquidity,
+      volume: Math.max(existing.volume || 0, token.volume || 0),
+      swaps: Math.max(existing.swaps || 0, token.swaps || 0),
+      birdeye: token.birdeye || existing.birdeye,
+      data_sources: Array.from(new Set([...(existing.data_sources || []), "birdeye"])),
+    });
+  }
+  return [...tokenMap.values()];
+}
+
 export async function discoverTokens({ timeframe = "1m", limit = 20 } = {}) {
   try {
     // Step 1: Get trending tokens (boosted) + latest new profiles on Solana
@@ -146,6 +180,7 @@ export async function discoverTokens({ timeframe = "1m", limit = 20 } = {}) {
 
     if (boostMap.size === 0) {
       log("discovery_error", "DexScreener: no tokens from boosts/profiles");
+      if (isBirdeyeEnabled()) return discoverBirdeyeTokens({ timeframe, limit });
       return { error: "No tokens found", tokens: [] };
     }
 
@@ -155,6 +190,7 @@ export async function discoverTokens({ timeframe = "1m", limit = 20 } = {}) {
     const pairs = (tokenData.pairs || []).filter(p => p.chainId === "solana");
 
     if (!pairs.length) {
+      if (isBirdeyeEnabled()) return discoverBirdeyeTokens({ timeframe, limit });
       return { error: "No pair data from DexScreener", tokens: [] };
     }
 
@@ -169,14 +205,25 @@ export async function discoverTokens({ timeframe = "1m", limit = 20 } = {}) {
       }
     }
 
-    const tokens = [...tokenMap.values()]
+    let tokens = [...tokenMap.values()]
       .sort((a, b) => (b.swaps || 0) - (a.swaps || 0))
       .slice(0, limit);
 
-    log("discovery", `DexScreener: found ${tokens.length} tokens`);
-    return { tokens, source: "dexscreener" };
+    if (isBirdeyeEnabled()) {
+      const [birdeyeDiscovery, enriched] = await Promise.all([
+        discoverBirdeyeTokens({ timeframe, limit }).catch(error => ({ error: error.message, tokens: [] })),
+        enrichTokensWithBirdeye(tokens).catch(() => tokens),
+      ]);
+      tokens = mergeTokenLists(enriched, birdeyeDiscovery.tokens || [])
+        .sort((a, b) => (b.swaps || 0) - (a.swaps || 0))
+        .slice(0, limit);
+    }
+
+    log("discovery", "DexScreener" + (isBirdeyeEnabled() ? " + Birdeye" : "") + ": found " + tokens.length + " tokens");
+    return { tokens, source: isBirdeyeEnabled() ? "dexscreener+birdeye" : "dexscreener" };
   } catch (error) {
-    log("discovery_error", `DexScreener discoverTokens: ${error.message}`);
+    log("discovery_error", "DexScreener discoverTokens: " + error.message);
+    if (isBirdeyeEnabled()) return discoverBirdeyeTokens({ timeframe, limit });
     return { error: error.message, tokens: [] };
   }
 }

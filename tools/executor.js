@@ -1,13 +1,13 @@
-import { 
-  getSolanaGasFee, 
-  discoverTokens, 
-  getTokenSecurityDetails, 
-  swapToken as gmgnSwap,
+import { getSolanaGasFee } from "./solana-rpc.js";
+import {
+  discoverTokens,
+  getTokenSecurityDetails,
   getSmartMoneyRank,
   getSmartMoneyInflow,
   getTrendingNarratives,
-  getTokenKlines
-} from "./gmgn.js";
+  getTokenKlines,
+} from "./dexscreener.js";
+import { swapToken as executeJupiterSwap } from "./jupiter.js";
 import { getWalletBalances } from "./wallet.js";
 import { scanRefundableTokenAccounts, closeRefundableTokenAccounts } from "../rent-refund.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons, recordRug, scoreRugRisk, getRugMemorySummary } from "../lessons.js";
@@ -114,13 +114,13 @@ function normalizeConfigValue(key, value) {
   return coerceFiniteNumber(value, key);
 }
 
-async function adaptiveGmgnSwap(args = {}) {
+async function adaptiveSwap(args = {}) {
   const tokenIn = args.token_in;
   const tokenOut = args.token_out;
   const amount = Number(args.amount || 0);
   const marketCondition = getMarketIntelligence().condition;
   if (args.wallet_address || !isMultiWalletEnabled() || !(amount > 0)) {
-    return gmgnSwap(args);
+    return executeJupiterSwap(args);
   }
 
   if (tokenIn === "SOL" && tokenOut && tokenOut !== "SOL") {
@@ -139,7 +139,7 @@ async function adaptiveGmgnSwap(args = {}) {
     if (plan.split && rankedWallets.length > 1) {
       const executions = [];
       for (const slot of rankedWallets) {
-        const result = await gmgnSwap({
+        const result = await executeJupiterSwap({
           ...args,
           amount: slot.amount_sol,
           wallet_address: slot.address,
@@ -162,7 +162,7 @@ async function adaptiveGmgnSwap(args = {}) {
     }
 
     const slot = rankedWallets[0];
-    return gmgnSwap({
+    return executeJupiterSwap({
       ...args,
       wallet_address: slot.address,
       wallet: getWalletByAddress(slot.address)?.keypair || null,
@@ -180,14 +180,14 @@ async function adaptiveGmgnSwap(args = {}) {
     });
     const slot = rankedWallets[0];
     if (!slot) return { success: false, error: `No wallet with open position for ${tokenIn}` };
-    return gmgnSwap({
+    return executeJupiterSwap({
       ...args,
       wallet_address: slot.address,
       wallet: getWalletByAddress(slot.address)?.keypair || null,
     });
   }
 
-  return gmgnSwap(args);
+  return executeJupiterSwap(args);
 }
 
 // Map tool names to implementations
@@ -195,7 +195,8 @@ const toolMap = {
   get_solana_gas_fee: getSolanaGasFee,
   discover_tokens: discoverTokens,
   get_token_security_details: getTokenSecurityDetails,
-  gmgn_swap: adaptiveGmgnSwap,
+  swap_token: adaptiveSwap,
+  jupiter_swap: adaptiveSwap,
   get_smart_money_rank: getSmartMoneyRank,
   get_smart_money_inflow: getSmartMoneyInflow,
   get_trending_narratives: getTrendingNarratives,
@@ -429,9 +430,10 @@ const toolMap = {
   },
 };
 
-const WRITE_TOOLS = new Set([
-  "gmgn_swap",
-]);
+const SWAP_TOOL_NAMES = new Set(["swap_token", "jupiter_swap"]);
+function isSwapTool(name) { return SWAP_TOOL_NAMES.has(name); }
+
+const WRITE_TOOLS = new Set(SWAP_TOOL_NAMES);
 const PROTECTED_TOOLS = new Set([
   ...WRITE_TOOLS,
   "self_update",
@@ -450,7 +452,7 @@ export async function executeTool(name, args) {
   }
 
   // Confirm-mode intercept: park BUYs as pending intents instead of executing.
-  if (name === "gmgn_swap") {
+  if (isSwapTool(name)) {
     const parked = await maybeParkAsConfirmIntent(args);
     if (parked) {
       logAction({ tool: name, args, result: parked, duration_ms: Date.now() - startTime, success: true });
@@ -460,7 +462,7 @@ export async function executeTool(name, args) {
 
   // Inject active wallet keypair so Jupiter/Jito use the correct signing key
   let callArgs = args;
-  if (name === "gmgn_swap") {
+  if (isSwapTool(name)) {
     const activeWallet = getActiveWallet();
     if (activeWallet?.keypair) callArgs = { ...args, wallet: activeWallet.keypair };
   }
@@ -478,12 +480,12 @@ export async function executeTool(name, args) {
       success,
     });
 
-    if (name === "gmgn_swap" && !success) {
+    if (isSwapTool(name) && !success) {
       const activeWallet = getActiveWallet();
       if (activeWallet?.address) markWalletError(activeWallet.address);
     }
 
-    if (name === "gmgn_swap") {
+    if (isSwapTool(name)) {
       recordExecutionQuality({
         walletAddress: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
         provider: result?.execution_provider || "auto",
@@ -496,7 +498,7 @@ export async function executeTool(name, args) {
       });
     }
 
-    if (success && name === "gmgn_swap") {
+    if (success && isSwapTool(name)) {
       notifySwap({
         inputSymbol: args.token_in === "SOL" ? "SOL" : args.token_in?.slice(0, 8),
         outputSymbol: args.token_out === "SOL" ? "SOL" : args.token_out?.slice(0, 8),
@@ -510,7 +512,7 @@ export async function executeTool(name, args) {
   } catch (error) {
     const duration = Date.now() - startTime;
     logAction({ tool: name, args, error: error.message, duration_ms: duration, success: false });
-    if (name === "gmgn_swap") {
+    if (isSwapTool(name)) {
       const activeWallet = getActiveWallet();
       if (activeWallet?.address) markWalletError(activeWallet.address);
       recordExecutionQuality({
@@ -569,7 +571,8 @@ async function maybeParkAsConfirmIntent(args) {
 
 async function runSafetyChecks(name, args) {
   switch (name) {
-    case "gmgn_swap": {
+    case "swap_token":
+    case "jupiter_swap": {
       if (process.env.DRY_RUN !== "true") {
         const balance = await getWalletBalances();
         const gasReserve = config.management.gasReserve;
