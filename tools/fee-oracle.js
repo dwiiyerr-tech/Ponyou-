@@ -4,7 +4,27 @@ function percentile(sortedAsc, p) {
   return sortedAsc[Math.min(sortedAsc.length - 1, idx)];
 }
 
-export function createFeeOracle({ rpcQuorum, config, log = () => {} }) {
+export async function getHeliusPriorityFee(rpcUrl, serializedTxBase58) {
+  if (!rpcUrl) return null;
+  try {
+    const params = serializedTxBase58
+      ? [{ transaction: serializedTxBase58, options: { priorityLevel: "High" } }]
+      : [{ options: { priorityLevel: "High" } }];
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "1", method: "getPriorityFeeEstimate", params }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const fee = data?.result?.priorityFeeEstimate;
+    return Number.isFinite(fee) ? fee : null;
+  } catch {
+    return null;
+  }
+}
+
+export function createFeeOracle({ rpcQuorum, config, heliusRpcUrl, log = () => {} }) {
   const cfg = config.feeOracle || config.executionEdge?.feeOracle || config;
   let cache = null;
   let timer = null;
@@ -12,9 +32,12 @@ export function createFeeOracle({ rpcQuorum, config, log = () => {} }) {
 
   async function refresh() {
     try {
-      const result = await rpcQuorum.quorumCall("getRecentPrioritizationFees");
+      const [result, heliusFee] = await Promise.all([
+        rpcQuorum.quorumCall("getRecentPrioritizationFees"),
+        getHeliusPriorityFee(heliusRpcUrl),
+      ]);
       const fees = (result || []).map(f => f.prioritizationFee).filter(n => Number.isFinite(n)).sort((a, b) => a - b);
-      cache = { samples: fees, sampled_at: Date.now() };
+      cache = { samples: fees, heliusFee: heliusFee ?? null, sampled_at: Date.now() };
     } catch (e) {
       log("fee_oracle", `sample failed: ${e.message}`);
     }
@@ -26,6 +49,7 @@ export function createFeeOracle({ rpcQuorum, config, log = () => {} }) {
   }
 
   function getPriorityFeeMicroLamports(p = 75) {
+    if (cache?.heliusFee != null) return Math.min(cache.heliusFee, cfg.maxPriorityFeeMicroLamports);
     const s = _getSamples();
     const v = percentile(s, p);
     return Math.min(v, cfg.maxPriorityFeeMicroLamports);
@@ -46,6 +70,7 @@ export function createFeeOracle({ rpcQuorum, config, log = () => {} }) {
       fee_p50: percentile(s, 50),
       fee_p75: percentile(s, 75),
       fee_p95: percentile(s, 95),
+      helius_fee: cache?.heliusFee ?? null,
       sampled_at: cache?.sampled_at || 0,
       tip_recommendation: { normal: getTip("normal"), urgent: getTip("urgent"), critical: getTip("critical") },
     };
