@@ -295,6 +295,37 @@ export async function checkJupiterQuote({ mint, amountSol = 0.01 }) {
       route_plan:  data.routePlan?.length,
     };
   } catch (e) {
-    return { tradeable: false, error: e.message };
+    return { tradeable: false, error: e.message, fetch_failed: true };
+  }
+}
+
+function formatPct(value) {
+  if (!Number.isFinite(value)) return "unknown";
+  if (Number.isInteger(value)) return String(value);
+  return value.toFixed(2).replace(/\.?0+$/, "");
+}
+
+/**
+ * Fail-open pre-swap guard for Jupiter quote availability and price impact.
+ */
+export async function preSwapGuard({ mint, amountSol = 0.01 }) {
+  try {
+    const quote = await checkJupiterQuote({ mint, amountSol });
+    if (quote.fetch_failed) {
+      return { allowed: true, warn: "quote_check_failed" };
+    }
+
+    if (!quote.tradeable) {
+      return { allowed: false, reason: `not_tradeable: ${quote.error || "unknown"}` };
+    }
+
+    const priceImpactPct = Number(quote.price_impact);
+    if (Number.isFinite(priceImpactPct) && priceImpactPct > 15) {
+      return { allowed: false, reason: `price_impact_too_high: ${formatPct(priceImpactPct)}%` };
+    }
+
+    return { allowed: true };
+  } catch {
+    return { allowed: true, warn: "quote_check_failed" };
   }
 }
