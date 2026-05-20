@@ -12,7 +12,7 @@ import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { addLesson, recordRug } from "./lessons.js";
 import { buildStructuredOutputBlock } from "./structured-output.js";
-import { getTokenMarketInfo } from "./tools/gmgn.js";
+import { getTokenMarketInfo } from "./tools/dexscreener.js";
 import { getTokenSecurityDetails } from "./tools/dexscreener.js";
 
 // Severity thresholds — drop% relative to initial observation

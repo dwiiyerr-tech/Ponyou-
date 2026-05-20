@@ -5,118 +5,65 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 ROOT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 cd "${ROOT_DIR}"
 
-cmd="${1:-web}"
+cmd="${1:-agent}"
 sub="${2:-}"
 
 print_help() {
   cat <<'HELP'
-Ponyou command surface
+Ponyou agent command surface
 
 Usage:
-  ponyou                Open web dashboard
-  ponyou status         Quick status snapshot
-  ponyou agent          Start live agent
-  ponyou demo           Start demo agent
-  ponyou web            Start web dashboard server
-  ponyou setup          Open setup wizard
-  ponyou web24          Start 24x7 web dashboard supervisor
-  ponyou agent24        Start 24x7 live agent supervisor
-  ponyou dashboard      Open terminal dashboard
-  ponyou monitor        Open terminal monitor
-  ponyou config         Open advanced config UI
-  ponyou doctor         Run readiness checks
-  ponyou doctor live    Run live readiness checks
-  ponyou help           Show this help
+  ponyou             Start live agent
+  ponyou agent       Start live agent
+  ponyou demo        Start demo agent
+  ponyou status      Quick status snapshot
+  ponyou agent24     Start 24x7 live agent supervisor
+  ponyou doctor      Run demo readiness checks
+  ponyou doctor live Run live readiness checks
+  ponyou help        Show this help
 HELP
 }
 
-open_browser() {
-  local url="$1"
-  url="${url:-http://localhost:3001}"
-  if [ "${PONYOU_NO_BROWSER:-0}" = "1" ]; then
-    return 0
-  fi
-
-  if command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "${url}" >/dev/null 2>&1 &
-    return 0
-  fi
-
-  if command -v open >/dev/null 2>&1; then
-    open "${url}" >/dev/null 2>&1 &
-    return 0
-  fi
-
-  return 0
-}
-
-start_web_dashboard() {
-  local url="${PONYOU_WEB_URL:-http://localhost:3001}"
-  if [ "${PONYOU_NO_BROWSER:-0}" != "1" ]; then
-    ( sleep "${PONYOU_BROWSER_DELAY:-2}"; open_browser "${url}" ) &
-  fi
-  exec npm run web
-}
-
-
 show_status() {
   node --input-type=module <<'NODE'
-import fs from 'fs';
+import fs from "fs";
 
 function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
 }
 
-const config = readJson('user-config.json', {});
-const state = readJson('state.json', { positions: {} });
-const perf = readJson('performance.json', { trades: [] });
+const config = readJson("user-config.json", {});
+const state = readJson("state.json", { positions: {} });
+const perf = readJson("performance.json", { trades: [] });
 const positions = Object.keys(state.positions || {}).length;
 const trades = perf.trades || [];
 const wins = trades.filter((t) => t.win).length;
-const winRate = trades.length ? ((wins / trades.length) * 100).toFixed(1) : '0.0';
-const mode = config.executionMode || process.env.EXECUTION_MODE || 'live';
-const provider = config.llmProvider || process.env.LLM_PROVIDER || (process.env.LLM_BASE_URL ? 'local' : 'openrouter');
-const strategy = config.strategy || config.activeStrategy || 'scalping';
-console.log('PONYOU STATUS');
-console.log(`Mode: ${String(mode).toUpperCase()}`);
-console.log(`Strategy: ${strategy}`);
-console.log(`Open Positions: ${positions}`);
-console.log(`LLM Provider: ${provider}`);
-console.log(`Configured Capital: $${config.pilotCapitalUsd || '?'}`);
-console.log(`Trades: ${trades.length} | Win Rate: ${winRate}%`);
+const winRate = trades.length ? ((wins / trades.length) * 100).toFixed(1) : "0.0";
+const mode = config.executionMode || process.env.EXECUTION_MODE || "live";
+const provider = config.llmProvider || process.env.LLM_PROVIDER || (process.env.LLM_BASE_URL ? "local" : "openrouter");
+const strategy = config.strategy || config.activeStrategy || "scalping";
+console.log("PONYOU STATUS");
+console.log("Mode: " + String(mode).toUpperCase());
+console.log("Strategy: " + strategy);
+console.log("Open Positions: " + positions);
+console.log("LLM Provider: " + provider);
+console.log("Configured Capital: $" + (config.pilotCapitalUsd || "?"));
+console.log("Trades: " + trades.length + " | Win Rate: " + winRate + "%");
 NODE
 }
 
 case "${cmd}" in
+  agent|start|live)
+    exec npm start
+    ;;
   status)
     show_status
-    ;;
-  agent)
-    exec npm start
     ;;
   demo)
     exec npm run dev
     ;;
-  web)
-    start_web_dashboard
-    ;;
-  setup)
-    PONYOU_WEB_URL="${PONYOU_WEB_URL:-http://localhost:3001/?view=setup}" start_web_dashboard
-    ;;
-  web24)
-    exec npm run web:24x7
-    ;;
   agent24)
     exec npm run agent:24x7
-    ;;
-  dashboard)
-    exec node ponyou-dashboard.js
-    ;;
-  monitor)
-    exec node ponyou-monitor.js
-    ;;
-  config)
-    exec node ponyou-cli.js
     ;;
   doctor)
     if [ "${sub}" = "live" ]; then
@@ -128,7 +75,7 @@ case "${cmd}" in
     print_help
     ;;
   *)
-    printf 'Unknown command: %s\n\n' "${cmd}" >&2
+    printf "Unknown command: %s\n\n" "${cmd}" >&2
     print_help >&2
     exit 1
     ;;

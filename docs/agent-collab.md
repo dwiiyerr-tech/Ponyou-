@@ -357,7 +357,7 @@ Fungsi:
   - cetak prompt worker saja tanpa JSON tambahan
   - paling hemat token untuk Claude sebagai controller
 - `collab:start`
-  - startup dashboard ringkas untuk Claude
+  - startup summary ringkas untuk Claude
   - menampilkan status global, next task Claude, dan next task worker bila ada
 - `collab:triage`
   - mencari ide upgrade Ponyou dari experiment, semantic memory, dan task yang macet

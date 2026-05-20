@@ -5,12 +5,8 @@
   "description": "AI Agent for automated memecoin trading on Solana",
   "main": "index.js",
   "scripts": {
-    "setup": "node setup.js",
-    "quick-setup": "npm install && [ -f .env ] || cp .env.example .env && [ -f user-config.json ] || echo '{}' > user-config.json",
     "start": "node --disable-warning=DEP0040 index.js",
     "dev": "EXECUTION_MODE=demo node --disable-warning=DEP0040 index.js",
-    "ui": "node ponyou-launcher.js",
-    "dashboard": "node ponyou-dashboard.js",
     "dry": "EXECUTION_MODE=demo node dry-run.mjs",
     "demo": "EXECUTION_MODE=demo node dry-run.mjs",
     "readiness": "node readiness-cli.js",
@@ -27,12 +23,8 @@
     "collab:triage": "node infra/agent-collab/collab-triage.js",
     "collab:submit": "node infra/agent-collab/collab-submit.js",
     "backtest": "node tools/backtest-cli.js",
-    "web": "cd dashboard && node server.js",
-    "web:dev": "cd dashboard && npm run dev",
-    "web:build": "cd dashboard && npm run build",
     "agent:24x7": "bash ./ops/run-24x7.sh live",
-    "agent:24x7:demo": "bash ./ops/run-24x7.sh demo",
-    "web:24x7": "bash ./ops/run-dashboard-24x7.sh"
+    "agent:24x7:demo": "bash ./ops/run-24x7.sh demo"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

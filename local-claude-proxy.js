@@ -117,10 +117,10 @@ function handleScreeningCycle(messages, tools) {
     return buildResponse("Tidak ada kandidat valid ditemukan setelah evaluasi.");
   }
 
-  // In DRY_RUN we can fire a swap call — it will be intercepted
-  const hasTool = tools?.some(t => t.function?.name === "gmgn_swap");
-  if (hasTool) {
-    return buildResponse(null, buildToolCall("gmgn_swap", {
+  // In DRY_RUN we can fire a swap call — it will be intercepted.
+  const swapTool = tools?.find(t => ["swap_token", "jupiter_swap", "gmgn_swap"].includes(t.function?.name))?.function?.name;
+  if (swapTool) {
+    return buildResponse(null, buildToolCall(swapTool, {
       token_in: "SOL",
       token_out: best.mint,
       amount: best.volatility_adjusted_size || 0.5,

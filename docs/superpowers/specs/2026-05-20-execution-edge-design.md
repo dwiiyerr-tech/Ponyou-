@@ -17,7 +17,7 @@ Land swap transactions reliably and quickly via Jito bundles, with adaptive fee 
 - Multi-region Jito failover (single configured region)
 - Cross-DEX execution routing (Jupiter handles aggregation)
 - Transaction replay protection beyond Jito's built-in
-- Fee accounting dashboard (telemetry returned in result, no UI)
+- Fee accounting telemetry (returned in execution result, no UI)
 
 ## Architecture
 

@@ -11,8 +11,8 @@ import {
 } from "./llm-provider.js";
 import { compressToolOutput } from "./compressor.js";
 
-const MANAGER_TOOLS  = new Set(["gmgn_swap", "get_token_info", "get_token_security_details", "get_wallet_balance"]);
-const SCREENER_TOOLS = new Set(["gmgn_swap", "discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info", "get_wallet_balance"]);
+const MANAGER_TOOLS  = new Set(["swap_token", "get_token_info", "get_token_security_details", "get_wallet_balance"]);
+const SCREENER_TOOLS = new Set(["swap_token", "discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info", "get_wallet_balance"]);
 const GENERAL_INTENT_ONLY_TOOLS = new Set([
   "self_update",
   "update_config",
@@ -24,9 +24,9 @@ const GENERAL_INTENT_ONLY_TOOLS = new Set([
 
 // Intent → tool subsets for GENERAL role
 const INTENT_TOOLS = {
-  deploy:      new Set(["gmgn_swap", "discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info", "get_wallet_balance"]),
-  close:       new Set(["gmgn_swap", "get_wallet_balance", "get_token_info"]),
-  swap:        new Set(["gmgn_swap", "get_wallet_balance"]),
+  deploy:      new Set(["swap_token", "discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info", "get_wallet_balance"]),
+  close:       new Set(["swap_token", "get_wallet_balance", "get_token_info"]),
+  swap:        new Set(["swap_token", "get_wallet_balance"]),
   config:      new Set(["update_config"]),
   blocklist:   new Set(["add_to_blacklist", "block_deployer"]),
   selfupdate:  new Set(["self_update"]),
@@ -168,7 +168,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
 
   // Tools the agent must call at most once per agentLoop invocation.
   // Mostly money-spending actions where retry == double-execution risk.
-  const ONCE_PER_SESSION = new Set(["gmgn_swap"]);
+  const ONCE_PER_SESSION = new Set(["swap_token"]);
   const firedOnce = new Set();
   const mustUseRealTool = shouldRequireRealToolUse(goal, agentType, interactive);
   let sawToolCall = false;

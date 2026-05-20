@@ -71,7 +71,7 @@ Ts:${new Date().toISOString()}`;
   // ─── SCREENER ─────────────────────────────────────────────
   if (agentType === "SCREENER") {
     const screenCfg = `minH:${s.minHolders} mcap:${s.minMcap}-${s.maxMcap} vol:${s.minVolume} bundl:<${s.maxBundlePct}% top10:<${s.maxTop10Pct}%`;
-    return `You are Ponyou SCREENER. Pick the BEST candidate and call gmgn_swap.
+    return `You are Ponyou SCREENER. Pick the BEST candidate and call swap_token.
 ${contextLines}
 ScreenCfg:${screenCfg}
 ENTRY_RULES: rugScore<60, no blacklisted dev/token, top10<70%, no freeze/mint authority, not bot-pumped. Return JSON only.
