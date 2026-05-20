@@ -79,3 +79,54 @@ export function detectHolderDump({ snapshotTotal, events, windowMs, nowMs, thres
   if (thresholds.low !== null && deltaPct <= thresholds.low) return SEVERITY.LOW;
   return SEVERITY.NONE;
 }
+
+export function createRugMonitor({ geyserStream, config, callbacks, fetchers, log = () => {} }) {
+  const positions = new Map();
+  let shuttingDown = false;
+
+  function _newState(meta) {
+    return {
+      meta,
+      geyser_subs: [],
+      polling_handle: null,
+      holder_events: [],
+      last_severity_emitted: { dev_sell: SEVERITY.NONE, lp: SEVERITY.NONE, authority: SEVERITY.NONE, holders: SEVERITY.NONE },
+      shutdown: false,
+    };
+  }
+
+  function attachPosition(positionKey, meta) {
+    if (shuttingDown) return;
+    if (positions.has(positionKey)) {
+      const existing = positions.get(positionKey);
+      existing.meta = { ...existing.meta, ...meta };
+      return;
+    }
+    const state = _newState(meta);
+    positions.set(positionKey, state);
+  }
+
+  function detachPosition(positionKey) {
+    const state = positions.get(positionKey);
+    if (!state) return;
+    if (state.polling_handle) clearTimeout(state.polling_handle);
+    for (const sub of state.geyser_subs) {
+      try { geyserStream?.unsubscribe?.(sub); } catch (_) {}
+    }
+    state.shutdown = true;
+    positions.delete(positionKey);
+  }
+
+  function getMonitoredPositions() {
+    return Array.from(positions.keys()).map(k => ({ position_key: k, meta: positions.get(k).meta }));
+  }
+
+  function shutdown() {
+    shuttingDown = true;
+    for (const key of Array.from(positions.keys())) {
+      detachPosition(key);
+    }
+  }
+
+  return { attachPosition, detachPosition, getMonitoredPositions, shutdown };
+}
