@@ -307,7 +307,7 @@ export const config = {
 
 **Tool categories**:
 - **Discovery**: `discover_tokens`, `get_token_info`, `get_token_security_details`
-- **Execution**: `gmgn_swap`, `execute_trade`
+- **Execution**: `swap_token`, `execute_trade`
 - **State**: `get_wallet_balance`, `get_token_holders`
 - **Admin**: `add_to_blacklist`, `block_deployer`, `self_update`
 - **Info**: `get_plan_summary`, `get_market_intelligence`
@@ -317,7 +317,7 @@ export const config = {
 
 ---
 
-### **tools/gmgn.js** — The Blockchain Interface
+### **tools/dexscreener.js / tools/jupiter.js** — The Blockchain Interface
 **Purpose**: All blockchain interactions (discovery, swap, security)
 **Endpoints hit**:
 - GMGN discovery (trending tokens)
@@ -420,8 +420,8 @@ pending → executed   (user /yes, swap succeeded)
 - `gcIntents(keep_hours)` → garbage collect old resolved entries
 
 **Wiring**:
-- `tools/executor.js` → `maybeParkAsConfirmIntent(args)` intercepts `gmgn_swap` for SOL→token buys
-- `index.js` → `executePendingIntent(id)` runs gmgnSwap + trackPosition when `/yes <id>` fires
+- `tools/executor.js` → `maybeParkAsConfirmIntent(args)` intercepts `swap_token` for SOL→token buys
+- `index.js` → `executePendingIntent(id)` runs swapToken + trackPosition when `/yes <id>` fires
 
 ---
 
@@ -528,12 +528,12 @@ screeningCron
   │   ├─ getLearningModeStatus() [learning-mode.js]
   │   └─ isVaultDue() [vault.js]
   │
-  ├─ discoverTokens(criteria) [tools/gmgn.js]
+  ├─ discoverTokens(criteria) [tools/dexscreener.js / tools/jupiter.js]
   │   └─ Filter by: timeframe, category, age
   │
   ├─ filterScreening(candidates)
   │   ├─ Check TVL, volume, holders, mcap [config.js]
-  │   ├─ Fetch security details [tools/gmgn.js]
+  │   ├─ Fetch security details [tools/dexscreener.js / tools/jupiter.js]
   │   └─ Score rug risk [lessons.js]
   │
   ├─ recordMarketSnapshot() [market-intelligence.js]
@@ -550,7 +550,7 @@ screeningCron
   │   └─ Return decision (DEPLOY or SKIP)
   │
   ├─ If DEPLOY:
-  │   ├─ gmgnSwap() [tools/gmgn.js]
+  │   ├─ swapToken() [tools/dexscreener.js / tools/jupiter.js]
   │   ├─ trackPosition() [state.js]
   │   ├─ recordTrade() [trading-plan.js]
   │   └─ sendMessage() [telegram.js]
@@ -575,7 +575,7 @@ managementCron
   │   │   └─ checkROI()
   │   │
   │   ├─ If CLOSE signal:
-  │   │   ├─ gmgnSwap() (exit) [tools/gmgn.js]
+  │   │   ├─ swapToken() (exit) [tools/dexscreener.js / tools/jupiter.js]
   │   │   ├─ recordClose() [state.js]
   │   │   ├─ recordTradeOutcome() [lessons.js]
   │   │   └─ sendMessage() [telegram.js]

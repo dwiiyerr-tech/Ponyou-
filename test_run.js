@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { discoverTokens } from "./tools/gmgn.js";
+import { discoverTokens } from "./tools/dexscreener.js";
 import { runScreeningCycle } from "./index.js";
 
 async function test() {

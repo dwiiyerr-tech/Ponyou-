@@ -58,7 +58,7 @@ export function publishAutomationState(state = {}) {
   return next;
 }
 
-export function issueAutomationCommand({ action = "set_enabled", enabled = null, source = "dashboard" } = {}) {
+export function issueAutomationCommand({ action = "set_enabled", enabled = null, source = "agent" } = {}) {
   const cmd = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     action,
@@ -101,7 +101,7 @@ export function publishSupervisorState(state = {}) {
   return next;
 }
 
-export function issueSupervisorCommand({ action = "set_power", enabled = null, source = "dashboard" } = {}) {
+export function issueSupervisorCommand({ action = "set_power", enabled = null, source = "agent" } = {}) {
   const cmd = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     action,

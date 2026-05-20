@@ -1,7 +1,7 @@
 /**
  * Pending Trade Intents — used by Confirm mode.
  *
- * When confirm mode is active, a buy attempt (gmgn_swap SOL → token)
+ * When confirm mode is active, a buy attempt (swap_token SOL → token)
  * is parked here instead of executing. A Telegram /yes <id> or /no <id>
  * later approves or rejects the intent.
  *

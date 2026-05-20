@@ -1,6 +1,6 @@
 /**
  * LLM Manager - Utility untuk manage provider configuration
- * Digunakan oleh setup-llm.js dan dapat digunakan secara programmatic
+ * Digunakan oleh runtime agent untuk konfigurasi provider LLM
  */
 
 import fs from "fs";

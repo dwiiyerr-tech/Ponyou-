@@ -501,7 +501,7 @@ Semua state disimpan dalam file JSON:
    ├─ WALLET_PRIVATE_KEY
    ├─ RPC_URL
    ├─ OPENROUTER_API_KEY
-   ├─ HELIUS_API_KEY, GMGN_ROUTE_KEY
+   ├─ HELIUS_API_KEY, BIRDEYE_API_KEY
    └─ TELEGRAM credentials
 ```
 
@@ -645,7 +645,7 @@ Aktifkan: `user-config.json { "confirmMode": true }` atau `CONFIRM_MODE=true`.
 ```
 SCREENING CYCLE
         ↓
-LLM picks candidate → invokes gmgn_swap(token_in:"SOL", token_out:"XXX")
+LLM picks candidate → invokes swap_token(token_in:"SOL", token_out:"XXX")
         ↓
 executor.js → maybeParkAsConfirmIntent(args)     ← intercept here
         ├─ confirmMode === true?           YES
@@ -675,7 +675,7 @@ USER (Telegram): /yes 3
         ↓
 executePendingIntent(3)           [index.js]
         ├─ getIntent(3) → check status="pending" & not expired
-        ├─ gmgnSwap(intent.args)  ← actual swap
+        ├─ swapToken(intent.args)  ← actual swap
         ├─ getTokenInfo() + getWalletBalances()  ← resolve symbol + price
         ├─ trackPosition({ position, pool_name, amount_sol, initial_value_usd })
         ├─ recordTrade(null)
@@ -752,4 +752,4 @@ SCENARIO: Daily profit target hit (25%)
 7. **Vault (7d)** → Transfer profit to savings
 8. **Loop** → Back to idle, tunggu next cron
 
-Semua atom bisa di-config via `./configure` wizard! 🎉
+Konfigurasi atom sekarang dikelola langsung lewat file runtime agent.

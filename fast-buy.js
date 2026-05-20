@@ -5,7 +5,7 @@
  * Design: this is a pre-LLM lane in the screening cycle, NOT a separate cron.
  * The screening cycle gathers candidates as usual, then for each one runs
  * shouldFastBuy(). If a candidate clears the deterministic gate it gets
- * deployed immediately via executeFastBuy() and removed from the LLM pool.
+ * deployed immediately via executeFastBuy() through Jupiter and removed from the LLM pool.
  * Remaining candidates fall through to the LLM for nuanced judgment.
  *
  * Limits:
@@ -17,7 +17,7 @@
  *  - Disabled by default. Opt in with `fastTrack.enabled: true`.
  */
 
-import { swapToken } from "./tools/gmgn.js";
+import { swapToken } from "./tools/jupiter.js";
 import { trackPosition } from "./state.js";
 import { recordSwapOutcome } from "./kill-switch.js";
 import {

@@ -10,7 +10,7 @@ Ponyou is a memecoin-focused trading agent. It runs continuous screening and man
 
 - **Autonomous Memecoin Screening** — Scans for new and trending tokens with high organic engagement and smart money backing.
 - **Position Management** — Monitors PnL and exits based on take-profit/stop-loss or trend changes.
-- **Solana Integration** — Works with GMGN (swaps) and OKX (risk signals).
+- **Solana Integration** — Uses Jupiter for execution, DexScreener/Birdeye for market data, and Helius/RPC/Geyser for verification.
 - **Rug Protection** — Integrated audit signals and blacklist management.
 - **Interactive REPL** — Control the agent and chat via terminal or Telegram.
 - **Multi-Strategy Presets (v4)** — Switch between `scalping`, `sniper`, `dip_buy`, `smart_money`, `degen` live via Telegram `/strategy <id>`. Each preset ships its own filter gates, ROI table, stop-loss, trailing & partial-TP rules.
@@ -31,6 +31,8 @@ Ponyou is a memecoin-focused trading agent. It runs continuous screening and man
    # - WALLET_PRIVATE_KEY
    # - RPC_URL
    # - OPENROUTER_API_KEY
+   # - HELIUS_API_KEY
+   # - BIRDEYE_API_KEY (optional market-data enrichment)
    ```
 
 3. **Configure Strategy**
@@ -42,11 +44,9 @@ Ponyou is a memecoin-focused trading agent. It runs continuous screening and man
 ## Running
 
 ```bash
-./ponyou             # Open web dashboard like Hermes
-./ponyou setup       # Open Hermes-style setup wizard
-./ponyou web         # Web dashboard
-./ponyou agent       # Live agent
-./ponyou doctor live # Live readiness / doctor
+./ponyou             # Live agent
+./ponyou demo        # Demo agent
+./ponyou doctor live # Live readiness check
 ```
 
 You can also still use:
@@ -61,21 +61,20 @@ npm start     # Live trading mode
 ```bash
 npm run agent:24x7        # Live mode with readiness check + auto-restart
 npm run agent:24x7:demo   # Demo mode with readiness check + auto-restart
-npm run web:24x7          # Dashboard web server with build + auto-restart
 ```
 
 Supervisor logs go to `logs/supervisor/`.
 
-For boot-time startup on Linux `systemd`, use the templates in `ops/ponyou-agent.service.example` and `ops/ponyou-dashboard.service.example`.
+For boot-time startup on Linux `systemd`, use the template in `ops/ponyou-agent.service.example`.
 
 ## Commands
 
-### CLI / Telegram (general)
+### Telegram
 - `/status` — Wallet balance + plan summary
 - `/pnl` — Recent trade history table
-- `/screen` — Refresh top token candidates (CLI only)
-- `/close <n>` — Close a specific position (CLI only)
-- `/stop` — Graceful shutdown (CLI only)
+- `/screen` — Refresh top token candidates
+- `/close <n>` — Close a specific position
+- `/stop` — Graceful shutdown
 
 ### v4 — Strategy & Confirm-mode (Telegram)
 - `/menu` — Snapshot: active strategy, plan, pending intents, confirm state

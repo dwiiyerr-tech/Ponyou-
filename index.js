@@ -5,7 +5,9 @@ import { agentLoop } from "./agent.js";
 import AgentRouter from "./agent-router.js";
 import { log } from "./logger.js";
 import { getWalletBalances } from "./tools/wallet.js";
-import { discoverTokens, getSolanaGasFee, swapToken as gmgnSwap, getTokenSecurityDetails, getTokenKlines } from "./tools/gmgn.js";
+import { getSolanaGasFee } from "./tools/solana-rpc.js";
+import { discoverTokens, getTokenSecurityDetails, getTokenKlines } from "./tools/dexscreener.js";
+import { swapToken } from "./tools/jupiter.js";
 import { config, computeDeployAmount, computeVolatilityAdjustedSize } from "./config.js";
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
@@ -561,7 +563,7 @@ async function executePendingIntent(id) {
   let result;
   const swapStartedAt = Date.now();
   try {
-    result = await gmgnSwap({ ...args, executionContext: { source: "pending-intent", approvedIntent: true } });
+    result = await swapToken({ ...args, executionContext: { source: "pending-intent", approvedIntent: true } });
   } catch (e) {
     consumeIntent(id, "failed", { error: e.message });
     recordSwapOutcome({ success: false });
@@ -622,7 +624,7 @@ async function executePendingIntent(id) {
     const walletAddress = exec.wallet_address || result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null;
     await trackPosition({
       position: args.token_out,
-      pool: "gmgn",
+      pool: "jupiter",
       pool_name: symbol,
       amount_sol: exec.amount || 0,
       initial_value_usd: (exec.amount || 0) * solPriceUsd,
@@ -1072,7 +1074,7 @@ async function checkDeterministicExits(tokens) {
       const sellAmount = token.balance * (partial.sell_pct / 100);
       log("strategy", `PARTIAL TP: ${token.symbol} — ${partial.reason}`);
       const partialStartAt = Date.now();
-      const partialRes = await gmgnSwap({
+      const partialRes = await swapToken({
         token_in: token.mint, token_out: "SOL",
         amount: sellAmount, slippage: 1.0,
         wallet: token.wallet_address ? getWalletByAddress(token.wallet_address)?.keypair || null : null,
@@ -1155,7 +1157,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       log("strategy", `EXIT: ${exit.symbol} — ${exit.reason}`);
       const tokenData = tokens.find(t => (t.position_key || t.mint) === (exit.position_key || exit.mint));
       const exitStartAt = Date.now();
-      const res = await gmgnSwap({
+      const res = await swapToken({
         token_in: exit.mint, token_out: "SOL",
         amount: tokenData?.balance, slippage: 1.0,
         wallet: exit.wallet_address ? getWalletByAddress(exit.wallet_address)?.keypair || null : null,
@@ -1327,10 +1329,10 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
         onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
         onToolFinish: async ({ name, result }) => {
           await liveMessage?.toolFinish(name, result, !result?.error);
-          if (name === "gmgn_swap") {
+          if (name === "swap_token") {
             recordSwapOutcome({ success: !!(result?.success || result?.dry_run) });
           }
-          if (name === "gmgn_swap" && (result.success || result.dry_run)) {
+          if (name === "swap_token" && (result.success || result.dry_run)) {
             const tokenOut = result.token_out || result.would_swap?.token_out;
             const tokenIn = result.token_in || result.would_swap?.token_in;
             const walletAddress = result.wallet_address || result.would_swap?.wallet_address || null;
@@ -1739,16 +1741,16 @@ WORKFLOW KEPUTUSAN HATI-HATI:
 4. Jangan override \`Kelly\` negatif. Jika \`kelly.should_skip=true\`, jangan buy.
 5. Prioritaskan coin dengan conviction yang dibangun dari observasi berulang, bukan FOMO snapshot.
 
-Pilih yang TERBAIK dan lakukan gmgn_swap hanya jika edge jelas.
+Pilih yang TERBAIK dan lakukan swap_token hanya jika edge jelas.
 ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
       `, config.llm.screenerMaxSteps, [], "SCREENER", config.llm.screeningModel, 2048, {
         onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
         onToolFinish: async ({ name, result }) => {
           await liveMessage?.toolFinish(name, result, !result?.error);
-          if (name === "gmgn_swap") {
+          if (name === "swap_token") {
             recordSwapOutcome({ success: !!(result?.success || result?.dry_run) });
           }
-          if (name === "gmgn_swap" && (result.success || result.dry_run)) {
+          if (name === "swap_token" && (result.success || result.dry_run)) {
             const token = passingCandidates.find(c =>
               c.mint === result.token_out || c.mint === result.would_swap?.token_out
             );
@@ -1762,7 +1764,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
               for (const exec of executions) {
                 await trackPosition({
                   position: token.mint,
-                  pool: "gmgn",
+                  pool: "jupiter",
                   pool_name: token.symbol,
                   amount_sol: exec.amount || deployAmount,
                   initial_value_usd: ((exec.amount || deployAmount) * (balance.sol_price || 0)) || 0,
@@ -2364,7 +2366,7 @@ async function handleIncomingTelegramMessage(msg) {
       onToolStart: async ({ name }) => { await liveMsg?.toolStart(name); },
       onToolFinish: async ({ name, result }) => {
         await liveMsg?.toolFinish(name, result, !result?.error);
-        if (name === "gmgn_swap") {
+        if (name === "swap_token") {
           recordSwapOutcome({ success: !!(result?.success || result?.dry_run) });
         }
       },
