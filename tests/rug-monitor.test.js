@@ -211,3 +211,30 @@ describe("polling fallback", () => {
     vi.useRealTimers();
   });
 });
+
+describe("geyser event routing", () => {
+  it("emits HIGH on dev_sell when geyser pushes balance to 0", () => {
+    const s = makeStubs();
+    let onDeployerAccount;
+    s.geyserStream.subscribe = vi.fn((spec, handler) => {
+      if (spec.account === "DeployerTokenAcct") onDeployerAccount = handler;
+      return `sub-${spec.kind}`;
+    });
+    const rm = createRugMonitor(s);
+    rm.attachPosition("M::W", {
+      mint: "M", deployer_wallet: "D", deployer_token_account: "DeployerTokenAcct", lp_address: "L",
+      top_holders_snapshot: [],
+      authorities: { mint_authority: null, freeze_authority: null },
+      deployer_balance_at_entry: 1000,
+      lp_usd_at_entry: 25000,
+      entry_ts: Date.now(),
+    });
+    onDeployerAccount({ tokenBalance: 0 });
+    expect(s.callbacks.onHigh).toHaveBeenCalled();
+    const [posKey, signalType, meta] = s.callbacks.onHigh.mock.calls[0];
+    expect(posKey).toBe("M::W");
+    expect(signalType).toBe("dev_sell");
+    expect(meta.source).toBe("geyser");
+    rm.shutdown();
+  });
+});
