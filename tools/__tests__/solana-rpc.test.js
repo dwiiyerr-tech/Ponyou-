@@ -24,6 +24,7 @@ import { getSolanaGasFee } from '../solana-rpc.js'
 beforeEach(() => {
   vi.clearAllMocks()
   delete process.env.RPC_URL
+  delete process.env.HELIUS_RPC_URL
 })
 
 describe('getSolanaGasFee', () => {
@@ -82,5 +83,18 @@ describe('getSolanaGasFee', () => {
       median: 0,
       level: 'unknown',
     })
+  })
+
+  it('prefers HELIUS_RPC_URL over RPC_URL when configured', async () => {
+    process.env.HELIUS_RPC_URL = 'https://helius.example'
+    process.env.RPC_URL = 'https://rpc.example'
+    mockGetRecentPrioritizationFees.mockResolvedValue([])
+
+    await getSolanaGasFee()
+
+    expect(mockConnection.mock.calls[0]).toEqual([
+      'https://helius.example',
+      'confirmed',
+    ])
   })
 })

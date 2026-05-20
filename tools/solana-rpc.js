@@ -8,7 +8,7 @@ import { log } from "../logger.js";
 export async function getSolanaGasFee() {
   try {
     const connection = new Connection(
-      process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
+      process.env.HELIUS_RPC_URL || process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
       "confirmed",
     );
     const fees = await connection.getRecentPrioritizationFees();

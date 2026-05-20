@@ -1,6 +1,7 @@
 export const ALLOWED_METHODS = Object.freeze([
   "getLatestBlockhash",
   "getRecentPrioritizationFees",
+  "getPriorityFeeEstimate",
   "simulateTransaction",
   "getAccountInfo",
   "getBalance",
@@ -22,8 +23,12 @@ export function createRpcQuorum({ endpoints, timeoutMs = 2000, connectionFactory
   const conns = connectionFactory ? connectionFactory(endpoints) : endpoints.map(e => ({
     url: e.url,
     label: e.label,
+    primary: e.primary || false,
     call: async (method) => { throw new Error(`real RPC client not wired (method=${method})`); },
   }));
+  // Propagate primary flag from endpoints config into conn objects (connectionFactory may not set it).
+  const primaryUrls = new Set(endpoints.filter(e => e.primary).map(e => e.url));
+  for (const c of conns) if (primaryUrls.has(c.url)) c.primary = true;
   const health = new Map(conns.map(c => [c.url, { successCount: 0, failCount: 0, lastError: null, lastLatencyMs: null, cooldownUntil: 0 }]));
 
   async function quorumCall(method, ...args) {
@@ -33,9 +38,28 @@ export function createRpcQuorum({ endpoints, timeoutMs = 2000, connectionFactory
     const now = Date.now();
     const active = conns.filter(c => health.get(c.url).cooldownUntil <= now);
     const targets = active.length > 0 ? active : conns;
+
+    // If a primary endpoint exists and is healthy, try it first before racing others.
+    const primary = targets.find(c => c.primary);
+    if (primary) {
+      try {
+        const start = Date.now();
+        const result = await primary.call(method, ...args);
+        const h = health.get(primary.url);
+        h.successCount += 1;
+        h.lastLatencyMs = Date.now() - start;
+        return result;
+      } catch (err) {
+        const h = health.get(primary.url);
+        h.failCount += 1;
+        h.lastError = err.message;
+      }
+    }
+
+    const fallbacks = primary ? targets.filter(c => !c.primary) : targets;
     const errors = [];
     return new Promise((resolve, reject) => {
-      let pending = targets.length;
+      let pending = fallbacks.length;
       let resolved = false;
       const timeout = setTimeout(() => {
         if (!resolved) {
@@ -43,7 +67,7 @@ export function createRpcQuorum({ endpoints, timeoutMs = 2000, connectionFactory
           reject(new RpcQuorumError({ method, endpoint_errors: errors.length ? errors : [{ url: "timeout", error: "global timeout" }] }));
         }
       }, timeoutMs);
-      targets.forEach(c => {
+      fallbacks.forEach(c => {
         const start = Date.now();
         c.call(method, ...args)
           .then(result => {
