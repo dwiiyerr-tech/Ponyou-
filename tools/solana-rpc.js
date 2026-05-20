@@ -5,6 +5,14 @@
 import { Connection } from "@solana/web3.js";
 import { log } from "../logger.js";
 
+export function shouldSkipEntriesForGasFee(gasFee) {
+  return gasFee?.level === "extreme";
+}
+
+export function applyFeeEntryGuard(candidates, gasFee) {
+  return shouldSkipEntriesForGasFee(gasFee) ? [] : candidates;
+}
+
 export async function getSolanaGasFee() {
   try {
     const connection = new Connection(

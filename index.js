@@ -6,9 +6,9 @@ import { agentLoop } from "./agent.js";
 import AgentRouter from "./agent-router.js";
 import { log } from "./logger.js";
 import { getWalletBalances } from "./tools/wallet.js";
-import { getSolanaGasFee } from "./tools/solana-rpc.js";
+import { applyFeeEntryGuard, getSolanaGasFee, shouldSkipEntriesForGasFee } from "./tools/solana-rpc.js";
 import { discoverTokens, getTokenSecurityDetails, getTokenKlines } from "./tools/dexscreener.js";
-import { swapToken } from "./tools/jupiter.js";
+import { preSwapGuard, swapToken } from "./tools/jupiter.js";
 import { config, computeDeployAmount, computeVolatilityAdjustedSize } from "./config.js";
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
@@ -1462,6 +1462,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
       Math.min(config.fastTrack.maxNewPerCycle ?? 1, config.multiWallet?.maxWalletsPerBatch ?? 2)
     );
     const gasFee = await getSolanaGasFee();
+    const entryBlockedByFee = shouldSkipEntriesForGasFee(gasFee);
+    if (entryBlockedByFee) {
+      log("fee_guard", `Fee level extreme (${gasFee.median} micro-lamports) — skip entry this cycle`);
+    }
     const discovery = await discoverTokens({ timeframe: "1m" });
     const candidates = discovery.tokens || [];
     const cappedCandidates = candidates.slice(0, MAX_CANDIDATES_PER_CYCLE);
@@ -1725,6 +1729,28 @@ export async function runScreeningCycle({ silent = false } = {}) {
         (b.kelly?.effective_fraction || 0) - (a.kelly?.effective_fraction || 0)
       );
     const planSummary = getPlanSummary();
+
+    if (entryBlockedByFee) {
+      passingCandidates = applyFeeEntryGuard(passingCandidates, gasFee);
+    } else if (passingCandidates.length > 0) {
+      const guardedCandidates = [];
+      for (const candidate of passingCandidates) {
+        const amountSol = Number(candidate.recommended_deploy_amount_sol || deployAmount || 0.01);
+        const guard = await preSwapGuard({
+          mint: candidate.mint,
+          amountSol: Number.isFinite(amountSol) && amountSol > 0 ? amountSol : 0.01,
+        });
+        if (!guard.allowed) {
+          log("pre_swap_guard", `${candidate.symbol || candidate.mint}: ${guard.reason}`);
+          continue;
+        }
+        if (guard.warn) {
+          log("pre_swap_guard", `${candidate.symbol || candidate.mint}: ${guard.warn}`);
+        }
+        guardedCandidates.push(candidate);
+      }
+      passingCandidates = guardedCandidates;
+    }
 
     // ─── Fast-track lane (skip LLM for unambiguous BUYs) ────────
     // Off by default. When enabled, candidates passing the strict
