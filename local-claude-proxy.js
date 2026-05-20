@@ -118,7 +118,7 @@ function handleScreeningCycle(messages, tools) {
   }
 
   // In DRY_RUN we can fire a swap call — it will be intercepted.
-  const swapTool = tools?.find(t => ["swap_token", "jupiter_swap", "gmgn_swap"].includes(t.function?.name))?.function?.name;
+  const swapTool = tools?.find(t => ["swap_token", "jupiter_swap"].includes(t.function?.name))?.function?.name;
   if (swapTool) {
     return buildResponse(null, buildToolCall(swapTool, {
       token_in: "SOL",
