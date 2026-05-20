@@ -4,7 +4,7 @@
  */
 
 export const tools = [
-  // ─── GMGN Core ───────────────────────────────────────────
+  // ─── Execution & Market Data ─────────────────────────────
   {
     type: "function",
     function: {
@@ -17,7 +17,7 @@ export const tools = [
     type: "function",
     function: {
       name: "discover_tokens",
-      description: "Search for trending or new tokens on Solana using GMGN. Returns candidates for scalping.",
+      description: "Search for trending or new tokens on Solana using DexScreener with optional Birdeye enrichment. Returns candidates for scalping.",
       parameters: {
         type: "object",
         properties: {
@@ -199,8 +199,8 @@ export const tools = [
   {
     type: "function",
     function: {
-      name: "gmgn_swap",
-      description: "Execute a swap (Buy/Sell) using GMGN Swap API. Use 'SOL' for native SOL.",
+      name: "swap_token",
+      description: "Execute a Solana swap using Jupiter execution. Use 'SOL' for native SOL.",
       parameters: {
         type: "object",
         properties: {
