@@ -1382,6 +1382,16 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return `Max positions reached (${openTokens.length}/${positionLimit})`;
     }
 
+    const bankrollSol = balance.sol || 0;
+    const totalExposedSol = Object.values(getState()?.positions || {})
+      .filter(p => !p?.closed)
+      .reduce((sum, p) => sum + (p.amount_sol || 0), 0);
+    const maxPortfolioExposureFraction = config.risk?.maxPortfolioExposureFraction ?? 0.35;
+    if (bankrollSol > 0 && totalExposedSol / bankrollSol >= maxPortfolioExposureFraction) {
+      log("screening", `Portfolio exposure cap reached (${(totalExposedSol / bankrollSol * 100).toFixed(1)}% >= ${maxPortfolioExposureFraction * 100}%)`);
+      return; // skip this screening cycle
+    }
+
     const recentTrades = getPerformanceHistory({ limit: 30 });
     const activeWallet = getActiveWallet();
     const walletSol = isMultiWalletEnabled() && activeWallet

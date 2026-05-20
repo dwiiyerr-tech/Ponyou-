@@ -20,6 +20,9 @@ export function evaluateCandidateDecision({
     token,
     config,
   });
+  if (token.rug_score == null || !Number.isFinite(Number(token.rug_score))) {
+    return { verdict: "skip", reason: "missing_rug_score", caution: 100 };
+  }
   const reasons = [];
   let cautionScore = 0;
 
@@ -45,7 +48,7 @@ export function evaluateCandidateDecision({
   if ((token.rug_score || 0) >= policy.entry.hardBlockRugScore) {
     cautionScore += 45;
     reasons.push(`rug_score=${token.rug_score}`);
-  } else if ((token.rug_score || 0) >= 35) {
+  } else if ((token.rug_score || 0) >= 20) {
     cautionScore += 25;
     reasons.push(`rug_score=${token.rug_score}`);
   }
@@ -74,7 +77,7 @@ export function evaluateCandidateDecision({
     reasons.push("weak_conviction");
   }
   const canConvictionReduce = !(
-    (token.rug_score || 0) >= 35 ||
+    (token.rug_score || 0) >= 20 ||
     criticalFlags.length >= 1 ||
     token.kelly?.should_skip === true
   );

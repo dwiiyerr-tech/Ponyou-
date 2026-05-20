@@ -50,7 +50,7 @@ describe("decision workflow", () => {
     });
 
     expect(result.verdict).toBe("probe");
-    expect(result.recommended_amount_sol).toBe(0.7);
+    expect(result.recommended_amount_sol).toBe(0.1);
     expect(result.llm_can_buy).toBe(true);
   });
 
@@ -94,7 +94,7 @@ describe("decision workflow", () => {
     const result = evaluateCandidateDecision({
       token: {
         flags: [],
-        rug_score: 35,
+        rug_score: 28,
         kelly: { should_skip: false },
         momentum_entry_pass: true,
         volatility_adjusted_size: 1,
@@ -103,7 +103,7 @@ describe("decision workflow", () => {
       marketCondition: "NORMAL",
     });
 
-    expect(result.reasons).toContain("rug_score=35");
+    expect(result.reasons).toContain("rug_score=28");
     expect(result.reasons).not.toContain("strong_conviction");
     expect(result.caution_score).toBe(25);
   });

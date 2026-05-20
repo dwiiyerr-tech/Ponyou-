@@ -114,6 +114,10 @@ export function getCapitalAwareSizing({
 
   // ── GROWTH tier — half-kelly with cap ───────────────────────────────────────
   // ── FULL tier — full kelly ──────────────────────────────────────────────────
+  if (!isGrowth && (trades || []).length < minSampleTrades) {
+    return { should_skip: true, reason: "full_tier_sparse_data", tier: "FULL", deploy_amount_sol: 0 };
+  }
+
   const kellyFraction = isGrowth ? fraction * 0.5 : fraction;
   const kelly = computeFractionalKellySize({
     bankrollSol,
