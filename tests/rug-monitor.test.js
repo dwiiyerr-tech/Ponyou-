@@ -95,3 +95,30 @@ describe("detectAuthorityChange", () => {
     expect(detectAuthorityChange({ atEntry: { mint_authority: "Auth1111111111111111111111111111111111111111", freeze_authority: null }, current: { mint_authority: "1nc1nerator11111111111111111111111111111111", freeze_authority: null } })).toBe(SEVERITY.LOW);
   });
 });
+
+import { detectHolderDump } from "../rug-monitor.js";
+
+describe("detectHolderDump", () => {
+  const thresholds = { low: -10, medium: -25, high: -50 };
+  const now = 1_700_000_000_000;
+  const ago = (ms) => now - ms;
+
+  it("returns NONE when no events", () => {
+    expect(detectHolderDump({ snapshotTotal: 10_000_000, events: [], windowMs: 5*60_000, nowMs: now, thresholds })).toBe(SEVERITY.NONE);
+  });
+  it("ignores events older than window", () => {
+    expect(detectHolderDump({ snapshotTotal: 10_000_000, events: [{ tsMs: ago(10*60_000), deltaTokens: -3_000_000 }], windowMs: 5*60_000, nowMs: now, thresholds })).toBe(SEVERITY.NONE);
+  });
+  it("returns LOW for 10-25% cumulative dump in window", () => {
+    expect(detectHolderDump({ snapshotTotal: 10_000_000, events: [{ tsMs: ago(60_000), deltaTokens: -700_000 }, { tsMs: ago(30_000), deltaTokens: -600_000 }], windowMs: 5*60_000, nowMs: now, thresholds })).toBe(SEVERITY.LOW);
+  });
+  it("returns MEDIUM for 25-50% dump", () => {
+    expect(detectHolderDump({ snapshotTotal: 10_000_000, events: [{ tsMs: ago(30_000), deltaTokens: -3_500_000 }], windowMs: 5*60_000, nowMs: now, thresholds })).toBe(SEVERITY.MEDIUM);
+  });
+  it("returns HIGH for >=50% dump", () => {
+    expect(detectHolderDump({ snapshotTotal: 10_000_000, events: [{ tsMs: ago(30_000), deltaTokens: -6_000_000 }], windowMs: 5*60_000, nowMs: now, thresholds })).toBe(SEVERITY.HIGH);
+  });
+  it("ignores positive (inbound) deltas", () => {
+    expect(detectHolderDump({ snapshotTotal: 10_000_000, events: [{ tsMs: ago(60_000), deltaTokens: 5_000_000 }, { tsMs: ago(30_000), deltaTokens: -1_500_000 }], windowMs: 5*60_000, nowMs: now, thresholds })).toBe(SEVERITY.LOW);
+  });
+});

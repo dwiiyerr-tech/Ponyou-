@@ -65,3 +65,17 @@ export function detectAuthorityChange({ atEntry, current }) {
   if (transferredToBurn(entryMint, currMint) || transferredToBurn(entryFreeze, currFreeze)) return SEVERITY.LOW;
   return SEVERITY.NONE;
 }
+
+export function detectHolderDump({ snapshotTotal, events, windowMs, nowMs, thresholds }) {
+  if (!Number.isFinite(snapshotTotal) || snapshotTotal <= 0) return SEVERITY.NONE;
+  const cutoff = nowMs - windowMs;
+  const cumulativeSold = (events || [])
+    .filter(e => e.tsMs >= cutoff && Number.isFinite(e.deltaTokens) && e.deltaTokens < 0)
+    .reduce((sum, e) => sum + e.deltaTokens, 0);
+  if (cumulativeSold === 0) return SEVERITY.NONE;
+  const deltaPct = (cumulativeSold / snapshotTotal) * 100;
+  if (thresholds.high !== null && deltaPct <= thresholds.high) return SEVERITY.HIGH;
+  if (thresholds.medium !== null && deltaPct <= thresholds.medium) return SEVERITY.MEDIUM;
+  if (thresholds.low !== null && deltaPct <= thresholds.low) return SEVERITY.LOW;
+  return SEVERITY.NONE;
+}
