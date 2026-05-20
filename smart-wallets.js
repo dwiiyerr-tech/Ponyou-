@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { applyScoreDecay } from "./wallet-score-decay.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WALLETS_FILE = path.join(__dirname, "smart-wallets.json");
@@ -60,5 +61,6 @@ export function removeSmartWallet({ address } = {}) {
 export function listSmartWallets() {
   return Object.entries(load())
     .map(([address, record]) => normalizeWalletRecord(record, address))
+    .map(wallet => applyScoreDecay(wallet))
     .sort((a, b) => (b.selection?.score || 0) - (a.selection?.score || 0));
 }

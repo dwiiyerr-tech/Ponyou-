@@ -90,8 +90,9 @@ function adjustByMarket(policy, marketCondition) {
 }
 
 export function buildRiskPolicy({ marketCondition = "NORMAL", conviction = {}, token = {}, config = {} } = {}) {
+  const condition = normalizeMarketCondition(marketCondition);
   const policy = clonePolicy();
-  adjustByMarket(policy, marketCondition);
+  adjustByMarket(policy, condition);
 
   const convictionScore = Number(conviction.conviction_score || 0);
   const convictionConfidence = Number(conviction.confidence_score || 0);
@@ -128,6 +129,12 @@ export function buildRiskPolicy({ marketCondition = "NORMAL", conviction = {}, t
 
   policy.exit.hardStopLossPct = stopLossPct;
   policy.exit.immediateTakeProfitPct = takeProfitPct;
+  if (condition === "COLD") {
+    policy.exit.hardStopLossPct = Math.max(policy.exit.hardStopLossPct, -10);
+    if (Number.isFinite(policy.exit.immediateTakeProfitPct)) {
+      policy.exit.immediateTakeProfitPct = Math.min(policy.exit.immediateTakeProfitPct, 130);
+    }
+  }
   const trailingTrigger = Number.isFinite(config?.management?.trailingTriggerPct)
     ? clamp(config.management.trailingTriggerPct, 1, 30)
     : policy.exit.trailingTriggerPct;

@@ -18,6 +18,9 @@ import { discoverTokens } from "./dexscreener.js";
 import { listSmartWallets, addSmartWallet } from "../smart-wallets.js";
 import { heliusAcquire, heliusRelease, heliusCircuitOpen } from "./rug-signals.js";
 import { getAdaptiveSmartWalletContext, evaluateSmartWalletCandidate, selectSmartWalletCandidates } from "../smart-wallet-strategy.js";
+import { applyScoreDecay } from "../wallet-score-decay.js";
+
+export { applyScoreDecay } from "../wallet-score-decay.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DISCOVERED_FILE = path.join(__dirname, "../discovered-wallets.json");
@@ -148,6 +151,7 @@ function analyzeWallet(txns) {
   if (swaps.length === 0) {
     return { skip: true, reason: "no clean swaps" };
   }
+  const lastActive = swaps.reduce((max, swap) => Math.max(max, Number(swap.ts || 0)), 0);
 
   // Group by mint
   const byMint = new Map();
@@ -215,6 +219,7 @@ function analyzeWallet(txns) {
     winrate: Number(winrate.toFixed(3)),
     realized_pnl_sol: Number(realized_pnl_sol.toFixed(4)),
     avg_hold_seconds: Math.round(avg_hold),
+    last_active: lastActive > 0 ? new Date(lastActive * 1000).toISOString() : null,
   };
 }
 
@@ -388,9 +393,12 @@ export async function discoverSmartWallets({
 }
 
 export function listDiscoveredWallets({ qualified_only = false, limit = 50 } = {}) {
-  const all = Object.values(loadDiscovered());
+  const all = Object.values(loadDiscovered()).map(wallet => applyScoreDecay(wallet));
   const filtered = qualified_only ? all.filter(w => w.qualifies) : all;
   return filtered
-    .sort((a, b) => (b.stats?.realized_pnl_sol || 0) - (a.stats?.realized_pnl_sol || 0))
+    .sort((a, b) =>
+      (b.selection?.score || b.score || 0) - (a.selection?.score || a.score || 0) ||
+      (b.stats?.realized_pnl_sol || 0) - (a.stats?.realized_pnl_sol || 0)
+    )
     .slice(0, limit);
 }

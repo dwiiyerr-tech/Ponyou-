@@ -40,6 +40,8 @@ export function extractFeatureVector(signals = {}) {
     has_mint: !!signals.mint_authority,
     creator_heavy: (signals.creator_pct || 0) > 15,
     bundle_buy: (signals.bundle_buyers_pct || 0) > 30,
+    bundled_launch: !!signals.bundled || (signals.bundled_score || 0) > 5,
+    top20_concentrated: !!signals.supply_concentrated || (signals.top20_pct || 0) > 60,
     same_funder: (signals.same_funder_holders || 0) >= 3,
     transfer_fee_high: (signals.transfer_fee_bps || 0) >= 500,
     transfer_hook: !!signals.transfer_hook,
