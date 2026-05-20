@@ -1,347 +1,304 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
-const FILTERS = ['ALL', 'TRADE', 'API', 'TOOL', 'WARN', 'SYS', 'OK'];
+const FILTERS = ['ALL', 'ERR', 'WARN', 'TRADE', 'API', 'SYS', 'OK'];
 
-// Map category → CSS class + tag label
 function classifyLog(item) {
-  const c = (item.category || '').toUpperCase();
-  const msg = (item.message || '').toLowerCase();
+  const category = String(item.category || '').toUpperCase();
+  const message = String(item.message || '').toLowerCase();
+  const tool = String(item.tool || '').toLowerCase();
 
   if (item._isAction) {
-    const tool = (item.tool || '').toLowerCase();
-    if (tool === 'gmgn_swap' || tool.includes('swap') || tool.includes('position')) {
-      return { cls: 'log-trade', tag: 'TRADE' };
-    }
-    if (tool.includes('discover') || tool.includes('token') || tool.includes('smart')) {
-      return { cls: 'log-api', tag: 'API' };
-    }
-    return { cls: item.success ? 'log-ok' : 'log-neg', tag: item.success ? 'OK' : 'ERR' };
+    if (item.success === false) return { tag: 'ERR', tone: 'bad' };
+    if (tool.includes('swap') || tool.includes('position')) return { tag: 'TRADE', tone: 'warm' };
+    if (tool.includes('discover') || tool.includes('token') || tool.includes('wallet')) return { tag: 'API', tone: 'info' };
+    return { tag: 'OK', tone: 'good' };
   }
 
-  // Errors
-  if (c === 'ERROR' || c.endsWith('_ERROR'))   return { cls: 'log-neg',   tag: 'ERR' };
-
-  // Warnings
-  if (c === 'WARN' || c === 'WARNING' || c.endsWith('_WARN'))
-                                               return { cls: 'log-warn',  tag: 'WARN' };
-
-  // Trade / swap
-  if (c === 'SWAP' || c === 'STRATEGY' || c.includes('TRADE') || c.includes('SWAP'))
-                                               return { cls: 'log-trade', tag: 'TRADE' };
-
-  // API / scanning
-  if (c === 'SCREENING' || c === 'SCREENER' || c === 'DISCOVERY')
-                                               return { cls: 'log-api',   tag: 'API' };
-
-  // Tool / learning / memory
-  if (c === 'MANAGER' || c === 'DARWIN' || c === 'LEARNING' || c === 'LESSON')
-                                               return { cls: 'log-tool',  tag: 'TOOL' };
-
-  // System / infra
-  if (c === 'STARTUP' || c === 'SHUTDOWN' || c === 'CRON' || c === 'AGENT' ||
-      c === 'LLM'     || c === 'REPORT'   || c === 'PLAN'  || c === 'MARKET' ||
-      c === 'MAIN'    || c === 'LOOP'     || c === 'SYSTEM' ||
-      c === 'SESSION' || c === 'GATE')         return { cls: 'log-sys',   tag: 'SYS' };
-
-  if (c === 'DEBUG')                           return { cls: 'log-muted', tag: 'DBG' };
-
-  // Message-based heuristics (fallback only)
-  if (msg.includes('swap') || msg.includes('deploy') || msg.includes('exit'))
-    return { cls: 'log-trade', tag: 'TRADE' };
-  if (msg.includes('discover') || msg.includes('fetch') || msg.includes('screen'))
-    return { cls: 'log-api', tag: 'API' };
-  if (msg.includes('lesson') || msg.includes('darwin') || msg.includes('config'))
-    return { cls: 'log-tool', tag: 'TOOL' };
-  if (msg.includes('session') || msg.includes('market') || msg.includes('cron'))
-    return { cls: 'log-sys', tag: 'SYS' };
-  if (msg.includes('success') || msg.includes('✓') || msg.includes('profit'))
-    return { cls: 'log-ok', tag: 'OK' };
-
-  return { cls: 'log-dim', tag: 'INFO' };
+  if (category === 'ERROR' || category.endsWith('_ERROR') || message.includes(' error')) return { tag: 'ERR', tone: 'bad' };
+  if (category === 'WARN' || category === 'WARNING' || category.endsWith('_WARN')) return { tag: 'WARN', tone: 'warn' };
+  if (category.includes('TRADE') || category.includes('SWAP') || category === 'STRATEGY') return { tag: 'TRADE', tone: 'warm' };
+  if (category === 'SCREENING' || category === 'DISCOVERY' || category === 'SCREENER') return { tag: 'API', tone: 'info' };
+  if (category === 'STARTUP' || category === 'SYSTEM' || category === 'AGENT' || category === 'LLM' || category === 'REPORT' || category === 'PLAN' || category === 'MAIN') return { tag: 'SYS', tone: 'neutral' };
+  return { tag: 'OK', tone: 'good' };
 }
 
 function matchesFilter(item, filter) {
   if (filter === 'ALL') return true;
-  const { tag } = classifyLog(item);
-  return tag === filter;
+  return classifyLog(item).tag === filter;
 }
 
-function formatTime(ts) {
-  if (!ts) return '';
-  try {
-    const d = new Date(ts);
-    return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  } catch { return ''; }
+function fmtUsd(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return '—';
+  if (Math.abs(num) >= 1_000_000) return `$${(num / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(num) >= 1_000) return `$${(num / 1_000).toFixed(1)}K`;
+  return `$${num.toFixed(2)}`;
 }
 
-function formatAction(item) {
-  const a = item.args   || {};
-  const r = item.result || {};
-  const dur = item.duration_ms != null ? ` (${item.duration_ms}ms)` : '';
-  switch (item.tool) {
-    case 'gmgn_swap':
-      return `swap ${a.amount} ${(a.token_in || '').slice(0, 8)} → ${(a.token_out || '').slice(0, 8)}${dur}`;
-    case 'deploy_position':
-      return `deploy ${a.pool_name || a.pool_address?.slice(0, 10)} ${a.amount_sol} SOL${dur}`;
-    case 'close_position': {
-      const pnl = r.pnl_usd != null ? ` | PnL ${r.pnl_usd >= 0 ? '+' : ''}$${r.pnl_usd}` : '';
-      return `close ${a.position_address?.slice(0, 10)}${pnl}${dur}`;
-    }
-    case 'get_wallet_balance':
-      return `wallet: ${r.sol ?? '?'} SOL${dur}`;
-    case 'get_top_candidates':
-      return `found ${r?.candidates?.length ?? 0} candidates${dur}`;
-    case 'discover_tokens':
-      return `discovered ${r?.tokens?.length ?? r?.length ?? 0} tokens${dur}`;
-    case 'add_lesson':
-      return `lesson: "${a.rule?.slice(0, 70) || ''}"`;
-    case 'update_config':
-      return `config: ${Object.keys(r.applied || a.changes || {}).join(', ')}${dur}`;
-    default:
-      return item.message || `${item.tool} ${JSON.stringify(r).slice(0, 60)}${dur}`;
+function timeAgo(ts) {
+  if (!ts) return 'never';
+  const diff = Date.now() - new Date(ts).getTime();
+  const sec = Math.floor(diff / 1000);
+  if (sec < 10) return 'now';
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  return `${Math.floor(min / 60)}h ago`;
+}
+
+function OverviewCard({ title, value, meta, tone = 'neutral' }) {
+  return (
+    <div className="overview-card">
+      <p>{title}</p>
+      <h3 className={`tone-${tone}`}>{value}</h3>
+      <span>{meta}</span>
+    </div>
+  );
+}
+
+function TokenTable({ tokens }) {
+  if (tokens.length === 0) {
+    return <p className="muted-copy">No observed tokens yet.</p>;
   }
-}
-
-const TAG_COLORS = {
-  TRADE: 'var(--trade)',
-  API:   'var(--api)',
-  TOOL:  'var(--tool)',
-  SYS:   'var(--sys)',
-  WARN:  'var(--warn)',
-  OK:    'var(--ok)',
-  ERR:   'var(--neg)',
-  INFO:  'var(--dim)',
-  DBG:   'var(--muted)',
-};
-
-function LogLine({ item }) {
-  const { cls, tag } = classifyLog(item);
-  const isAction = item._isAction;
-  const prefix = isAction ? (item.success ? '✓' : '✗') : '›';
-  const text = isAction ? formatAction(item) : item.message;
-  const tagColor = TAG_COLORS[tag] || 'var(--dim)';
 
   return (
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: '56px 44px 1fr',
-      gap: 8,
-      padding: '1.5px 0',
-      borderBottom: '1px solid rgba(26,46,26,0.35)',
-      fontSize: 12,
-      lineHeight: 1.55,
-    }}>
-      {/* Timestamp */}
-      <span style={{ color: 'var(--muted)', fontSize: 10, paddingTop: 2, userSelect: 'none' }}>
-        {formatTime(item.timestamp)}
-      </span>
-
-      {/* Tag badge */}
-      <span style={{
-        fontSize: 9,
-        fontWeight: 700,
-        letterSpacing: '0.05em',
-        color: tagColor,
-        paddingTop: 3,
-        textAlign: 'right',
-        userSelect: 'none',
-        opacity: 0.9,
-      }}>
-        [{tag}]
-      </span>
-
-      {/* Message */}
-      <span className={cls} style={{ wordBreak: 'break-word' }}>
-        <span style={{ color: tagColor, marginRight: 4, userSelect: 'none' }}>{prefix}</span>
-        {text}
-      </span>
+    <div className="table-shell">
+      <div className="table-head four-col">
+        <span>Token</span>
+        <span>Mcap</span>
+        <span>Rug</span>
+        <span>Status</span>
+      </div>
+      {tokens.map((token, index) => (
+        <div className="table-row four-col" key={token.mint || `${token.symbol}-${index}`}>
+          <strong>{token.symbol || '—'}</strong>
+          <span>{fmtUsd(token.initial_mcap)}</span>
+          <span className={Number(token.rug_score) > 50 ? 'tone-bad' : Number(token.rug_score) > 20 ? 'tone-warn' : 'tone-good'}>
+            {token.rug_score ?? '—'}
+          </span>
+          <span>{token.status || 'UNKNOWN'}</span>
+        </div>
+      ))}
     </div>
   );
 }
 
-function StatsBar({ logs, actions }) {
-  const errs    = logs.filter(l => (l.category || '').toUpperCase() === 'ERROR').length;
-  const warns   = logs.filter(l => (l.category || '').toUpperCase().includes('WARN')).length;
-  const okActs  = actions.filter(a => a.success).length;
-  const failActs= actions.filter(a => !a.success).length;
-
-  return (
-    <div style={{ display: 'flex', gap: 16, fontSize: 10, color: 'var(--muted)',
-      padding: '4px 12px', borderBottom: '1px solid var(--border)',
-      background: 'rgba(0,0,0,0.15)', flexShrink: 0 }}>
-      <span>lines: <span style={{ color: 'var(--dim)' }}>{logs.length}</span></span>
-      {warns  > 0 && <span>warns: <span style={{ color: 'var(--warn)' }}>{warns}</span></span>}
-      {errs   > 0 && <span>errors: <span style={{ color: 'var(--neg)' }}>{errs}</span></span>}
-      <span>
-        actions: <span style={{ color: 'var(--ok)' }}>{okActs}</span>
-        {failActs > 0 && <span style={{ color: 'var(--neg)' }}>/{failActs} fail</span>}
-      </span>
-    </div>
-  );
-}
-
-const FILTER_COLORS = {
-  ALL:   'var(--text)',
-  TRADE: 'var(--trade)',
-  API:   'var(--api)',
-  TOOL:  'var(--tool)',
-  WARN:  'var(--warn)',
-  SYS:   'var(--sys)',
-  OK:    'var(--ok)',
-};
-
-export default function CenterPanel({ logs, actions, connected }) {
+export default function CenterPanel({ logs, actions, connected, agentData, lastUpdate }) {
+  const [view, setView] = useState('overview');
   const [filter, setFilter] = useState('ALL');
-  const [autoScroll, setAutoScroll] = useState(true);
   const [search, setSearch] = useState('');
-  const bottomRef   = useRef(null);
-  const containerRef = useRef(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const feedRef = useRef(null);
+  const feedBottomRef = useRef(null);
 
-  // Merge logs + actions into unified timeline
-  const merged = (() => {
-    const ls = logs.map((l, i)    => ({ ...l, _id: `l${i}-${l.timestamp}` }));
-    const as = actions.map((a, i) => ({ ...a, _isAction: true, _id: `a${i}-${a.timestamp}` }));
-    return [...ls, ...as].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-  })();
+  const merged = useMemo(() => {
+    const mappedLogs = logs.map((item, index) => ({ ...item, _id: `log-${index}-${item.timestamp}` }));
+    const mappedActions = actions.map((item, index) => ({ ...item, _isAction: true, _id: `action-${index}-${item.timestamp}` }));
+    return [...mappedLogs, ...mappedActions].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+  }, [logs, actions]);
 
-  const filtered = merged.filter(item => {
-    if (!matchesFilter(item, filter)) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      const t = (item.message || item.tool || '').toLowerCase();
-      if (!t.includes(q)) return false;
-    }
-    return true;
-  });
+  const filteredFeed = useMemo(() => {
+    return merged.filter((item) => {
+      if (!matchesFilter(item, filter)) return false;
+      if (!search) return true;
+      const haystack = `${item.category || ''} ${item.message || ''} ${item.tool || ''}`.toLowerCase();
+      return haystack.includes(search.toLowerCase());
+    });
+  }, [merged, filter, search]);
 
   useEffect(() => {
-    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [filtered.length, autoScroll]);
+    if (autoScroll) {
+      feedBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [filteredFeed.length, autoScroll]);
 
-  const handleScroll = useCallback(() => {
-    if (!containerRef.current) return;
-    const el = containerRef.current;
-    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (dist > 100 && autoScroll) setAutoScroll(false);
-    if (dist < 10  && !autoScroll) setAutoScroll(true);
-  }, [autoScroll]);
-
-  const lastAction = actions[actions.length - 1];
+  const positions = Object.values(agentData.state?.positions || {});
+  const observed = [...(agentData.observedTokens?.observed || [])].reverse().slice(0, 12);
+  const recentEvents = [...(agentData.state?.recentEvents || [])].reverse().slice(0, 5);
+  const session = agentData.tradingPlan?.session || {};
+  const latestReport = agentData.lastReport?.summary || {};
+  const latestIntel = agentData.marketIntel?.snapshots?.[agentData.marketIntel?.snapshots?.length - 1];
+  const okActions = actions.filter((item) => item.success !== false).length;
+  const failedActions = actions.filter((item) => item.success === false).length;
+  const errorCount = logs.filter((item) => classifyLog(item).tag === 'ERR').length;
+  const warnCount = logs.filter((item) => classifyLog(item).tag === 'WARN').length;
 
   return (
-    <main style={{
-      borderRight: '1px solid var(--border)',
-      background: 'var(--bg-page)',
-      display: 'flex',
-      flexDirection: 'column',
-      overflow: 'hidden',
-    }}>
-      {/* Header */}
-      <div style={{ padding: '7px 12px', borderBottom: '1px solid var(--border)',
-        background: 'var(--bg-header)', display: 'flex', alignItems: 'center',
-        gap: 12, flexShrink: 0 }}>
-        <span style={{ color: 'var(--title)', fontFamily: 'var(--font-title)',
-          fontSize: 20, letterSpacing: '0.1em' }}>
-          LIVE LOG FEED
-        </span>
-        <span style={{ flex: 1 }} />
-        <input
-          type="text"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="search..."
-          style={{ width: 130 }}
-        />
-        <button
-          onClick={() => setAutoScroll(v => !v)}
-          style={{
-            background: autoScroll ? 'rgba(57,255,20,0.08)' : 'var(--bg-card)',
-            border: `1px solid ${autoScroll ? 'var(--ok)' : 'var(--border)'}`,
-            color: autoScroll ? 'var(--ok)' : 'var(--muted)',
-            padding: '3px 10px', fontSize: 10, letterSpacing: '0.05em',
-          }}
-        >
-          ↓ AUTOSCROLL
-        </button>
-        <button
-          onClick={() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' })}
-          style={{ background: 'var(--bg-card)', border: '1px solid var(--border)',
-            color: 'var(--muted)', padding: '3px 10px', fontSize: 10 }}
-        >
-          ↓ JUMP
-        </button>
-      </div>
-
-      {/* Filter tabs */}
-      <div style={{ display: 'flex', gap: 2, padding: '5px 12px',
-        borderBottom: '1px solid var(--border)', background: 'var(--bg-panel)', flexShrink: 0 }}>
-        {FILTERS.map(f => {
-          const active = filter === f;
-          const col = FILTER_COLORS[f] || 'var(--dim)';
-          return (
-            <button key={f} onClick={() => setFilter(f)} style={{
-              background: active ? `${col}12` : 'none',
-              border: `1px solid ${active ? col : 'var(--border)'}`,
-              color: active ? col : 'var(--muted)',
-              padding: '2px 10px', fontSize: 10,
-              letterSpacing: '0.06em', fontWeight: active ? 700 : 400,
-            }}>
-              {f}
-            </button>
-          );
-        })}
-        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--muted)', alignSelf: 'center' }}>
-          {filtered.length}/{merged.length}
-        </span>
-      </div>
-
-      <StatsBar logs={logs} actions={actions} />
-
-      {/* Log stream */}
-      <div ref={containerRef} onScroll={handleScroll}
-        style={{ flex: 1, overflowY: 'auto', padding: '4px 12px' }}>
-
-        {!connected && filtered.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--muted)' }}>
-            <div style={{ fontSize: 32, marginBottom: 8, color: 'var(--border-bright)' }}>◌</div>
-            <div style={{ fontSize: 12, color: 'var(--dim)' }}>Connecting to agent server...</div>
-            <div style={{ fontSize: 10, marginTop: 4 }}>WebSocket: ws://{window.location.host}/ws</div>
-          </div>
-        )}
-
-        {connected && filtered.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--muted)' }}>
-            <div style={{ fontSize: 28, marginBottom: 8, color: 'var(--border-bright)' }}>⬡</div>
-            <div style={{ fontSize: 12, color: 'var(--dim)' }} className="cursor-blink">
-              {filter !== 'ALL' ? `No [${filter}] entries` : 'Awaiting agent activity'}
-            </div>
-          </div>
-        )}
-
-        {filtered.map((item, i) => <LogLine key={item._id || i} item={item} />)}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Last action footer */}
-      {lastAction && (
-        <div style={{ padding: '5px 12px', borderTop: '1px solid var(--border)',
-          background: 'var(--bg-panel)', display: 'flex', alignItems: 'center',
-          gap: 8, fontSize: 10, flexShrink: 0 }}>
-          <span style={{ color: 'var(--muted)' }}>last:</span>
-          <span style={{
-            color: lastAction.success ? 'var(--ok)' : 'var(--neg)', fontWeight: 700
-          }}>
-            [{lastAction.tool}]
-          </span>
-          <span style={{ color: 'var(--dim)', flex: 1,
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {formatAction(lastAction)}
-          </span>
-          <span style={{ color: 'var(--muted)', flexShrink: 0 }}>
-            {formatTime(lastAction.timestamp)}
-          </span>
+    <section className="center-column">
+      <div className="hero-panel">
+        <div>
+          <p className="eyebrow">Realtime Ops Grid</p>
+          <h2>Ponyou cockpit with market, execution, memory, and safety surfaces</h2>
         </div>
-      )}
-    </main>
+        <div className="hero-actions">
+          <button className={`toolbar-button ${view === 'overview' ? 'active' : ''}`} onClick={() => setView('overview')}>Overview</button>
+          <button className={`toolbar-button ${view === 'timeline' ? 'active' : ''}`} onClick={() => setView('timeline')}>Timeline</button>
+          <button className={`toolbar-button ${view === 'scan' ? 'active' : ''}`} onClick={() => setView('scan')}>Scan</button>
+        </div>
+      </div>
+
+      <div className="overview-grid">
+        <OverviewCard title="Open positions" value={positions.length} meta="Live position inventory" tone={positions.length > 0 ? 'good' : 'neutral'} />
+        <OverviewCard title="Observed tokens" value={agentData.observedTokens?.observed?.length || 0} meta="Discovery stream size" tone="info" />
+        <OverviewCard title="Actions" value={`${okActions}/${actions.length || 0}`} meta={`${failedActions} failed`} tone={failedActions > 0 ? 'warn' : 'good'} />
+        <OverviewCard title="Latest market" value={String(agentData.marketIntel?.currentCondition || 'unknown').toUpperCase()} meta={`${latestIntel?.confidence || 0}% confidence`} tone="warm" />
+      </div>
+
+      {view === 'overview' ? (
+        <div className="content-stack">
+          <section className="deck-card">
+            <div className="card-head">
+              <div>
+                <p className="card-kicker">Mission</p>
+                <h3>Execution summary</h3>
+              </div>
+              <div className="card-aside">Updated {lastUpdate ? timeAgo(lastUpdate) : 'never'}</div>
+            </div>
+            <div className="metrics-grid three-up">
+              <div className="metric-box">
+                <span>Capital</span>
+                <strong>{fmtUsd(session.currentCapitalUsd)}</strong>
+              </div>
+              <div className="metric-box">
+                <span>Report P&L</span>
+                <strong className={Number(latestReport.pnl_pct || 0) >= 0 ? 'tone-good' : 'tone-bad'}>
+                  {Number.isFinite(Number(latestReport.pnl_pct)) ? `${Number(latestReport.pnl_pct).toFixed(2)}%` : '—'}
+                </strong>
+              </div>
+              <div className="metric-box">
+                <span>Win rate</span>
+                <strong>{latestReport.win_rate != null ? `${latestReport.win_rate}%` : '—'}</strong>
+              </div>
+              <div className="metric-box">
+                <span>Logs</span>
+                <strong>{logs.length}</strong>
+              </div>
+              <div className="metric-box">
+                <span>Warnings</span>
+                <strong className="tone-warn">{warnCount}</strong>
+              </div>
+              <div className="metric-box">
+                <span>Errors</span>
+                <strong className="tone-bad">{errorCount}</strong>
+              </div>
+            </div>
+          </section>
+
+          <section className="dual-panel-grid">
+            <div className="deck-card">
+              <div className="card-head">
+                <div>
+                  <p className="card-kicker">Scan</p>
+                  <h3>Observed market candidates</h3>
+                </div>
+                <div className="card-aside">{observed.length} shown</div>
+              </div>
+              <TokenTable tokens={observed} />
+            </div>
+
+            <div className="deck-card">
+              <div className="card-head">
+                <div>
+                  <p className="card-kicker">Memory</p>
+                  <h3>Recent events</h3>
+                </div>
+                <div className="card-aside">State journal</div>
+              </div>
+              {recentEvents.length > 0 ? (
+                <div className="event-list">
+                  {recentEvents.map((event, index) => (
+                    <div className="event-row" key={`${event.ts || 'event'}-${index}`}>
+                      <div>
+                        <strong>{event.type || event.name || 'event'}</strong>
+                        <p>{event.message || event.summary || JSON.stringify(event).slice(0, 120)}</p>
+                      </div>
+                      <span>{timeAgo(event.ts || event.timestamp)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="muted-copy">No recent events have been persisted into state yet.</p>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {view === 'timeline' ? (
+        <div className="content-stack timeline-shell">
+          <section className="toolbar-row">
+            <div className="filter-group">
+              {FILTERS.map((item) => (
+                <button
+                  key={item}
+                  className={`filter-pill ${filter === item ? 'active' : ''}`}
+                  onClick={() => setFilter(item)}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+            <div className="toolbar-side">
+              <input
+                type="text"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="search logs, tools, categories"
+              />
+              <button className={`toolbar-button ${autoScroll ? 'active' : ''}`} onClick={() => setAutoScroll((value) => !value)}>
+                Auto-scroll
+              </button>
+            </div>
+          </section>
+
+          <section
+            className="feed-panel"
+            ref={feedRef}
+            onScroll={() => {
+              if (!feedRef.current) return;
+              const distance = feedRef.current.scrollHeight - feedRef.current.scrollTop - feedRef.current.clientHeight;
+              if (distance > 140 && autoScroll) setAutoScroll(false);
+              if (distance < 24 && !autoScroll) setAutoScroll(true);
+            }}
+          >
+            {filteredFeed.map((item) => {
+              const kind = classifyLog(item);
+              const ts = item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '—';
+              const title = item._isAction ? (item.tool || 'action') : (item.category || 'log');
+              const body = item._isAction
+                ? `${item.success === false ? 'failed' : 'ok'}${item.summary ? ` — ${item.summary}` : ''}`
+                : (item.message || item.raw || '');
+
+              return (
+                <div className={`feed-row tone-${kind.tone}`} key={item._id}>
+                  <div className="feed-meta">
+                    <span>{ts}</span>
+                    <span className="feed-tag">{kind.tag}</span>
+                    <strong>{title}</strong>
+                  </div>
+                  <p>{body}</p>
+                </div>
+              );
+            })}
+            <div ref={feedBottomRef} />
+          </section>
+        </div>
+      ) : null}
+
+      {view === 'scan' ? (
+        <div className="content-stack">
+          <section className="deck-card">
+            <div className="card-head">
+              <div>
+                <p className="card-kicker">Intelligence</p>
+                <h3>Observed token board</h3>
+              </div>
+              <div className="card-aside">Connected: {connected ? 'yes' : 'no'}</div>
+            </div>
+            <TokenTable tokens={[...(agentData.observedTokens?.observed || [])].reverse().slice(0, 24)} />
+          </section>
+        </div>
+      ) : null}
+    </section>
   );
 }

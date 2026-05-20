@@ -24,6 +24,7 @@ import {
   startTimer, elapsedMs, recordLatency, recordCounter,
 } from "./metrics.js";
 import { log } from "./logger.js";
+import { config } from "./config.js";
 import { recordExecutionQuality } from "./execution-quality-memory.js";
 
 const DEFAULT_GATE = {
@@ -96,6 +97,16 @@ export async function executeFastBuy({
   }
   if (!(deployAmountSol > 0)) {
     return { success: false, error: "deployAmountSol must be > 0" };
+  }
+
+  if (config.trading?.confirmMode && process.env.DRY_RUN !== "true") {
+    recordCounter("fast_buy_blocked_confirm_mode");
+    return {
+      success: false,
+      blocked: true,
+      pending_confirmation: true,
+      error: "confirmMode active: fast-track BUY must be approved via pending intent",
+    };
   }
 
   const t = startTimer();

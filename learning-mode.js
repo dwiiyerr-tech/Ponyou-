@@ -14,6 +14,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { addLesson } from "./lessons.js";
+import { buildStructuredOutputBlock, tryParseStructuredOutput, validateStructuredOutput, extractLessonsFromStructuredOutput } from "./structured-output.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ANALYSIS_FILE = path.join(__dirname, "loss-analysis.json");
@@ -163,7 +164,10 @@ LESSON_1: [pelajaran konkret 1]
 LESSON_2: [pelajaran konkret 2, jika ada]
 LESSON_3: [pelajaran konkret 3, jika ada]
 
-Jawab dalam Bahasa Indonesia, singkat dan konkret. Tidak perlu panjang.
+OUTPUT:
+${buildStructuredOutputBlock("LOSS_ANALYSIS")}
+
+Jawab hanya JSON valid, tanpa markdown atau penjelasan tambahan.
 `.trim();
 }
 
@@ -171,56 +175,47 @@ Jawab dalam Bahasa Indonesia, singkat dan konkret. Tidak perlu panjang.
  * Simpan hasil analisis LLM ke loss-analysis.json.
  * Auto-ekstrak lessons dan tambahkan ke lessons.js.
  */
-export function recordLossAnalysis({ lossContext, analysisText, marketCondition }) {
+export function recordLossAnalysis({ lossContext, analysisText, marketCondition, analysisRole = "LOSS_ANALYSIS" }) {
   const data = loadAnalyses();
+  const parsed = tryParseStructuredOutput(analysisText);
+  const validation = validateStructuredOutput(analysisRole, parsed);
+  const confidence = validation.ok ? Number(validation.normalized.confidence || 0) : 0;
+  const lessons = validation.ok ? extractLessonsFromStructuredOutput(validation.normalized) : [];
+  const promotionEligible = validation.ok && confidence >= 70;
 
-  // Parse lessons dari teks analisis. Patterns cover both loss-analysis
-  // (LESSON_1:, AVOID_PATTERN:) and observation-analysis (LESSON:, ADJUSTMENT:,
-  // REPLICATE_PATTERN:, ALPHA_SIGNAL:) prompt formats.
-  const lessons = [];
-  const text = analysisText || "";
-  const lessonPatterns = [
-    /LESSON_\d+:\s*(.+)/gi,
-    /^\s*LESSON:\s*(.+)/gim,
-    /AVOID_PATTERN:\s*(.+)/gi,
-    /ADJUSTMENT:\s*(.+)/gi,
-    /REPLICATE_PATTERN:\s*(.+)/gi,
-    /ALPHA_SIGNAL:\s*(.+)/gi,
-  ];
-  const seen = new Set();
-  for (const pattern of lessonPatterns) {
-    const re = new RegExp(pattern.source, pattern.flags);
-    let match;
-    while ((match = re.exec(text)) !== null) {
-      const lesson = match[1].trim();
-      if (lesson.length > 10 && !seen.has(lesson)) {
-        seen.add(lesson);
-        lessons.push(lesson);
-      }
-    }
+  if (!validation.ok) {
+    log("learning_warning", `Structured output rejected for ${analysisRole}: ${validation.errors.join("; ")}`);
   }
 
   const entry = {
     ts: new Date().toISOString(),
+    analysis_role: String(analysisRole || "LOSS_ANALYSIS").toUpperCase(),
     trigger: lossContext?.exit_reason || "UNKNOWN",
     symbol: lossContext?.symbol || "?",
     pnl_pct: lossContext?.pnl_pct,
     market_condition: marketCondition || "UNKNOWN",
+    confidence,
+    structured_valid: validation.ok,
+    validation_errors: validation.errors,
     analysis: analysisText?.slice(0, 2000),
     lessons_extracted: lessons,
+    lesson_promotion: promotionEligible ? "approved" : "pending",
   };
 
   data.analyses.push(entry);
   if (data.analyses.length > 100) data.analyses = data.analyses.slice(-100);
   saveAnalyses(data);
 
-  // Auto-add lessons
-  for (const lesson of lessons) {
-    addLesson(lesson, ["loss_analysis", "auto"], { role: "SCREENER" });
+  if (promotionEligible) {
+    for (const lesson of lessons) {
+      addLesson(lesson, ["loss_analysis", "auto"], { role: "SCREENER" });
+    }
+  } else if (lessons.length > 0) {
+    log("learning", `Analysis stored with ${lessons.length} lessons pending review (confidence ${confidence}).`);
   }
 
-  log("learning", `Analisis loss disimpan. ${lessons.length} lesson ditambahkan.`);
-  return { saved: true, lessons_added: lessons.length, lessons };
+  log("learning", `Analisis ${analysisRole} disimpan. ${promotionEligible ? lessons.length : 0} lesson ditambahkan.`);
+  return { saved: true, lessons_added: promotionEligible ? lessons.length : 0, lessons, structured_valid: validation.ok, validation_errors: validation.errors, confidence, promotion_eligible: promotionEligible };
 }
 
 /**

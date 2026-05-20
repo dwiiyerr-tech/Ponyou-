@@ -15,7 +15,7 @@ const PROVIDER_CONFIGS = {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: true,
+      toolChoice: false,
       vision: true,
       streaming: true,
     },
@@ -30,7 +30,7 @@ const PROVIDER_CONFIGS = {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: true,
+      toolChoice: false,
       vision: true,
       streaming: true,
     },
@@ -90,7 +90,7 @@ const PROVIDER_CONFIGS = {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: true,
+      toolChoice: false,
       vision: false,
       streaming: true,
     },
@@ -120,7 +120,7 @@ const PROVIDER_CONFIGS = {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: true,
+      toolChoice: false,
       vision: false,
       streaming: true,
     },
@@ -135,7 +135,7 @@ const PROVIDER_CONFIGS = {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: true,
+      toolChoice: false,
       vision: false,
       streaming: true,
     },
@@ -160,7 +160,7 @@ function buildCustomProviderConfig(entry) {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: true,
+      toolChoice: false,
       vision: false,
       streaming: true,
       ...(entry.features || {}),
@@ -243,6 +243,13 @@ export async function createLLMClient(config) {
     "(none)";
 
   log("llm", `Initializing ${providerConfig.name} client → ${resolvedBaseURL}`);
+
+  if (!providerConfig.features?.systemRole) {
+    log("llm", `Provider ${providerConfig.name} has no system-role support; forcing conservative user-embedded prompting.`);
+  }
+  if (!providerConfig.features?.toolChoice) {
+    log("llm", `Provider ${providerConfig.name} has no trusted tool-choice support; live actions will use conservative auto mode.`);
+  }
 
   // Handle Anthropic Claude API.
   //

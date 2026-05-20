@@ -1,6 +1,11 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import fs from "fs";
+import path from "path";
 import { trackPosition, _resetStateForTests } from "../state.js";
 import { planWalletExecution } from "../wallet-strategy.js";
+
+const STATE_FILE = path.join(process.cwd(), "state.json");
+let backup = null;
 
 const wallets = [
   { address: "walletA", label: "A", status: "hot" },
@@ -10,6 +15,14 @@ const wallets = [
 
 beforeEach(() => {
   _resetStateForTests();
+  backup = fs.existsSync(STATE_FILE) ? fs.readFileSync(STATE_FILE, "utf8") : null;
+  if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
+});
+
+afterEach(() => {
+  _resetStateForTests();
+  if (backup != null) fs.writeFileSync(STATE_FILE, backup);
+  else if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
 });
 
 describe("planWalletExecution", () => {

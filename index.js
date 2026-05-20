@@ -22,7 +22,7 @@ import {
 import {
   listPendingIntents, getIntent, consumeIntent,
 } from "./intents.js";
-import { trackPosition, recordClose, getTrackedPosition, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl } from "./state.js";
+import { trackPosition, recordClose, getTrackedPosition, getState, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl, cleanStaleTestPositions } from "./state.js";
 import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
 import {
   startTimer, elapsedMs, recordLatency, recordError, recordCounter,
@@ -34,6 +34,7 @@ import {
 } from "./kill-switch.js";
 import { runFastTrackBatch } from "./fast-buy.js";
 import { startGeyserStream } from "./geyser.js";
+import { attachExitMonitor, checkPriceDrop } from "./geyser-exit-monitor.js";
 import {
   initWalletManager, getActiveWallet, markWalletError,
   resetWalletErrors, getWalletCapitalSol, isMultiWalletEnabled, getAllWallets, buildCapitalAwareWalletPlan, getWalletByAddress,
@@ -47,7 +48,7 @@ import {
 } from "./trading-plan.js";
 import {
   recordMarketSnapshot, getMarketIntelligence,
-  getRecommendedAdjustments,
+  getRecommendedAdjustments, recordMarketResearchEnrichment,
 } from "./market-intelligence.js";
 import {
   scoreRugRisk, isDevBlocked, isTokenBlacklisted, recordRug,
@@ -102,6 +103,8 @@ const executionMode = resolveExecutionMode();
 log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " (demo/dry-run unified)" : ""}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
 
+const MAX_CANDIDATES_PER_CYCLE = 20;
+
 // Initialize multi-agent router for research/narrative tasks.
 const agentRouter = new AgentRouter({
   callLLM: async (messages) => {
@@ -112,6 +115,52 @@ const agentRouter = new AgentRouter({
   rufloEnabled: false, // disable ruflo for now
 });
 log("startup", `AgentRouter initialized — Gemini: ${!!process.env.GEMINI_API_KEY}, Codex: true`);
+
+export function getAgentRouter() {
+  return agentRouter;
+}
+
+async function enrichMarketResearchWithAgentRouter({ marketIntel, candidates }) {
+  if (!marketIntel || !Array.isArray(candidates) || candidates.length === 0) return null;
+
+  const topTokens = candidates.slice(0, 6).map(t => ({
+    symbol: t.symbol,
+    mint: t.mint,
+    mcap: t.mcap,
+    volume: t.volume,
+    swaps: t.swaps,
+    buy_vol: t.buy_vol,
+    sell_vol: t.sell_vol,
+    hot_level: t.hot_level,
+    narrative_tags: t.narrative_tags,
+  }));
+  const marketQuery = [
+    "Market research task for Solana memecoin screening.",
+    "Summarize current narrative strength, crowding risk, and one concise caution.",
+    "Do not make buy/sell decisions or sizing recommendations.",
+    `Market condition: ${marketIntel.condition} - ${marketIntel.description}`,
+    `Top discovered tokens: ${JSON.stringify(topTokens)}`,
+  ].join("\n");
+
+  const researchResult = await agentRouter.invoke(marketQuery, {
+    preferAgent: "gemini",
+    timeoutMs: 45_000,
+    confidenceGate: { safetySensitive: false, minConfidence: 0.6 },
+  });
+  if (researchResult.error) {
+    log("market_research_error", researchResult.error);
+    return null;
+  }
+
+  const saved = recordMarketResearchEnrichment({
+    agent: researchResult.agent,
+    duration_ms: researchResult.durationMs,
+    condition: marketIntel.condition,
+    summary: String(researchResult.result || "").slice(0, 2000),
+  });
+  log("market_research", `AgentRouter enrichment saved via ${researchResult.agent}`);
+  return saved;
+}
 
 // ─── Init Multi-Wallet ────────────────────────────────────────
 initWalletManager();
@@ -128,6 +177,9 @@ log("readiness", startupReadiness.summary);
 if ((startupReadiness.warnings || []).length > 0) {
   log("readiness", formatReadinessReport(startupReadiness));
 }
+
+const staleCleaned = cleanStaleTestPositions();
+if (staleCleaned > 0) log("startup", `Removed ${staleCleaned} stale test positions from state`);
 
 // ─── Auto-init trading plan ───────────────────────────────────
 if (!getTradingPlan() && config.pilot.enabled) {
@@ -651,7 +703,9 @@ async function refreshSessionPnl(totalUsd) {
   // Skip jika nilai wallet invalid — wallet API gagal sering balikin 0,
   // jangan biarkan itu di-interpret sebagai loss 100%.
   if (!Number.isFinite(totalUsd) || totalUsd <= 0) {
-    log("plan", `refreshSessionPnl skipped: invalid totalUsd=${totalUsd}`);
+    if (executionMode.isLive) {
+      log("plan_warn", `refreshSessionPnl skipped: invalid totalUsd=${totalUsd}`);
+    }
     return;
   }
   // Kill-switch drawdown check: anchored to the first valid balance the bot
@@ -936,6 +990,36 @@ async function checkDeterministicExits(tokens) {
     const currentPnlPct = tracked.initial_value_usd > 0
       ? ((token.usd - tracked.initial_value_usd) / tracked.initial_value_usd) * 100
       : 0;
+    const currentPrice = Number(
+      token?.priceUsd
+      ?? token?.price_usd
+      ?? token?.price
+      ?? (token?.balance > 0 ? token.usd / token.balance : 0)
+    );
+    const entryPrice = Number(
+      tracked?.entry_price
+      ?? tracked?.lastKnownPrice
+      ?? tracked?.signal_snapshot?.entry_price
+      ?? tracked?.signal_snapshot?.priceUsd
+      ?? tracked?.signal_snapshot?.price_usd
+      ?? tracked?.signal_snapshot?.price
+      ?? 0
+    );
+    if (currentPrice > 0 && entryPrice > 0) {
+      const dropped = checkPriceDrop(
+        { ...tracked, mint: token.mint, entry_price: entryPrice },
+        currentPrice,
+        (mint, reason, detail) => {
+          log("exit_signal", `Price drop signal: ${mint.slice(0, 8)} — ${reason}: ${detail}`);
+          if (telegramEnabled()) {
+            sendHTML(`⚠️ <b>Price Drop Alert</b>\nMint: <code>${mint.slice(0, 8)}</code>\n${detail}`).catch(() => {});
+          }
+        }
+      );
+      if (dropped) {
+        log("exit_signal", `Emergency price drop detected for ${token?.mint?.slice(0, 8)}`);
+      }
+    }
 
     // Persist the new peak — mutating `tracked` in memory isn't enough because
     // a restart wipes the cache and resets the trailing-stop reference to 0.
@@ -1312,11 +1396,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const gasFee = await getSolanaGasFee();
     const discovery = await discoverTokens({ timeframe: "1m" });
     const candidates = discovery.tokens || [];
+    const cappedCandidates = candidates.slice(0, MAX_CANDIDATES_PER_CYCLE);
+    if (candidates.length > MAX_CANDIDATES_PER_CYCLE) {
+      log("screening", `Capping candidates ${candidates.length} -> ${MAX_CANDIDATES_PER_CYCLE} to avoid API burst`);
+    }
 
     // ─── Market intelligence ─────────────────────
-    const marketSnap = recordMarketSnapshot(candidates);
+    const marketSnap = recordMarketSnapshot(cappedCandidates);
     const marketIntel = getMarketIntelligence();
     log("market", `Market: ${marketIntel.condition} (confidence: ${marketSnap.confidence})`);
+    enrichMarketResearchWithAgentRouter({ marketIntel, candidates: cappedCandidates })
+      .catch(e => log("market_research_error", e.message));
 
     if (marketIntel.condition === "DEAD") {
       _screeningBusy = false;
@@ -1335,7 +1425,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     // ─── Filter + Rug Memory ─────────────────────
     const scoredCandidates = [];
-    for (const token of candidates.slice(0, 8)) {
+    for (const token of cappedCandidates.slice(0, 8)) {
       if (isTokenBlacklisted(token.mint)) continue;
       if (isTokenOnCooldown(token.mint)) continue;
       if (token.creator && isDevBlocked(token.creator)) continue;
@@ -1696,6 +1786,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
 // startGeyserStream() returns null and we silently keep polling-only.
 let _geyserStream = null;
 let _turboStarted = false;
+let _exitMonitorCleanup = null;
 const _geyserLastByMint = new Map();
 let _geyserLastGlobalTs = 0;
 const SOL_MINT_STR = "So11111111111111111111111111111111111111112";
@@ -1803,8 +1894,28 @@ function startTurboButtons() {
   _turboStarted = true;
   try {
     _geyserStream = startGeyserStream({ onEvent: handleSmartWalletSwap, onDisconnect: handleGeyserDisconnect });
-    if (_geyserStream) log("turbo", "Geyser stream active — real-time smart-wallet monitoring ON");
-    else log("turbo", "Geyser disabled (HELIUS_ATLAS_WS_URL not set) — polling-only");
+    if (_geyserStream) {
+      log("turbo", "Geyser stream active — real-time smart-wallet monitoring ON");
+
+      _exitMonitorCleanup = attachExitMonitor(
+        _geyserStream,
+        () => Object.values(getState()?.positions || {}).filter(p => !p?.closed),
+        {
+          onEmergencyExit: async (mint, reason, detail) => {
+            log("geyser_exit_emergency", `EMERGENCY EXIT SIGNAL: ${mint.slice(0, 8)} reason=${reason} — ${detail}`);
+            if (telegramEnabled()) {
+              sendHTML(`🚨 <b>Emergency Exit Signal</b>\nMint: <code>${mint.slice(0, 8)}</code>\nReason: ${reason}\n${detail}`).catch(() => {});
+            }
+          },
+          onSuspiciousActivity: (mint, reason, detail) => {
+            log("geyser_exit_warn", `Suspicious: ${mint.slice(0, 8)} — ${reason}: ${detail}`);
+          },
+        }
+      );
+      log("turbo", "Exit monitor attached to Geyser stream");
+    } else {
+      log("turbo", "Geyser disabled (HELIUS_ATLAS_WS_URL not set) — polling-only");
+    }
   } catch (e) {
     log("turbo_error", `startGeyserStream failed: ${e.message}`);
   }

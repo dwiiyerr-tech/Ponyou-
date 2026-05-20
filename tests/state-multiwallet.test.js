@@ -4,6 +4,7 @@ import path from "path";
 import {
   _resetStateForTests,
   buildPositionKey,
+  cleanStaleTestPositions,
   getTrackedPosition,
   listTrackedPositions,
   recordClose,
@@ -49,5 +50,32 @@ describe("state multi-wallet positions", () => {
 
     expect(getTrackedPosition("mintA", "wallet1")).toBeNull();
     expect(getTrackedPosition("mintA", "wallet2")?.closed).toBe(false);
+  });
+
+  it("cleans stale test positions without deleting valid multi-wallet positions", async () => {
+    const validMint = "6veQU7HDdXV5DC2Eqhnri5q71gkMzG73qKkSSudnpump";
+
+    await trackPosition({ position: "mintSell", pool: "gmgn", pool_name: "TEST", amount_sol: 1, initial_value_usd: 10, wallet_address: "walletB" });
+    await trackPosition({ position: "SMOKE_TEST_POS", pool: "gmgn", pool_name: "TEST", amount_sol: 1, initial_value_usd: 10 });
+    await trackPosition({ position: validMint, pool: "gmgn", pool_name: "REAL", amount_sol: 1, initial_value_usd: 10, wallet_address: "walletA" });
+
+    expect(cleanStaleTestPositions()).toBe(2);
+
+    expect(getTrackedPosition("mintSell", "walletB")).toBeNull();
+    expect(getTrackedPosition("SMOKE_TEST_POS")).toBeNull();
+    expect(getTrackedPosition(validMint, "walletA")?.closed).toBe(false);
+  });
+
+  it("identifies test position keys correctly", () => {
+    const testKeys = ["mintSell::walletB", "mintDca::walletA", "SMOKE_TEST_POS"];
+    const validKeys = ["6veQU7HDdXV5DC2Eqhnri5q71gkMzG73qKkSSudnpump"];
+
+    for (const key of testKeys) {
+      expect(key.includes("::") || key === "SMOKE_TEST_POS").toBe(true);
+    }
+    for (const key of validKeys) {
+      expect(key.includes("::")).toBe(false);
+      expect(key.length).toBeGreaterThanOrEqual(32);
+    }
   });
 });

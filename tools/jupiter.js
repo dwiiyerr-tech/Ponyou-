@@ -93,13 +93,26 @@ async function getDecimals(mint) {
  * Swap tokens via Jupiter Ultra API.
  * Supports SOL → Token and Token → SOL.
  */
-export async function swapToken({ token_in, token_out, amount, slippage = 0.5, wallet: walletOverride = null, wallet_address = null }) {
+export async function swapToken({ token_in, token_out, amount, slippage = 0.5, wallet: walletOverride = null, wallet_address = null, executionContext = {} }) {
   if (process.env.DRY_RUN === "true") {
     return {
       dry_run: true,
       would_swap: { token_in, token_out, amount, slippage, wallet_address },
       wallet_address,
       message: "DRY RUN — no transaction sent",
+    };
+  }
+
+  const execCtx = executionContext && typeof executionContext === "object" ? executionContext : {};
+  const approvedIntent = execCtx.approvedIntent === true || execCtx.source === "pending-intent";
+  if (config.trading?.confirmMode && token_in === "SOL" && token_out && token_out !== "SOL" && !approvedIntent) {
+    return {
+      success: false,
+      blocked: true,
+      pending_confirmation: true,
+      error: "confirmMode active: live BUY must be approved via pending intent",
+      wallet_address,
+      execution_context: execCtx,
     };
   }
 
@@ -128,6 +141,7 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
         jito_bundle_id,
         wallet_address: activeWalletAddress,
         execution_provider: "jito",
+        execution_context: execCtx,
       };
     }
 
@@ -196,10 +210,11 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
       amount_out: result.outputAmountResult ?? result.outputAmount ?? result.outAmount ?? null,
       fee_bps:    result.feeBps ?? null,
       execution_provider: "jupiter_ultra",
+      execution_context: execCtx,
     };
   } catch (error) {
     log("swap_error", `Jupiter swap: ${error.message}`);
-    return { success: false, error: error.message, execution_provider: isJitoEnabled(config) ? "jito" : "jupiter_ultra" };
+    return { success: false, error: error.message, execution_provider: isJitoEnabled(config) ? "jito" : "jupiter_ultra", execution_context: execCtx };
   }
 }
 

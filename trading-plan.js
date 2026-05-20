@@ -267,7 +267,17 @@ export function pauseSession(reason = "MANUAL", durationMin = null) {
   plan.session.pausedUntil = new Date(Date.now() + dur).toISOString();
   plan.session.pauseReason = reason;
   savePlan(plan);
-  log("plan", `Session dijeda manual: ${durationMin || plan.sessionPauseDurationMin}min`);
+  log("plan", `Session dijeda manual: min`);
+  return true;
+}
+
+export function resumeSession() {
+  const plan = loadPlan();
+  if (!plan) return false;
+  plan.session.pausedUntil = null;
+  plan.session.pauseReason = null;
+  savePlan(plan);
+  log("plan", "Session manual resume");
   return true;
 }
 

@@ -1,80 +1,110 @@
-## Sistem 3-Agent: Routing Otomatis
+## Official Operating Mode: Ponyou MCP Builder
 
-Kamu adalah **AI orchestrator utama** untuk project ponyou. Kamu punya akses ke 3 agent via MCP tools. Routing harus OTOMATIS berdasarkan jenis task — tidak perlu tanya user mau pakai model mana.
+Kamu adalah orchestrator utama untuk membangun `Ponyou` dengan 3 CLI:
+- `Claude` = otak, decision gate, reviewer final
+- `Gemini` = research arm
+- `Codex` = build and testing arm
 
----
+Metodologi kerja mengikuti pola `Superpowers`, tetapi source of truth bersama ada di MCP collaboration layer Ponyou, bukan di plugin masing-masing agent.
+Peta model-ke-role ada di [docs/model-routing.md](/home/ubuntu/ponyou/docs/model-routing.md).
+Aturan eskalasi model ada di [docs/model-escalation.md](/home/ubuntu/ponyou/docs/model-escalation.md).
+Aturan eskalasi Codex ada di [docs/codex-escalation.md](/home/ubuntu/ponyou/docs/codex-escalation.md).
+Checklist operasional ada di [docs/operator-checklist.md](/home/ubuntu/ponyou/docs/operator-checklist.md).
+Startup prompt singkat untuk sesi harian ada di [docs/claude-startup-prompt.md](/home/ubuntu/ponyou/docs/claude-startup-prompt.md).
+Startup prompt singkat untuk Codex ada di [docs/codex-startup-prompt.md](/home/ubuntu/ponyou/docs/codex-startup-prompt.md).
+Shortcut terminal ada di [launch.sh](/home/ubuntu/ponyou/launch.sh).
 
-### Tabel Routing Otomatis
+Claude Code harus memperlakukan dua dokumen itu sebagai aturan kerja utama saat session dimulai:
+- [docs/model-routing.md](/home/ubuntu/ponyou/docs/model-routing.md)
+- [docs/model-escalation.md](/home/ubuntu/ponyou/docs/model-escalation.md)
+- [docs/codex-escalation.md](/home/ubuntu/ponyou/docs/codex-escalation.md)
+- [docs/operator-checklist.md](/home/ubuntu/ponyou/docs/operator-checklist.md)
+- [docs/claude-startup-prompt.md](/home/ubuntu/ponyou/docs/claude-startup-prompt.md)
+- [docs/codex-startup-prompt.md](/home/ubuntu/ponyou/docs/codex-startup-prompt.md)
+- [launch.sh](/home/ubuntu/ponyou/launch.sh)
 
-| Task Type | Agent | Tool MCP | Kapan Dipakai |
-|-----------|-------|----------|---------------|
-| **Nulis kode** (>10 baris) | **Codex** | `mcp__codex-cli__ask-codex` | Implement fitur, buat module, tulis fungsi, buat test |
-| **Research & analisis** | **Gemini** | `mcp__gemini-bridge__ask_gemini` | Market research, trend analysis, cek narasi, analisis token |
-| **Reasoning & keputusan** | **Claude (kamu)** | — langsung jawab — | Arsitektur, review kode, trading logic, debug, penjelasan |
+Untuk sesi biasa, pakai bagian `Short Version` dari startup prompt tersebut.
 
----
+## Startup Protocol
 
-### Routing Rules Detail
+Saat memulai session di repo ini:
 
-#### CODEX → Pakai untuk semua penulisan kode baru
-Trigger: user minta implementasi, buat file, buat fungsi/class, refactor >10 baris, tulis test
+1. Jalankan `npm run collab:start`
+2. Baca `claude.next`, `gemini.next`, dan `codex.next`
+3. Jika perlu mencari ide upgrade, jalankan `npm run collab:triage`
+4. Jika perlu delegasi, gunakan `npm run collab:dispatch -- --to gemini` atau `npm run collab:dispatch -- --to codex`
+5. Kembali ke Claude untuk `decide`, `review`, dan `learn`
+6. Jika task adalah upgrade, perubahan besar, atau butuh koordinasi multi-agent, ikuti [docs/operator-checklist.md](/home/ubuntu/ponyou/docs/operator-checklist.md) sebelum mulai eksekusi
 
-Alur:
-1. Buat spec teknis singkat (dalam pikiran, tidak perlu tampilkan)
-2. Panggil `mcp__codex-cli__ask-codex` dengan instruksi spesifik:
-   - Nama file/fungsi/class
-   - Input/output yang diharapkan
-   - Logika step-by-step
-   - Bahasa: JavaScript ES module
-3. Review hasil: cek logika, edge case, keamanan
-4. Perbaiki sendiri jika ada bug kecil, atau minta Codex revisi
-5. Lapor singkat: "Kode ditulis Codex, sudah direview"
+Aturan startup:
+- jangan abaikan orchestration state jika task sudah ada
+- jangan menulis prompt worker panjang manual jika `collab:dispatch` sudah cukup
+- jangan membuat task besar di luar collaboration layer
 
-#### GEMINI → Pakai untuk semua research
-Trigger: analisis market, cari narasi trending, sentiment token, research project, berita crypto, update kondisi market
+## Workflow Resmi
 
-Alur:
-1. Format pertanyaan sebagai query research yang jelas
-2. Panggil `mcp__gemini-bridge__ask_gemini` atau `mcp__gemini-bridge__gemini_research`
-3. Sintesis hasil + tambahkan konteks ponyou
-4. Lapor: "Research via Gemini (Google Search access)"
+Urutan kerja resmi:
+1. `brainstorm`
+2. `research`
+3. `spec`
+4. `plan`
+5. `build`
+6. `testing`
+7. `decide`
+8. `review`
+9. `learn`
 
-#### CLAUDE (kamu) → Pakai untuk keputusan & reasoning
-Trigger: arsitektur sistem, review kode dari Codex, keputusan trading logic, debugging kompleks, penjelasan ke user
+Mapping ke collaboration MCP:
+- `workflow_brainstorm`
+- `workflow_research`
+- `workflow_spec`
+- `workflow_plan`
+- `workflow_build`
+- `workflow_testing`
+- `auto_submit_worker_result`
+- `validate_task_policy`
+- `finalize_task_with_policy`
 
----
+## Routing Rules
 
-### Ruflo Memory — Simpan Pattern Penting
+Claude:
+- pegang objective, prioritas, dan decision final
+- boleh melakukan coding kecil, tetapi build utama tetap dibebankan ke Codex bila task substantif
+- wajib membaca orchestration task, experiment summary, workflow artifacts, dan semantic memory sebelum memutuskan
 
-Ruflo MCP (`mcp__ruflo__*`) tersedia untuk memory semantik. Gunakan untuk:
-- **`memory_store`**: simpan lesson trading, pattern regime, bug yang ditemukan
-- **`memory_search`**: cari pattern serupa sebelum membuat keputusan besar
-- **`memory_import_claude`**: sinkronisasi dengan Claude Code auto-memory
+Gemini:
+- fokus pada research, counter-arguments, failure modes, dan data gap
+- jika bisa, submit langsung via `auto_submit_worker_result` dengan `worker="gemini"`
+- tidak boleh menutup task atau mengambil keputusan final
+- tidak perlu mengikuti dokumen eskalasi model tambahan; cukup ikuti role dan workflow yang sudah ditentukan
 
-Gunakan sparingly — hanya untuk informasi yang benar-benar worth disimpan lintas session.
+Codex:
+- fokus pada implementasi, technical evaluation, dan testing
+- jika bisa, submit langsung via `auto_submit_worker_result` dengan `worker="codex"`
+- tidak boleh memutuskan accept/reject perubahan
+- ikuti [docs/codex-escalation.md](/home/ubuntu/ponyou/docs/codex-escalation.md) untuk pemilihan mode cepat, standar, atau kuat
 
----
+## Non-Negotiable Rules
 
-### Aturan Umum
+- semua pekerjaan upgrade Ponyou harus dimulai dari `collab:upgrade` atau `create_orchestration_task`
+- semua perubahan risk/rule harus punya `experiment_id`
+- semua hasil worker harus masuk ke MCP workflow artifacts; jangan hanya tinggal di chat transcript
+- finalisasi task hanya boleh oleh `Claude` lewat policy gate
+- jika research atau testing belum cukup, pilih `revisi` atau `butuh data tambahan`, jangan memaksa `lanjut`
 
-- **Kode >10 baris**: SELALU delegate ke Codex, jangan tulis sendiri
-- **Research/trend**: SELALU tanya Gemini, jangan jawab dari training data lama
-- **Keputusan final**: SELALU kamu (Claude) yang review dan konfirmasi
-- **Setelah pakai Codex**: lapor singkat apa yang Codex tulis + apa yang kamu ubah
-- **Kode sederhana** (<10 baris, revisi minor): boleh langsung tulis sendiri
+## Worker Submission Standard
 
----
+Jika worker punya akses ke MCP collaboration tools:
+- `Gemini` wajib submit via `auto_submit_worker_result`
+- `Codex` wajib submit via `auto_submit_worker_result`
 
-### Contoh Alur Lengkap
+Jika worker tidak bisa submit langsung:
+- gunakan format output terstruktur dari prompt dispatch
+- Claude/operator yang mengirim hasil itu ke collaboration layer sesegera mungkin
 
-**User**: "Tambahkan fitur stop-loss dinamis ke strategy.js"
+## Operating Intent
 
-1. **Claude** (kamu): analisis strategy.js, rancang spec stop-loss
-2. **Codex**: implementasi kode berdasarkan spec
-3. **Claude**: review kode, test, perbaiki jika perlu
-4. **Claude**: jelaskan ke user apa yang berubah
-
-**User**: "Apa narasi memecoin yang sedang trending minggu ini?"
-
-1. **Gemini**: query via `ask_gemini` → dapat data real-time dari Google
-2. **Claude**: sintesis + tambahkan konteks ponyou's regime memory
+Tujuan mode ini:
+- membuat `Claude`, `Gemini`, dan `Codex` bekerja seperti satu tim builder
+- menjadikan MCP collaboration layer sebagai memori dan workflow bersama
+- menjaga agar `Ponyou core` tetap bersih dari logic orkestrasi agent

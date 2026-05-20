@@ -57,6 +57,34 @@ function load() {
   }
 }
 
+export function getState() {
+  return load();
+}
+
+export function cleanStaleTestPositions() {
+  const state = getState();
+  const positions = state.positions || {};
+  let cleaned = 0;
+  for (const key of Object.keys(positions)) {
+    // Test position markers use fake mints like "mintSell::walletB".
+    // Keep valid multi-wallet keys: "<valid_mint>::<wallet>".
+    const pos = positions[key];
+    const mint = pos?.mint || key.split("::")[0] || "";
+    const isSmokeTest = key === "SMOKE_TEST_POS" || mint === "SMOKE_TEST_POS";
+    const isInvalidMint = mint.length < 32 || mint.length > 44;
+    const isTestMultiWalletKey = key.includes("::") && isInvalidMint;
+    if (isSmokeTest || isTestMultiWalletKey || (!key.includes("::") && isInvalidMint)) {
+      delete positions[key];
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) {
+    save({ ...state, positions });
+    log("state", `Cleaned ${cleaned} stale/test positions from state`);
+  }
+  return cleaned;
+}
+
 async function save(state) {
   // Only update the in-memory cache AFTER the disk write succeeds. Otherwise
   // a failed write leaves us with cache that doesn't match disk.

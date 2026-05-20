@@ -13,6 +13,7 @@ import { recordCounter } from "../metrics.js";
 import { config } from "../config.js";
 import { analyzeCapitalAwareWalletPlan } from "../multi-wallet-allocation.js";
 import { planWalletExecution } from "../wallet-strategy.js";
+import { validateWalletTopology } from "../wallet-topology.js";
 
 // status: 'hot' = aktif | 'cold' = cooldown | 'disabled' = manual off
 const _wallets = new Map(); // address → { keypair, label, status, capital_pct, error_count, cold_until }
@@ -25,6 +26,13 @@ export function initWalletManager() {
   if (_recoveryInterval) { clearInterval(_recoveryInterval); _recoveryInterval = null; }
 
   const mw = config.multiWallet;
+  const topology = validateWalletTopology({ enabled: !!mw?.enabled, wallets: mw?.wallets || [] });
+
+  if (mw?.enabled && !topology.ok) {
+    const error = new Error(`Invalid multi-wallet topology: ${topology.errors.join(" ")}`);
+    error.walletTopology = topology;
+    throw error;
+  }
 
   if (!mw?.enabled || !mw.wallets?.length) {
     // Single-wallet fallback — populate map supaya getActiveWallet() tetap konsisten

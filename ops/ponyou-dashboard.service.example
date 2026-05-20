@@ -1,0 +1,20 @@
+[Unit]
+Description=Ponyou Dashboard 24x7 Supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i/ponyou
+Environment=NODE_ENV=production
+Environment=RESTART_DELAY_SEC=5
+Environment=PORT=3001
+ExecStart=/home/%i/ponyou/ops/run-dashboard-24x7.sh
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

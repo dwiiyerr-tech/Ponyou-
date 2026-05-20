@@ -274,7 +274,11 @@ export async function discoverSmartWallets({
   const adaptiveContext = getAdaptiveSmartWalletContext();
 
   // Stage 3 — score each candidate via Helius (capped to control credits)
-  const SCAN_CAP = Math.min(candidates.length, 40);
+  const MAX_CANDIDATES_PER_SCAN = 20;
+  const SCAN_CAP = Math.min(candidates.length, MAX_CANDIDATES_PER_SCAN);
+  if (candidates.length > MAX_CANDIDATES_PER_SCAN) {
+    log("discovery", `Capping wallet candidates ${candidates.length} -> ${MAX_CANDIDATES_PER_SCAN} to avoid Helius burst`);
+  }
   const discovered = loadDiscovered();
   const results = [];
 

@@ -49,6 +49,16 @@ function saveIntel(intel) {
   fs.writeFileSync(INTEL_FILE, JSON.stringify(intel, null, 2));
 }
 
+export function recordMarketResearchEnrichment(enrichment) {
+  const intel = loadIntel();
+  intel.latestResearch = {
+    ts: new Date().toISOString(),
+    ...enrichment,
+  };
+  saveIntel(intel);
+  return intel.latestResearch;
+}
+
 // ─── Analysis ─────────────────────────────────────────────────
 
 /**
@@ -173,6 +183,7 @@ export function getMarketIntelligence() {
     condition,
     description: CONDITION_DESCRIPTIONS[condition],
     latest_metrics: latestMetrics,
+    research: intel.latestResearch || null,
     recommended_adjustments: getRecommendedAdjustments(condition),
     last_updated: intel.lastUpdated,
     snapshot_count: intel.snapshots.length,

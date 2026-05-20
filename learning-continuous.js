@@ -11,6 +11,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { addLesson, recordRug } from "./lessons.js";
+import { buildStructuredOutputBlock } from "./structured-output.js";
 import { getTokenMarketInfo } from "./tools/gmgn.js";
 import { getTokenSecurityDetails } from "./tools/dexscreener.js";
 
@@ -180,7 +181,10 @@ INSIGHT: [analisis singkat]
 ADJUSTMENT: [saran perubahan parameter/pola]
 LESSON: [pelajaran konkret untuk dicatat]
 
-Jawab dalam Bahasa Indonesia, singkat.
+OUTPUT:
+${buildStructuredOutputBlock("OBSERVATION_ANALYSIS")}
+
+Jawab hanya JSON valid, tanpa markdown atau penjelasan tambahan.
 `.trim();
 }
 
@@ -212,6 +216,9 @@ ALPHA_SIGNAL: [sinyal kuat yang ada]
 REPLICATE_PATTERN: [pola untuk dicari lagi]
 LESSON: [pelajaran konkret]
 
-Jawab dalam Bahasa Indonesia, singkat.
+OUTPUT:
+${buildStructuredOutputBlock("SUCCESS_ANALYSIS")}
+
+Jawab hanya JSON valid, tanpa markdown atau penjelasan tambahan.
 `.trim();
 }

@@ -1,313 +1,226 @@
-import { useState } from 'react';
-
-const TOOLS = [
-  { name: 'discover_tokens',        icon: '◈', group: 'scan' },
-  { name: 'get_token_security',     icon: '◉', group: 'scan' },
-  { name: 'get_smart_money_inflow', icon: '◎', group: 'scan' },
-  { name: 'get_trending_narratives',icon: '◇', group: 'scan' },
-  { name: 'gmgn_swap',              icon: '⚡', group: 'trade' },
-  { name: 'get_wallet_balance',     icon: '◈', group: 'wallet' },
-  { name: 'get_token_info',         icon: '◉', group: 'info' },
-  { name: 'add_lesson',             icon: '◈', group: 'memory' },
-  { name: 'list_lessons',           icon: '◇', group: 'memory' },
-  { name: 'add_to_blacklist',       icon: '✕', group: 'safety' },
-  { name: 'update_config',          icon: '◎', group: 'system' },
-  { name: 'get_recent_decisions',   icon: '◇', group: 'memory' },
-];
-
-const GROUP_COLORS = {
-  scan:   'var(--sys)',
-  trade:  'var(--trade)',
-  wallet: 'var(--warn)',
-  info:   'var(--cyan)',
-  memory: 'var(--tool)',
-  safety: 'var(--neg)',
-  system: 'var(--dim)',
-};
-
 function fmtUsd(n, decimals = 2) {
   if (n == null) return '—';
-  if (typeof n !== 'number') n = parseFloat(n);
-  if (isNaN(n)) return '—';
-  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-  if (Math.abs(n) >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
-  return `$${n.toFixed(decimals)}`;
+  const num = Number(n);
+  if (!Number.isFinite(num)) return '—';
+  if (Math.abs(num) >= 1_000_000) return `$${(num / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(num) >= 1_000) return `$${(num / 1_000).toFixed(1)}K`;
+  return `$${num.toFixed(decimals)}`;
 }
 
-function pnlColor(v) {
-  if (v > 0) return 'var(--pos)';
-  if (v < 0) return 'var(--neg)';
-  return 'var(--dim)';
+function fmtPct(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return '—';
+  return `${num >= 0 ? '+' : ''}${num.toFixed(1)}%`;
 }
 
-function StatusBadge({ status }) {
-  const map = {
-    TRADING: { cls: 'badge-trading', label: '● TRADING' },
-    IDLE:    { cls: 'badge-idle',    label: '○ IDLE' },
-    PAUSED:  { cls: 'badge-paused', label: '⏸ PAUSED' },
-    OFFLINE: { cls: 'badge-offline', label: '✕ OFFLINE' },
-  };
-  const { cls, label } = map[status] || map.OFFLINE;
-  return <span className={`badge ${cls}`}>{label}</span>;
+function pnlTone(value) {
+  if (value > 0) return 'good';
+  if (value < 0) return 'bad';
+  return 'neutral';
 }
 
-function MarketBadge({ condition }) {
-  const map = {
-    HOT:     { cls: 'badge-hot',    label: '▲ HOT' },
-    COLD:    { cls: 'badge-cold',   label: '▽ COLD' },
-    DEAD:    { cls: 'badge-dead',   label: '□ DEAD' },
-    UNKNOWN: { cls: 'badge-offline',label: '? UNKN' },
-  };
-  const { cls, label } = map[(condition || '').toUpperCase()] || map.UNKNOWN;
-  return <span className={`badge ${cls}`}>{label}</span>;
+function statusTone(status) {
+  if (status === 'TRADING') return 'good';
+  if (status === 'PAUSED') return 'warn';
+  if (status === 'OFFLINE') return 'bad';
+  return 'neutral';
 }
 
-function StatRow({ label, value, valueColor }) {
+function Stat({ label, value, tone = 'neutral' }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0' }}>
-      <span style={{ color: 'var(--muted)', fontSize: 11 }}>{label}</span>
-      <span style={{ color: valueColor || 'var(--text)', fontSize: 12, fontWeight: 500 }}>{value}</span>
+    <div className="stat-row">
+      <span>{label}</span>
+      <strong className={`tone-${tone}`}>{value}</strong>
     </div>
   );
+}
+
+function Card({ title, children, aside }) {
+  return (
+    <section className="deck-card">
+      <div className="card-head">
+        <div>
+          <p className="card-kicker">Operator</p>
+          <h3>{title}</h3>
+        </div>
+        {aside ? <div className="card-aside">{aside}</div> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function FeatureChip({ label, enabled }) {
+  return <span className={`feature-chip ${enabled ? 'enabled' : 'disabled'}`}>{label}</span>;
 }
 
 function PositionCard({ address, pos }) {
-  const pnl = pos.pnl_usd ?? pos.unrealized_pnl_usd ?? 0;
-  const pnlPct = pos.pnl_pct ?? pos.unrealized_pnl_pct ?? 0;
+  const pnlUsd = Number(pos.pnl_usd ?? pos.unrealized_pnl_usd ?? 0);
+  const pnlPct = Number(pos.pnl_pct ?? pos.unrealized_pnl_pct ?? 0);
+
   return (
-    <div className="cyber-card slide-in" style={{ marginBottom: 6 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-        <span style={{ color: 'var(--cyan)', fontWeight: 600, fontSize: 12 }}>
-          {pos.symbol || pos.name || address.slice(0, 8) + '…'}
-        </span>
-        <span style={{ color: pnlColor(pnl), fontSize: 11, fontWeight: 600 }}>
-          {pnl >= 0 ? '+' : ''}{pnl.toFixed(3)} USD
-        </span>
+    <div className="position-card">
+      <div className="position-topline">
+        <strong>{pos.symbol || pos.name || `${address.slice(0, 6)}…`}</strong>
+        <span className={`tone-${pnlTone(pnlUsd)}`}>{fmtUsd(pnlUsd)}</span>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <span style={{ color: 'var(--muted)', fontSize: 10 }}>{address.slice(0, 14)}…</span>
-        <span style={{ color: pnlColor(pnlPct), fontSize: 10, fontWeight: 600 }}>
-          {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
-        </span>
+      <div className="position-meta">
+        <span>{address.slice(0, 8)}…{address.slice(-4)}</span>
+        <span className={`tone-${pnlTone(pnlPct)}`}>{fmtPct(pnlPct)}</span>
       </div>
-      {pos.amount_sol && (
-        <div style={{ color: 'var(--dim)', fontSize: 10, marginTop: 2 }}>
-          {parseFloat(pos.amount_sol).toFixed(4)} SOL
-        </div>
-      )}
     </div>
   );
 }
 
-export default function LeftPanel({ agentData, connected }) {
-  const [showAllTools, setShowAllTools] = useState(false);
+function Progress({ label, value, tone = 'good' }) {
+  const width = Math.max(0, Math.min(100, Number(value) || 0));
+  return (
+    <div className="progress-block">
+      <div className="progress-meta">
+        <span>{label}</span>
+        <strong>{Math.round(width)}%</strong>
+      </div>
+      <div className="progress-rail">
+        <div className={`progress-fill ${tone}`} style={{ width: `${width}%` }} />
+      </div>
+    </div>
+  );
+}
+
+export default function LeftPanel({ agentData, connected, lastUpdate }) {
   const { agentStatus, state, tradingPlan, marketIntel, userConfig } = agentData;
+  const positions = Object.entries(state?.positions || {});
+  const session = tradingPlan?.session || {};
+  const currentDay = tradingPlan?.currentDay || 1;
+  const totalDays = tradingPlan?.schedule?.length || userConfig?.planDays || 30;
+  const currentCapital = Number(session.currentCapitalUsd ?? userConfig?.pilotCapitalUsd ?? 0);
+  const startCapital = Number(session.startCapitalUsd ?? userConfig?.pilotCapitalUsd ?? 0);
+  const targetCapital = Number(tradingPlan?.today_target_usd ?? tradingPlan?.schedule?.[currentDay - 1]?.target_usd ?? 0);
+  const marketCondition = String(marketIntel?.currentCondition || 'unknown').toUpperCase();
+  const latestIntel = marketIntel?.snapshots?.[marketIntel.snapshots.length - 1];
+  const confidence = Number(latestIntel?.confidence || 0);
+  const dayProgress = targetCapital > startCapital
+    ? ((currentCapital - startCapital) / (targetCapital - startCapital)) * 100
+    : 0;
+  const planProgress = totalDays > 0 ? (currentDay / totalDays) * 100 : 0;
 
-  const session       = tradingPlan?.session;
-  const currentDay    = tradingPlan?.currentDay || 1;
-  const planDays      = tradingPlan?.schedule?.length || 30;
-  const todaySchedule = tradingPlan?.schedule?.[currentDay - 1];
+  const features = [
+    ['Confirm Mode', !!userConfig?.confirmMode],
+    ['Multi-Wallet', !!userConfig?.multiWalletEnabled],
+    ['Darwin', !!userConfig?.darwinEnabled],
+    ['Indicators', !!userConfig?.chartIndicators?.enabled],
+    ['Vault', !!userConfig?.vaultWallet],
+    ['Daily Report', !!userConfig?.dailyReportEnabled],
+    ['Telegram', !!userConfig?.telegramChatId],
+    ['HiveMind', !!userConfig?.hiveMindApiKey],
+    ['Fast Track', !!userConfig?.fastTrackEnabled],
+    ['Jito', !!userConfig?.jitoEnabled],
+    ['Auto Spread', !!userConfig?.multiWalletAutoSpreadEnabled],
+    ['LP Relay', !!userConfig?.lpAgentRelayEnabled],
+  ];
 
-  const positions     = Object.entries(state?.positions || {});
-  const marketCondition = (marketIntel?.currentCondition || 'UNKNOWN').toUpperCase();
-  const latestIntel   = marketIntel?.snapshots?.[marketIntel.snapshots.length - 1];
-  const confidence    = latestIntel?.confidence || 0;
-
-  const startCap   = session?.startCapitalUsd  || userConfig?.pilotCapitalUsd || 10;
-  const currentCap = session?.currentCapitalUsd || 0;
-  const targetCap  = todaySchedule?.target_usd || startCap * 1.25;
-  const dayProgress  = Math.min(100, Math.max(0,
-    ((currentCap - startCap) / (targetCap - startCap)) * 100));
-  const planProgress = Math.round((currentDay / planDays) * 100);
-  // Log-scale progress toward $8077
-  const capLogProgress = Math.min(100,
-    ((Math.log10(Math.max(10, currentCap || 10)) - 1) / (Math.log10(8077) - 1)) * 100);
-
-  const visibleTools = showAllTools ? TOOLS : TOOLS.slice(0, 6);
+  const wallets = Array.isArray(userConfig?.wallets) ? userConfig.wallets : [];
 
   return (
-    <aside style={{
-      borderRight: '1px solid var(--border)',
-      background: 'var(--bg-panel)',
-      overflowY: 'auto',
-      overflowX: 'hidden',
-      padding: '10px',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 10,
-    }}>
-
-      {/* Agent Status */}
-      <div className="cyber-card">
-        <div className="section-header">Agent Status</div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <StatusBadge status={agentStatus} />
-          <MarketBadge condition={marketCondition} />
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--muted)' }}>
-          <span>confidence</span>
-          <div style={{ flex: 1 }}>
-            <div className="progress-bar">
-              <div className="progress-bar-fill" style={{ width: `${confidence}%` }} />
-            </div>
+    <aside className="left-column">
+      <Card
+        title="Runtime Envelope"
+        aside={<span className={`status-chip ${statusTone(agentStatus)}`}>{agentStatus}</span>}
+      >
+        <div className="metrics-grid two-up compact">
+          <div className="metric-box">
+            <span>Connection</span>
+            <strong className={connected ? 'tone-good' : 'tone-bad'}>{connected ? 'WS LINKED' : 'WS DOWN'}</strong>
           </div>
-          <span style={{ color: 'var(--cyan)', fontWeight: 600 }}>{confidence}%</span>
-        </div>
-      </div>
-
-      {/* Session Stats */}
-      <div className="cyber-card">
-        <div className="section-header">Session</div>
-        <StatRow label="Capital"
-          value={fmtUsd(session?.currentCapitalUsd ?? currentCap)}
-          valueColor="var(--cyan)" />
-        <StatRow label="P&L Today"
-          value={`${(session?.profitUsd || 0) >= 0 ? '+' : ''}${fmtUsd(session?.profitUsd || 0)}`}
-          valueColor={pnlColor(session?.profitUsd || 0)} />
-        <StatRow label="P&L %"
-          value={`${(session?.profitPct || 0) >= 0 ? '+' : ''}${(session?.profitPct || 0).toFixed(1)}%`}
-          valueColor={pnlColor(session?.profitPct || 0)} />
-        <StatRow label="Trades"     value={session?.tradesCount || 0} />
-        <StatRow label="Win / Loss"
-          value={`${session?.winCount || 0} / ${session?.lossCount || 0}`}
-          valueColor={
-            (session?.winCount || 0) > (session?.lossCount || 0) ? 'var(--pos)'
-            : (session?.lossCount || 0) > 0 ? 'var(--neg)'
-            : 'var(--dim)'
-          } />
-
-        {session?.pausedUntil && new Date(session.pausedUntil) > new Date() && (
-          <div style={{ marginTop: 6, padding: '4px 8px',
-            background: 'rgba(255,170,0,0.07)', border: '1px solid rgba(255,170,0,0.2)',
-            borderRadius: 2, fontSize: 10, color: 'var(--warn)' }}>
-            ⏸ Paused until {new Date(session.pausedUntil).toLocaleTimeString()}
-            {session.pauseReason && (
-              <div style={{ color: 'var(--dim)', marginTop: 2 }}>{session.pauseReason}</div>
-            )}
+          <div className="metric-box">
+            <span>Market</span>
+            <strong>{marketCondition}</strong>
           </div>
-        )}
-      </div>
-
-      {/* Compound Plan */}
-      <div className="cyber-card">
-        <div className="section-header">30-Day Compound Plan</div>
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 11 }}>
-          <span style={{ color: 'var(--dim)' }}>
-            Day <span style={{ color: 'var(--title)', fontWeight: 700 }}>{currentDay}</span>
-            <span style={{ color: 'var(--muted)' }}> / {planDays}</span>
-          </span>
-          <span style={{ color: 'var(--muted)', fontSize: 10 }}>+25%/day</span>
-        </div>
-
-        {/* Plan timeline progress */}
-        <div style={{ marginBottom: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between',
-            fontSize: 10, color: 'var(--muted)', marginBottom: 3 }}>
-            <span>timeline</span>
-            <span style={{ color: 'var(--dim)' }}>{planProgress}%</span>
+          <div className="metric-box">
+            <span>Strategy</span>
+            <strong>{agentData.strategyState?.activeId || userConfig?.strategy || 'default'}</strong>
           </div>
-          <div className="progress-bar">
-            <div className="progress-bar-fill" style={{ width: `${planProgress}%`,
-              background: 'linear-gradient(90deg, var(--tool), var(--cyan))' }} />
+          <div className="metric-box">
+            <span>Model</span>
+            <strong>{String(userConfig?.llmModel || '—').split('/').pop()}</strong>
           </div>
         </div>
-
-        {/* Today's target */}
-        {todaySchedule && (
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between',
-              fontSize: 10, color: 'var(--muted)', marginBottom: 3 }}>
-              <span>today's target</span>
-              <span style={{ color: 'var(--warn)' }}>
-                {fmtUsd(todaySchedule.start_usd)} → {fmtUsd(todaySchedule.target_usd)}
-              </span>
-            </div>
-            <div className="progress-bar">
-              <div className="progress-bar-fill" style={{ width: `${dayProgress}%`,
-                background: dayProgress >= 100 ? 'var(--ok)' :
-                  dayProgress > 50 ? 'linear-gradient(90deg, var(--warn), var(--ok))' :
-                  'linear-gradient(90deg, var(--neg), var(--warn))' }} />
-            </div>
-          </div>
-        )}
-
-        {/* Capital milestones ($10 → $8K) */}
-        <div style={{ marginBottom: 3 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between',
-            fontSize: 9, color: 'var(--muted)', marginBottom: 3 }}>
-            <span style={{ color: 'var(--dim)' }}>$10</span>
-            <span>$100</span>
-            <span>$1K</span>
-            <span style={{ color: 'var(--title)' }}>$8K</span>
-          </div>
-          <div className="progress-bar">
-            <div className="progress-bar-fill" style={{ width: `${capLogProgress}%`,
-              background: 'linear-gradient(90deg, var(--api), var(--title))' }} />
-          </div>
+        <div className="stack-gap">
+          <Progress label="Market confidence" value={confidence} tone="info" />
+          <Progress label="Plan timeline" value={planProgress} tone="warm" />
+          <Progress label="Today's target" value={dayProgress} tone={dayProgress >= 100 ? 'good' : dayProgress >= 55 ? 'warm' : 'bad'} />
         </div>
-      </div>
+      </Card>
 
-      {/* Open Positions */}
-      <div className="cyber-card">
-        <div className="section-header">
-          Open Positions
-          {positions.length > 0 && (
-            <span style={{ marginLeft: 'auto', color: 'var(--ok)', fontSize: 10, fontWeight: 600 }}>
-              {positions.length} active
-            </span>
-          )}
+      <Card title="Capital & Session">
+        <div className="stats-list">
+          <Stat label="Current capital" value={fmtUsd(currentCapital)} tone="good" />
+          <Stat label="Start capital" value={fmtUsd(startCapital)} />
+          <Stat label="Target capital" value={fmtUsd(targetCapital)} tone="warm" />
+          <Stat label="P&L today" value={fmtUsd(session.profitUsd || 0)} tone={pnlTone(session.profitUsd || 0)} />
+          <Stat label="P&L %" value={fmtPct(session.profitPct || 0)} tone={pnlTone(session.profitPct || 0)} />
+          <Stat label="Trades" value={session.tradesCount || 0} />
+          <Stat label="Win / Loss" value={`${session.winCount || 0} / ${session.lossCount || 0}`} tone={(session.winCount || 0) >= (session.lossCount || 0) ? 'good' : 'bad'} />
+          <Stat label="Last update" value={lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : 'Waiting'} />
         </div>
-        {positions.length === 0 ? (
-          <div style={{ color: 'var(--muted)', fontSize: 11, textAlign: 'center', padding: '8px 0' }}>
-            no open positions
-          </div>
-        ) : (
-          positions.map(([addr, pos]) => (
-            <PositionCard key={addr} address={addr} pos={pos} />
-          ))
-        )}
-      </div>
+      </Card>
 
-      {/* Config Snapshot */}
-      <div className="cyber-card">
-        <div className="section-header">Config</div>
-        <StatRow label="Strategy"   value={userConfig?.strategy || '—'}      valueColor="var(--cyan)" />
-        <StatRow label="Model"      value={(userConfig?.llmModel || '—').split('/').pop()} />
-        <StatRow label="Dry Run"    value={userConfig?.dryRun ? 'YES' : 'NO'}
-          valueColor={userConfig?.dryRun ? 'var(--warn)' : 'var(--ok)'} />
-        <StatRow label="Max Pos"    value={userConfig?.maxPositions || '—'} />
-        <StatRow label="Stop Loss"  value={userConfig?.stopLossPct != null ? `${userConfig.stopLossPct}%` : '—'}
-          valueColor="var(--neg)" />
-        <StatRow label="Take Profit" value={userConfig?.takeProfitPct != null ? `${userConfig.takeProfitPct}%` : '—'}
-          valueColor="var(--pos)" />
-        <StatRow label="Trailing TP" value={userConfig?.trailingTakeProfit ? 'ON' : 'OFF'}
-          valueColor={userConfig?.trailingTakeProfit ? 'var(--ok)' : 'var(--dim)'} />
-      </div>
-
-      {/* Available Tools */}
-      <div className="cyber-card">
-        <div className="section-header">
-          Agent Tools
-          <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 10 }}>{TOOLS.length}</span>
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-          {visibleTools.map(tool => (
-            <div key={tool.name} className="tool-pill" title={tool.name}
-              style={{ borderColor: `${GROUP_COLORS[tool.group]}28`, color: GROUP_COLORS[tool.group] }}>
-              {tool.icon} {tool.name}
-            </div>
+      <Card title="Feature Surface">
+        <div className="feature-grid">
+          {features.map(([label, enabled]) => (
+            <FeatureChip key={label} label={label} enabled={enabled} />
           ))}
         </div>
-        <button
-          onClick={() => setShowAllTools(v => !v)}
-          style={{ marginTop: 8, width: '100%', background: 'none', border: '1px solid var(--border)',
-            color: 'var(--muted)', padding: '3px 8px', fontSize: 10,
-            letterSpacing: '0.05em' }}
-        >
-          {showAllTools ? '▲ collapse' : `▼ all ${TOOLS.length} tools`}
-        </button>
-      </div>
+      </Card>
+
+      <Card title="Risk Envelope">
+        <div className="stats-list">
+          <Stat label="Max positions" value={userConfig?.maxPositions ?? '—'} />
+          <Stat label="Max deploy" value={fmtUsd(userConfig?.maxDeployAmount)} />
+          <Stat label="Deploy SOL" value={userConfig?.deployAmountSol != null ? `${userConfig.deployAmountSol} SOL` : '—'} />
+          <Stat label="Stop loss" value={userConfig?.stopLossPct != null ? `${userConfig.stopLossPct}%` : '—'} tone="bad" />
+          <Stat label="Take profit" value={userConfig?.takeProfitPct != null ? `${userConfig.takeProfitPct}%` : '—'} tone="good" />
+          <Stat label="Trailing" value={userConfig?.trailingTakeProfit ? 'ON' : 'OFF'} tone={userConfig?.trailingTakeProfit ? 'good' : 'neutral'} />
+          <Stat label="Gas reserve" value={userConfig?.gasReserve != null ? `${userConfig.gasReserve} SOL` : '—'} />
+          <Stat label="Min SOL to open" value={userConfig?.minSolToOpen != null ? `${userConfig.minSolToOpen} SOL` : '—'} />
+        </div>
+      </Card>
+
+      <Card title="Wallet Topology" aside={<span className="mini-label">{userConfig?.multiWalletEnabled ? 'MULTI' : 'SINGLE'}</span>}>
+        <div className="stats-list">
+          <Stat label="Wallet mode" value={userConfig?.multiWalletEnabled ? 'Enabled' : 'Disabled'} tone={userConfig?.multiWalletEnabled ? 'good' : 'neutral'} />
+          <Stat label="Auto spread" value={userConfig?.multiWalletAutoSpreadEnabled ? 'Enabled' : 'Disabled'} tone={userConfig?.multiWalletAutoSpreadEnabled ? 'good' : 'neutral'} />
+          <Stat label="Max errors" value={userConfig?.multiWalletMaxErrors ?? '—'} />
+          <Stat label="Cooldown" value={userConfig?.multiWalletCooldownMin != null ? `${userConfig.multiWalletCooldownMin} min` : '—'} />
+        </div>
+        {wallets.length > 0 ? (
+          <div className="wallet-list">
+            {wallets.map((wallet, index) => (
+              <div key={`${wallet.label || 'wallet'}-${index}`} className="wallet-row">
+                <div>
+                  <strong>{wallet.label || `wallet-${index + 1}`}</strong>
+                  <span>{wallet.key ? `${String(wallet.key).slice(0, 6)}…${String(wallet.key).slice(-4)}` : 'no key'}</span>
+                </div>
+                <strong>{wallet.capital_pct ?? 0}%</strong>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted-copy">No explicit multi-wallet allocations stored in config.</p>
+        )}
+      </Card>
+
+      <Card title="Open Positions" aside={<span className="mini-label">{positions.length}</span>}>
+        {positions.length > 0 ? (
+          <div className="position-list">
+            {positions.slice(0, 8).map(([address, pos]) => (
+              <PositionCard key={address} address={address} pos={pos} />
+            ))}
+          </div>
+        ) : (
+          <p className="muted-copy">No active positions. The agent is either idle, paused, or still screening candidates.</p>
+        )}
+      </Card>
     </aside>
   );
 }

@@ -7,18 +7,32 @@
   "scripts": {
     "setup": "node setup.js",
     "quick-setup": "npm install && [ -f .env ] || cp .env.example .env && [ -f user-config.json ] || echo '{}' > user-config.json",
-    "start": "node index.js",
-    "dev": "EXECUTION_MODE=demo node index.js",
+    "start": "node --disable-warning=DEP0040 index.js",
+    "dev": "EXECUTION_MODE=demo node --disable-warning=DEP0040 index.js",
     "ui": "node ponyou-launcher.js",
     "dashboard": "node ponyou-dashboard.js",
     "dry": "EXECUTION_MODE=demo node dry-run.mjs",
     "demo": "EXECUTION_MODE=demo node dry-run.mjs",
+    "readiness": "node readiness-cli.js",
+    "readiness:live": "node readiness-cli.js --mode live",
     "test": "vitest run",
     "test:watch": "vitest",
+    "collab:bootstrap": "node infra/agent-collab/bootstrap-task.js",
+    "collab:upgrade": "node infra/agent-collab/collab-upgrade.js",
+    "collab:status": "node infra/agent-collab/collab-status.js",
+    "collab:handoffs": "node infra/agent-collab/collab-handoffs.js",
+    "collab:next": "node infra/agent-collab/collab-next.js",
+    "collab:dispatch": "node infra/agent-collab/collab-dispatch.js",
+    "collab:start": "node infra/agent-collab/collab-start.js",
+    "collab:triage": "node infra/agent-collab/collab-triage.js",
+    "collab:submit": "node infra/agent-collab/collab-submit.js",
     "backtest": "node tools/backtest-cli.js",
     "web": "cd dashboard && node server.js",
     "web:dev": "cd dashboard && npm run dev",
-    "web:build": "cd dashboard && npm run build"
+    "web:build": "cd dashboard && npm run build",
+    "agent:24x7": "bash ./ops/run-24x7.sh live",
+    "agent:24x7:demo": "bash ./ops/run-24x7.sh demo",
+    "web:24x7": "bash ./ops/run-dashboard-24x7.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -38,5 +52,8 @@
   },
   "devDependencies": {
     "vitest": "^4.1.6"
+  },
+  "bin": {
+    "ponyou": "./ponyou"
   }
 }

@@ -1,9 +1,24 @@
 {
   "mcpServers": {
+    "collaboration-memory": {
+      "command": "node",
+      "args": ["/home/ubuntu/ponyou/collaboration-mcp-server.js"],
+      "env": {
+        "COLLAB_STORE_PATH": "/home/ubuntu/ponyou/shared-agent-memory.jsonl"
+      },
+      "description": "Shared cross-CLI memory for ideas, evaluations, decisions, progress, and handoffs"
+    },
     "gemini-bridge": {
       "command": "node",
       "args": ["/home/ubuntu/ponyou/gemini-bridge-server.js"],
       "description": "Gemini CLI bridge — ask_gemini, gemini_analyze_file, gemini_research"
+    },
+    "local-skills": {
+      "command": "local-skills-mcp",
+      "env": {
+        "SKILLS_DIR": "/home/ubuntu/.codex/skills"
+      },
+      "description": "Expose local SKILL.md libraries over MCP from the global Codex skills directory"
     },
     "ponyou-data": {
       "command": "node",

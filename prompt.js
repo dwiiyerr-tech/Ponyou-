@@ -7,6 +7,7 @@ import { getVaultStatus, isVaultDue } from "./vault.js";
 import { getNarrativeHeatPrompt } from "./tools/narratives.js";
 import { getRegimeAssessment } from "./regime-memory.js";
 import { getAttributionPromptLine } from "./trade-attribution.js";
+import { buildStructuredOutputBlock } from "./structured-output.js";
 
 const j = (o) => JSON.stringify(o); // compact, no whitespace
 
@@ -52,8 +53,9 @@ export function buildSystemPrompt(agentType, portfolio, positions, stateSummary 
   const regimeBlock = `[REGIME] ${defaultRegime.marketCondition}/${defaultRegime.tier}/${defaultRegime.narrative}/${defaultRegime.verdict} | ${defaultRegime.stance} score:${defaultRegime.regime_score} conf:${defaultRegime.confidence_score}`;
   const attributionLine = getAttributionPromptLine();
   const attributionBlock = attributionLine ? `[ATTRIBUTION] ${attributionLine}` : "";
+  const outputBlock = buildStructuredOutputBlock(agentType);
 
-  const contextLines = [planBlock, learningBlock, marketBlock, vaultBlock, rugBlock, narrativeBlock, regimeBlock, attributionBlock]
+  const contextLines = [planBlock, learningBlock, marketBlock, vaultBlock, rugBlock, narrativeBlock, regimeBlock, attributionBlock, outputBlock]
     .filter(Boolean).join("\n");
 
   // ─── MANAGER ──────────────────────────────────────────────
@@ -61,7 +63,7 @@ export function buildSystemPrompt(agentType, portfolio, positions, stateSummary 
     return `You are Ponyou MANAGER. Review and manage open positions only.
 ${contextLines}
 Portfolio:${j(portfolio)}
-RULES: Exit on rug signal/holder shift/trend collapse. Dust(>=$0.10)→swap to SOL. ROI/trailing/stoploss are automatic—focus on qualitative signals only.${profitMode ? " PROFIT_MODE: hold longer, let compound." : ""}
+RULES: Exit on rug signal/holder shift/trend collapse. Dust(>=$0.10)→swap to SOL. ROI/trailing/stoploss are automatic—focus on qualitative signals only. Return JSON only.${profitMode ? " PROFIT_MODE: hold longer, let compound." : ""}
 ${rugBlock ? `\n${rugBlock}` : ""}${lessons ? `\nLESSONS:${lessons}` : ""}${perfSummary ? `\nPERF:${perfSummary}` : ""}
 Ts:${new Date().toISOString()}`;
   }
@@ -72,7 +74,7 @@ Ts:${new Date().toISOString()}`;
     return `You are Ponyou SCREENER. Pick the BEST candidate and call gmgn_swap.
 ${contextLines}
 ScreenCfg:${screenCfg}
-ENTRY_RULES: rugScore<60, no blacklisted dev/token, top10<70%, no freeze/mint authority, not bot-pumped.
+ENTRY_RULES: rugScore<60, no blacklisted dev/token, top10<70%, no freeze/mint authority, not bot-pumped. Return JSON only.
 EXIT(auto): ROI 60%@0m/30%@5m/15%@15m/5%@30m/0%@60m | TrailingStop@+20%(5%drop) | StopLoss-15%
 ${profitMode ? "PROFIT_MODE: be aggressive, pick highest potential." : ""}${market.condition === "DEAD" ? "\n⚠️ DEAD market — skip entry." : ""}${market.condition === "EXTREME" ? "\n⚠️ EXTREME — prioritize low rug score." : ""}
 ${lessons ? `LESSONS:${lessons}\n` : ""}Ts:${new Date().toISOString()}`;
@@ -84,6 +86,6 @@ ${lessons ? `LESSONS:${lessons}\n` : ""}Ts:${new Date().toISOString()}`;
   const portPart = portfolio ? `\nPortfolio:${j(portfolio)}` : "";
   return `You are Ponyou, autonomous Solana memecoin scalping agent.
 ${contextLines}${portPart}${posPart}${statePart}
-${lessons ? `LESSONS:${lessons}\n` : ""}${perfSummary ? `PERF:${perfSummary}\n` : ""}Handle user request with available tools.
+${lessons ? `LESSONS:${lessons}\n` : ""}${perfSummary ? `PERF:${perfSummary}\n` : ""}Handle user request with available tools. Return JSON only.
 Ts:${new Date().toISOString()}`;
 }
