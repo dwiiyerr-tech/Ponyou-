@@ -134,6 +134,17 @@ export const config = {
     enabled: u.automationEnabled ?? true,
   },
 
+  // ─── Daily Trade Guard ──────────────────────
+  // Optional Telegram decision gate. When enabled, closed trade outcomes are
+  // counted per UTC day; hitting either win/loss limit blocks new entries until
+  // /continue or /stoptrade is received.
+  dailyTradeGuard: {
+    enabled: u.dailyTradeGuard?.enabled ?? u.dailyTradeGuardEnabled ?? false,
+    maxWinsPerDay: u.dailyTradeGuard?.maxWinsPerDay ?? u.dailyTradeGuardMaxWins ?? 3,
+    maxLossesPerDay: u.dailyTradeGuard?.maxLossesPerDay ?? u.dailyTradeGuardMaxLosses ?? 3,
+    learningModeDurationMin: u.dailyTradeGuard?.learningModeDurationMin ?? u.learningModeDurationMin ?? 60,
+  },
+
   // ─── Risk Limits ─────────────────────────
   risk: {
     maxPositions:    u.maxPositions    ?? 3,

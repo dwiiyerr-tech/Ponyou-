@@ -125,11 +125,53 @@ export function markAnalysisRun() {
   saveLearningState(state);
 }
 
+
+function buildDailyGuardAnalysisPrompt(ctx, recentTrades = [], marketCondition = "UNKNOWN") {
+  const status = ctx.daily_guard_status || {};
+  return `
+DEEP LEARNING MODE — DAILY TRADE GUARD
+
+Ponyou berhenti entry karena batas harian terpenuhi dan user memilih stop. Analisis ini harus memperbaiki keputusan berikutnya, bukan mencari pembenaran untuk lanjut FOMO.
+
+STATUS HARIAN:
+- Date: ${status.date || "?"}
+- Trades: ${status.trades ?? "?"}
+- Wins: ${status.wins ?? "?"}/${status.max_wins_per_day ?? "?"}
+- Losses: ${status.losses ?? "?"}/${status.max_losses_per_day ?? "?"}
+- Trigger: ${ctx.exit_reason || "DAILY_GUARD_STOP"}
+- Market: ${ctx.market_condition || marketCondition}
+
+TRADES TERAKHIR:
+${recentTrades.slice(-10).map(t => `  - ${t.symbol}: ${Number.isFinite(t.pnl_pct) ? t.pnl_pct.toFixed(1) : "?"}% (${t.exit_reason || "?"})`).join("\n") || "Tidak ada data"}
+
+FOKUS ANALISIS:
+1. Kesalahan keputusan hari ini: entry terlalu cepat, conviction lemah, sizing, timing, exit, atau eksekusi.
+2. Pola rug/honeypot/scam/coin sampah yang harus diblokir lebih keras.
+3. Sinyal market yang harus dipelajari ulang sebelum entry berikutnya.
+4. Cara menaikkan winrate melalui filtering, conviction, dan invalidation rules.
+5. Jangan pernah menyebut coin pasti menguntungkan. Pakai bahasa probabilitas, edge, confidence, dan kondisi invalidasi.
+
+FORMAT JAWABAN:
+ROOT_CAUSE: [1-3 penyebab utama]
+MISSED_FLAGS: [red flags yang terlewat]
+AVOID_PATTERN: [pola yang harus dihindari]
+LESSON_1: [pelajaran konkret 1]
+LESSON_2: [pelajaran konkret 2]
+LESSON_3: [pelajaran konkret 3]
+
+OUTPUT:
+${buildStructuredOutputBlock("LOSS_ANALYSIS")}
+
+Jawab hanya JSON valid, tanpa markdown atau penjelasan tambahan.
+`.trim();
+}
+
 /**
  * Bangun prompt untuk LLM menganalisis kenapa loss terjadi.
  */
 export function buildLossAnalysisPrompt(lossContext, recentTrades = [], marketCondition = "UNKNOWN") {
   const ctx = lossContext || {};
+  if (ctx.daily_guard) return buildDailyGuardAnalysisPrompt(ctx, recentTrades, marketCondition);
   return `
 LEARNING MODE — ANALISIS LOSS
 

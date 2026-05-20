@@ -1,0 +1,53 @@
+# =============================================================================
+# autowork.service — systemd unit for persistent AutoWork
+# =============================================================================
+# INSTALL:
+#   sudo cp autowork.service /etc/systemd/system/autowork.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable autowork     # auto-start on boot
+#   sudo systemctl start autowork
+#
+# MANAGE:
+#   sudo systemctl status autowork
+#   sudo systemctl stop autowork
+#   sudo systemctl restart autowork
+#   journalctl -u autowork -f          # live logs
+#
+# UNINSTALL:
+#   sudo systemctl stop autowork
+#   sudo systemctl disable autowork
+#   sudo rm /etc/systemd/system/autowork.service
+#   sudo systemctl daemon-reload
+# =============================================================================
+
+[Unit]
+Description=Ponyou AutoWork — autonomous PR task runner
+After=network.target
+Documentation=https://github.com/yourusername/ponyou
+
+[Service]
+Type=simple
+# ── EDIT THESE TWO LINES ──────────────────────────────────────────────────────
+User=ubuntu
+WorkingDirectory=/home/ubuntu/ponyou
+# ─────────────────────────────────────────────────────────────────────────────
+ExecStart=/home/ubuntu/ponyou/run-autowork-loop.sh --interval 120 --log /home/ubuntu/ponyou/claude-autowork.log
+ExecStop=/bin/kill -TERM $MAINPID
+
+# Restart policy — restart unless explicitly stopped
+Restart=on-failure
+RestartSec=30s
+
+# Output goes to journal (journalctl -u autowork -f)
+StandardOutput=append:/home/ubuntu/ponyou/claude-autowork.log
+StandardError=append:/home/ubuntu/ponyou/claude-autowork.log
+
+# PATH must include wherever `claude` and `node` are installed
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/ubuntu/.local/bin:/home/ubuntu/.nvm/versions/node/v22.22.2/bin
+
+# Safety: prevent writes outside project dir
+# PrivateTmp=true
+# ReadWritePaths=/home/ubuntu/ponyou
+
+[Install]
+WantedBy=multi-user.target
