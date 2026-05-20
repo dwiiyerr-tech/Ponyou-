@@ -1,6 +1,8 @@
 # PONYOU CLI - Complete Command-Line Interface Guide
 
-Claude Code-like CLI for managing all Ponyou features from the terminal.
+Web-first CLI for managing all Ponyou features from the terminal.
+
+> Note: the web dashboard is the primary surface now. Use `ponyou dashboard` only when you explicitly want the legacy terminal dashboard.
 
 ## 🚀 Quick Start
 
@@ -8,8 +10,8 @@ Claude Code-like CLI for managing all Ponyou features from the terminal.
 # Start main CLI
 node ponyou-cli.js
 
-# View dashboard
-node ponyou-dashboard.js
+# Open dashboard
+ponyou dashboard
 
 # LLM provider setup
 node setup-llm.js
@@ -28,28 +30,27 @@ Interactive menu-driven interface for all Ponyou configuration and control.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  PONYOU CLI - MAIN MENU                                 │
+│  PONYOU CLI - LEGACY CONFIG MENU                        │
 ├─────────────────────────────────────────────────────────┤
 │                                                          │
-│  1. 🚀 Start Agent                                      │
-│  2. ⚙️  Setup Wizard (Quick)                            │
-│  3. 🔧 Advanced Configuration                           │
-│  4. 🌐 LLM Provider Setup                               │
-│  5. 📊 Status & Monitoring                              │
-│  6. 📚 Documentation & Help                             │
-│  7. 🧪 Test Configuration                               │
-│  8. 🔄 Reset Configuration                              │
-│  9. ❌ Exit                                              │
+│  1. ⚙️  Setup Wizard (Quick)                            │
+│  2. 🔧 Advanced Configuration                           │
+│  3. 🌐 LLM Provider Setup                               │
+│  4. 📊 Status Snapshot                                  │
+│  5. 📚 Documentation & Help                             │
+│  6. 🧪 Test Configuration                               │
+│  7. 🔄 Reset Configuration                              │
+│  8. ❌ Exit                                              │
 │                                                          │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🎯 Option 1: Start Agent
+## 🎯 Option 1: Setup Wizard (Quick)
 
 ```
-🚀 Starting Ponyou Agent...
+⚙️ Quick setup starts here...
 
 Configuration:
   - Provider: openrouter
@@ -57,14 +58,14 @@ Configuration:
   - Max Positions: 3
   - Mode: DRY RUN
 
-(Agent runs with live output)
+(Then you continue in the advanced config flow)
 ```
 
 **What it does:**
 - Validates configuration
-- Starts the trading agent
-- Shows real-time logs
-- Runs until Ctrl+C
+- Prepares config and env values
+- Keeps the legacy flow for manual config work
+- Returns to the menu when done
 
 ---
 
@@ -281,7 +282,7 @@ Quick options:
 
 ---
 
-## 📊 Option 5: Status & Monitoring
+## 📊 Option 5: Status Snapshot
 
 View agent status and performance metrics.
 
@@ -356,12 +357,12 @@ Are you sure? Type 'reset' to confirm:
 
 ---
 
-## 📊 Dashboard (`ponyou-dashboard.js`)
+## 📊 Dashboard (`ponyou dashboard`)
 
 Real-time monitoring dashboard.
 
 ```bash
-node ponyou-dashboard.js
+ponyou dashboard
 ```
 
 ### Display:
@@ -409,7 +410,7 @@ node ponyou-dashboard.js
 └──────────────────────────────────────────────────────────┘
 
 QUICK ACTIONS:
-  1. Start Agent        4. View Logs        7. Export Data
+  1. Legacy Agent      4. View Logs        7. Export Data
   2. Configuration      5. Test Setup       8. Reset All
   3. LLM Provider       6. Performance      9. Exit
 ```
@@ -477,7 +478,7 @@ node llm-cli.js test groq
 node setup-llm.js
 
 # Dashboard
-node ponyou-dashboard.js
+ponyou dashboard
 
 # Start agent
 npm start
@@ -509,14 +510,14 @@ node ponyou-cli.js
 # (from main menu → Test Configuration)
 
 # 5. Start agent
-# (from main menu → Start Agent)
+# (from legacy menu → legacy agent start)
 ```
 
 ### Daily Operations:
 
 ```bash
 # Check dashboard
-node ponyou-dashboard.js
+ponyou dashboard
 
 # Monitor logs
 tail -f logs/agent-*.log
@@ -564,7 +565,7 @@ node ponyou-cli.js
 ```bash
 # Check configuration
 node ponyou-cli.js
-# → Status & Monitoring
+# → Status Snapshot
 
 # Validate everything
 node ponyou-cli.js
@@ -587,17 +588,17 @@ node ponyou-cli.js
 ```bash
 # Terminal 1
 node ponyou-cli.js
-# → Start Agent
+# → legacy agent start
 
 # Terminal 2
-node ponyou-dashboard.js
+ponyou dashboard
 ```
 
 ### Test before going live:
 ```bash
 export DRY_RUN=true
 node ponyou-cli.js
-# → Start Agent
+# → legacy agent start
 ```
 
 ### Switch providers easily:
@@ -621,7 +622,7 @@ npm start
 
 ## ✨ Features
 
-✅ Full interactive CLI (like Claude Code)
+✅ Full interactive CLI
 ✅ All configuration options accessible
 ✅ Real-time dashboard with auto-refresh
 ✅ Configuration validation & testing

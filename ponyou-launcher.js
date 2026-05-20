@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * PONYOU LAUNCHER - Unified CLI Control Center
- * Main entry point untuk semua Ponyou features
- * Mirip seperti Claude Code untuk Ponyou
+ * PONYOU LAUNCHER - Legacy Terminal Control Menu
+ * Auxiliary entry point for older terminal workflows
+ * Primary surface is now `ponyou` (web dashboard)
  *
  * Usage:
  *   node ponyou-launcher.js
@@ -122,10 +122,10 @@ function drawSplashScreen() {
     `${colors.bgCyan}${colors.bright}                                                              ${colors.reset}`
   );
   console.log(
-    `${colors.bgCyan}${colors.bright}              🐎 PONYOU - AI TRADING AGENT CLI 🐎                 ${colors.reset}`
+    `${colors.bgCyan}${colors.bright}              🐎 PONYOU - LEGACY TERMINAL CLI 🐎                ${colors.reset}`
   );
   console.log(
-    `${colors.bgCyan}${colors.bright}                  Claude Code Version for Ponyou                   ${colors.reset}`
+    `${colors.bgCyan}${colors.bright}                 Auxiliary launcher for terminal workflows         ${colors.reset}`
   );
   console.log(
     `${colors.bgCyan}${colors.bright}                                                              ${colors.reset}\n`
@@ -189,15 +189,14 @@ async function mainMenu() {
 
     // Main menu
     const menuItems = [
-      { id: "1", icon: "🚀", label: "Start Agent", desc: "Run trading agent" },
-      { id: "2", icon: "📊", label: "Dashboard", desc: "Real-time monitoring" },
-      { id: "3", icon: "📈", label: "Monitor", desc: "Comprehensive metrics" },
-      { id: "4", icon: "⚙️ ", label: "Configuration", desc: "Setup & settings" },
-      { id: "5", icon: "🌐", label: "LLM Provider", desc: "Provider management" },
-      { id: "6", icon: "🧪", label: "Test System", desc: "Validation & tests" },
-      { id: "7", icon: "📚", label: "Documentation", desc: "Help & guides" },
-      { id: "8", icon: "📁", label: "File Manager", desc: "Config files" },
-      { id: "9", icon: "❌", label: "Exit", desc: "Quit Ponyou CLI" },
+      { id: "1", icon: "🚀", label: "Legacy Agent", desc: "Run trading agent" },
+      { id: "2", icon: "📈", label: "Monitor", desc: "Legacy metrics view" },
+      { id: "3", icon: "⚙️ ", label: "Configuration", desc: "Setup & settings" },
+      { id: "4", icon: "🌐", label: "LLM Provider", desc: "Provider management" },
+      { id: "5", icon: "🧪", label: "Test System", desc: "Validation & tests" },
+      { id: "6", icon: "📚", label: "Documentation", desc: "Help & guides" },
+      { id: "7", icon: "📁", label: "File Manager", desc: "Config files" },
+      { id: "8", icon: "❌", label: "Exit", desc: "Quit legacy launcher" },
     ];
 
     console.log(`${colors.cyan}${colors.bright}MAIN MENU${colors.reset}\n`);
@@ -211,34 +210,31 @@ async function mainMenu() {
     });
 
     console.log("");
-    const choice = await question("Pilih opsi (1-9): ");
+    const choice = await question("Pilih opsi (1-8): ");
 
     switch (choice) {
       case "1":
         await startAgent();
         break;
       case "2":
-        await spawnProcess("ponyou-dashboard.js", [], "Dashboard - Tekan 'q' untuk keluar");
-        break;
-      case "3":
         await monitorMenu();
         break;
-      case "4":
+      case "3":
         await spawnProcess("ponyou-cli.js", [], "Configuration Menu");
         break;
-      case "5":
+      case "4":
         await llmProviderMenu();
         break;
-      case "6":
+      case "5":
         await testSystemMenu();
         break;
-      case "7":
+      case "6":
         await documentationMenu();
         break;
-      case "8":
+      case "7":
         await fileManagerMenu();
         break;
-      case "9":
+      case "8":
         clearScreen();
         console.log(`${colors.green}👋 Terima kasih telah menggunakan Ponyou!${colors.reset}\n`);
         process.exit(0);

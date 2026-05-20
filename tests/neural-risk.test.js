@@ -57,6 +57,14 @@ describe("NeuralRisk", () => {
       expect(ok).toBe(true);
     });
 
+    it("is idempotent when storing the same key again", async () => {
+      const data = { regime: "HOT", narrative: "AI", winRate: 0.65 };
+      const first = await nr.storePattern("test:hot:ai:upsert", data);
+      const second = await nr.storePattern("test:hot:ai:upsert", data);
+      expect(first).toBe(true);
+      expect(second).toBe(true);
+    });
+
     it("returns false on bad binary path", async () => {
       const bad = new NeuralRisk();
       bad._rufloBin = "/nonexistent/ruflo";

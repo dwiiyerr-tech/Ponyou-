@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * PONYOU CLI - Interactive Command-Line Interface (Like Claude Code)
+ * PONYOU CLI - Interactive Command-Line Interface
  * Full control over Ponyou agent configuration, deployment, and monitoring
  *
  * Usage:
@@ -164,20 +164,19 @@ function saveEnv(env) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function showMainMenu() {
-  header("PONYOU CLI - MAIN MENU");
+  header("PONYOU CLI - LEGACY CONFIG MENU");
 
   log(`
-  🤖 Welcome to Ponyou Agent Control Panel
+  🤖 Welcome to Ponyou configuration console
 
   Quick Actions:
   `, "bright");
 
   const options = [
-    "🚀 Start Agent",
     "⚙️  Setup Wizard (Quick)",
     "🔧 Advanced Configuration",
     "🌐 LLM Provider Setup",
-    "📊 Status & Monitoring",
+    "📊 Status Snapshot",
     "📚 Documentation & Help",
     "🧪 Test Configuration",
     "🔄 Reset Configuration",
@@ -188,7 +187,7 @@ async function showMainMenu() {
     log(`  ${i + 1}. ${opt}`);
   });
 
-  const choice = await question("\nSelect option (1-9): ");
+  const choice = await question("\nSelect option (1-8): ");
   return choice;
 }
 
@@ -304,8 +303,8 @@ async function quickSetupWizard() {
 
   Next steps:
   1. Review configuration: ponyou-cli.js → Advanced Configuration
-  2. Start agent: ponyou-cli.js → Start Agent
-  3. Monitor: ponyou-cli.js → Status & Monitoring
+  2. Legacy agent start: use the agent command
+  3. Status snapshot: legacy status view
   `);
 
   await pause();
@@ -973,23 +972,20 @@ async function main() {
 
     switch (choice) {
       case "1":
-        await startAgent();
-        break;
-      case "2":
         await quickSetupWizard();
         break;
-      case "3":
+      case "2":
         await advancedConfiguration();
         break;
-      case "4":
+      case "3":
         info("Launching LLM setup tool...");
         // spawn('node', ['setup-llm.js']);
         await pause();
         break;
-      case "5":
+      case "4":
         await showStatus();
         break;
-      case "6":
+      case "5":
         log(`\n📚 HELP & DOCUMENTATION\n`);
         log(`  For detailed help, see:`);
         log(`  - SETUP.md - Main setup guide`);
@@ -997,13 +993,13 @@ async function main() {
         log(`  - LLM-CUSTOM-SETUP.md - LLM tool guide\n`);
         await pause();
         break;
-      case "7":
+      case "6":
         await testConfiguration();
         break;
-      case "8":
+      case "7":
         await resetConfiguration();
         break;
-      case "9":
+      case "8":
         log("\n👋 Goodbye!\n");
         running = false;
         break;

@@ -42,9 +42,31 @@ Ponyou is a memecoin-focused trading agent. It runs continuous screening and man
 ## Running
 
 ```bash
+./ponyou             # Open web dashboard like Hermes
+./ponyou setup       # Open Hermes-style setup wizard
+./ponyou web         # Web dashboard
+./ponyou agent       # Live agent
+./ponyou doctor live # Live readiness / doctor
+```
+
+You can also still use:
+
+```bash
 npm run dev   # Dry run (no real transactions)
 npm start     # Live trading mode
 ```
+
+## 24/7 Runtime
+
+```bash
+npm run agent:24x7        # Live mode with readiness check + auto-restart
+npm run agent:24x7:demo   # Demo mode with readiness check + auto-restart
+npm run web:24x7          # Dashboard web server with build + auto-restart
+```
+
+Supervisor logs go to `logs/supervisor/`.
+
+For boot-time startup on Linux `systemd`, use the templates in `ops/ponyou-agent.service.example` and `ops/ponyou-dashboard.service.example`.
 
 ## Commands
 
@@ -61,6 +83,8 @@ npm start     # Live trading mode
 - `/strategies` — List all 5 presets with their gates
 - `/stratset <id> <key> <value>` — Override a single field of any preset (e.g. `/stratset sniper stoploss -0.20`)
 - `/confirm on|off` — Toggle confirm mode at runtime
+- `/agent on|off` — Power the supervised agent process on or off
+- `/auto on|off` — Enable or disable the automation loop without killing the process
 - `/pending` — List pending BUY intents waiting for approval
 - `/yes <id>` / `/no <id>` — Approve / reject a pending intent
 

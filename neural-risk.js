@@ -76,7 +76,15 @@ class NeuralRisk {
 
   async storePattern(key, data) {
     try {
-      await execFileAsync(this._rufloBin, ["memory", "store", "-k", String(key), "-v", JSON.stringify(data)]);
+      await execFileAsync(this._rufloBin, [
+        "memory",
+        "store",
+        "-k",
+        String(key),
+        "-v",
+        JSON.stringify(data),
+        "--upsert",
+      ]);
       return true;
     } catch (error) {
       console.error("NeuralRisk.storePattern failed:", error.message);

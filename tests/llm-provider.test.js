@@ -87,7 +87,7 @@ describe("getProviderConfig", () => {
     };
     const c = getProviderConfig("x", cfg);
     expect(c.features.systemRole).toBe(true);
-    expect(c.features.toolChoice).toBe(true);
+    expect(c.features.toolChoice).toBe(false);
     expect(c.features.streaming).toBe(true);
   });
 });

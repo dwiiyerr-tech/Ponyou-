@@ -154,9 +154,17 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   const lessons = getLessonsForPrompt({ agentType });
   const perfSummary = getPerformanceSummary();
   const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary);
+  const providerFeatures = getProviderFeatures(currentProvider, config) || {};
 
   let providerMode = "system";
   let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
+
+  if (providerFeatures.systemRole === false) {
+    providerMode = "user_embedded";
+    messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
+  }
+
+  const supportsToolChoice = providerFeatures.toolChoice !== false;
 
   // Tools the agent must call at most once per agentLoop invocation.
   // Mostly money-spending actions where retry == double-execution risk.
@@ -175,7 +183,10 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       let response;
       let usedModel = activeModel;
       const ACTION_INTENTS = /\b(buy|sell|deploy|close|swap|block|blacklist)\b/i;
-      let toolChoice = (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
+      let toolChoice = supportsToolChoice && (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
+      if (!supportsToolChoice && step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) {
+        log("agent", `Provider ${currentProvider} lacks trusted tool-choice support; using auto mode.`);
+      }
 
       for (let attempt = 0; attempt < 3; attempt++) {
         try {

@@ -26,6 +26,7 @@ if (u.walletKey) process.env.WALLET_PRIVATE_KEY ||= u.walletKey;
 if (u.llmModel)  process.env.LLM_MODEL          ||= u.llmModel;
 if (u.llmBaseUrl) process.env.LLM_BASE_URL      ||= u.llmBaseUrl;
 if (u.llmApiKey)  process.env.LLM_API_KEY       ||= u.llmApiKey;
+if (u.shyftApiKey) process.env.SHYFT_API_KEY    ||= u.shyftApiKey;
 if (u.publicApiKey) process.env.PUBLIC_API_KEY ||= u.publicApiKey;
 if (u.agentMeridianApiUrl) process.env.AGENT_MERIDIAN_API_URL ||= u.agentMeridianApiUrl;
 applyExecutionMode({ userConfig: u });
@@ -78,6 +79,10 @@ export const config = {
     enabled:    u.dailyReportEnabled ?? true,
     hourUtc:    u.dailyReportHourUtc ?? 0,   // jam UTC untuk trigger (0 = midnight UTC)
     minuteUtc:  u.dailyReportMinuteUtc ?? 5,
+  },
+
+  automation: {
+    enabled: u.automationEnabled ?? true,
   },
 
   // ─── Risk Limits ─────────────────────────
@@ -177,8 +182,8 @@ export const config = {
     positionSizePct:       u.positionSizePct       ?? 0.35,
     // Trailing take-profit
     trailingTakeProfit:    u.trailingTakeProfit    ?? true,
-    trailingTriggerPct:    u.trailingTriggerPct    ?? 3,    // activate trailing at X% PnL
-    trailingDropPct:       u.trailingDropPct       ?? 1.5,  // close when drops X% from peak
+    trailingTriggerPct:    u.trailingTriggerPct    ?? 5,    // activate trailing at X% PnL
+    trailingDropPct:       u.trailingDropPct       ?? 6,    // close when drops X% from peak
     pnlSanityMaxDiffPct:   u.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
     antiGreedCooldownHours: u.antiGreedCooldownHours ?? u.repeatDeployCooldownHours ?? 12,
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD

@@ -3,6 +3,7 @@
   "rpcUrl": "https://pump.helius-rpc.com",
   "llmBaseUrl": "",
   "llmApiKey": "",
+  "shyftApiKey": "",
   "llmModel": "minimax/minimax-m2.7",
   "executionMode": "demo",
   "_comment_execution_mode": "Gunakan executionMode: demo|live. dryRun tetap didukung sebagai alias lama.",
@@ -20,7 +21,7 @@
   "_comment_v4_strategy_presets": "Active strategy preset: scalping (default), sniper, dip_buy, smart_money, degen. Switched live via Telegram /strategy <id> — persisted in active-strategy.json (auto-created).",
 
   "_comment_v4_confirm_mode": "When true, every BUY needs Telegram /yes <id> approval. confirmTtlMin = how long a pending intent stays valid (default 5 min).",
-  "confirmMode": false,
+  "confirmMode": true,
   "confirmTtlMin": 5,
 
 
@@ -54,13 +55,13 @@
   "stopLossPct": null,
   "takeProfitPct": null,
   "trailingTakeProfit": true,
-  "trailingTriggerPct": 3,
-  "trailingDropPct": 1.5,
+  "trailingTriggerPct": 5,
+  "trailingDropPct": 6,
   "pnlSanityMaxDiffPct": 5,
   "solMode": false,
 
-  "managementIntervalMin": 10,
-  "screeningIntervalMin": 30,
+  "managementIntervalMin": 2,
+  "screeningIntervalMin": 5,
   "healthCheckIntervalMin": 60,
 
   "temperature": 0.373,

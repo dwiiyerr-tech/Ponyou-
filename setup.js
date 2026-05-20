@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import readline from "readline";
 import { fileURLToPath } from "url";
+import { validateWalletTopology } from "./wallet-topology.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -127,6 +128,102 @@ async function setupWalletAndRpc(cfg, env) {
 
   env.WALLET_PRIVATE_KEY = cfg.walletKey;
   env.RPC_URL = cfg.rpcUrl;
+}
+
+async function setupMultiWallet(cfg) {
+  console.log("\n━━━ MULTI-WALLET ━━━");
+  cfg.multiWalletEnabled = await promptYesNo(
+    "Aktifkan multi-wallet?",
+    cfg.multiWalletEnabled
+  );
+
+  if (!cfg.multiWalletEnabled) {
+    console.log("Multi-wallet dimatikan. Daftar wallets yang tersimpan tidak dihapus.");
+    return;
+  }
+
+  const existingWallets = Array.isArray(cfg.wallets) ? cfg.wallets : [];
+  const editWallets = await promptYesNo(
+    "Atur daftar wallet multi-wallet sekarang?",
+    existingWallets.length > 0 ? false : true
+  );
+
+  if (editWallets) {
+    const walletCount = Math.max(0, Math.floor(await promptNumber(
+      "Jumlah wallet multi-wallet",
+      existingWallets.length || 2
+    )));
+    const wallets = [];
+
+    for (let i = 0; i < walletCount; i++) {
+      const current = existingWallets[i] || {};
+      console.log("\nWallet #" + (i + 1));
+      const label = (await prompt(
+        "Label wallet",
+        current.label || ("wallet-" + (i + 1))
+      )) || current.label || ("wallet-" + (i + 1));
+      const key = (await prompt(
+        "Private key wallet (base58)",
+        current.key || ""
+      )) || current.key || "";
+      const capitalPct = await promptNumber(
+        "Capital allocation (%)",
+        current.capital_pct || (walletCount > 0 ? Math.floor(100 / walletCount) : 100)
+      );
+
+      if (key) {
+        wallets.push({
+          label,
+          key,
+          capital_pct: capitalPct,
+        });
+      }
+    }
+
+    cfg.wallets = wallets;
+  } else if (!Array.isArray(cfg.wallets)) {
+    cfg.wallets = existingWallets;
+  }
+
+  cfg.multiWalletMaxErrors = await promptNumber(
+    "Max error sebelum rotasi wallet",
+    cfg.multiWalletMaxErrors || 3
+  );
+  cfg.multiWalletCooldownMin = await promptNumber(
+    "Cooldown wallet error (menit)",
+    cfg.multiWalletCooldownMin || 10
+  );
+  cfg.multiWalletAutoSpreadEnabled = await promptYesNo(
+    "Aktifkan auto spread antar wallet?",
+    cfg.multiWalletAutoSpreadEnabled !== false
+  );
+  cfg.multiWalletAutoSpreadMinTotalSol = await promptNumber(
+    "Min total SOL untuk auto spread",
+    cfg.multiWalletAutoSpreadMinTotalSol || 3
+  );
+  cfg.multiWalletMinWalletDeploySol = await promptNumber(
+    "Min deploy SOL per wallet",
+    cfg.multiWalletMinWalletDeploySol || 0.25
+  );
+  cfg.multiWalletMaxWalletsPerBatch = await promptNumber(
+    "Max wallet per batch",
+    cfg.multiWalletMaxWalletsPerBatch || 2
+  );
+
+  const totalPct = (Array.isArray(cfg.wallets) ? cfg.wallets : []).reduce(
+    (sum, wallet) => sum + (Number(wallet.capital_pct) || 0),
+    0
+  );
+  const topology = validateWalletTopology({ enabled: !!cfg.multiWalletEnabled, wallets: cfg.wallets || [] });
+
+  if (cfg.wallets?.length) {
+    console.log("Total capital allocation: " + totalPct + "%");
+    if (!topology.ok) {
+      throw new Error(`Multi-wallet topology invalid: ${topology.errors.join(" ")}`);
+    }
+  } else if (cfg.multiWalletEnabled) {
+    throw new Error("Multi-wallet aktif tapi belum ada wallet di wallets[].");
+  }
 }
 
 async function setupLlm(cfg, env) {
@@ -614,6 +711,7 @@ async function main() {
       const env = loadEnv();
 
       await setupWalletAndRpc(cfg, env);
+      await setupMultiWallet(cfg);
       await setupLlm(cfg, env);
       await setupPilot(cfg);
       await setupVault(cfg);
@@ -637,6 +735,7 @@ async function main() {
       const env = loadEnv();
 
       await setupWalletAndRpc(cfg, env);
+      await setupMultiWallet(cfg);
       await setupLlm(cfg, env);
       await setupPilot(cfg);
       await setupRisk(cfg);

@@ -376,6 +376,12 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {} }) {
 
   // ─── Layer 1: Token-2022 hard blocks ──────────────────────
   const rs = rug_signals;
+  if (rs._collector_error) {
+    return { score: 100, reasons: [`Security collector failed: ${rs._collector_error}`] };
+  }
+  if (rs._helius_expected && rs._helius_degraded) {
+    return { score: 100, reasons: [`Helius enrichment unavailable: ${rs._helius_reason || "critical rug telemetry missing"}`] };
+  }
   if (rs.non_transferable) {
     return { score: 100, reasons: ["Token is non-transferable (soulbound) — cannot sell"] };
   }
@@ -433,9 +439,17 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {} }) {
   const patternMatches = matchPatterns(rs);
   const matchedPatternIds = [];
   for (const pat of patternMatches) {
-    score += pat.weight;
+    const appliedWeight = Number.isFinite(pat.effective_weight) ? pat.effective_weight : (pat.weight || 0);
+    score += appliedWeight;
     matchedPatternIds.push(pat.pattern_id);
-    reasons.push(`Pattern match: ${pat.pattern_id} (+${pat.weight})${pat.note ? " — " + pat.note : ""}`);
+    const confidenceText = Number.isFinite(pat.confidence_score)
+      ? Number(pat.confidence_score).toFixed(2)
+      : "n/a";
+    const provenance = pat.provenance?.sample_count != null
+      ? ` [samples:${pat.provenance.sample_count}, conf:${confidenceText}]`
+      : "";
+    const softness = pat.soft_only ? "soft" : "hard";
+    reasons.push(`Pattern match (${softness}): ${pat.pattern_id} (+${appliedWeight})${provenance}${pat.note ? " — " + pat.note : ""}`);
   }
 
   score = Math.min(100, score);

@@ -345,7 +345,17 @@ export async function getTokenSecurityDetails({ mint }) {
     };
   } catch (error) {
     log("security_error", `getTokenSecurityDetails ${mint}: ${error.message}`);
-    return { mint, error: error.message, security: {}, holders: [], rug_signals: {} };
+    return {
+      mint,
+      error: error.message,
+      security: {},
+      holders: [],
+      rug_signals: {
+        _collector_error: error.message,
+        _helius_used: !!(process.env.HELIUS_API_KEY && process.env.HELIUS_API_KEY !== "dummy-helius-key"),
+        _helius_expected: !!(process.env.HELIUS_API_KEY && process.env.HELIUS_API_KEY !== "dummy-helius-key"),
+      },
+    };
   }
 }
 

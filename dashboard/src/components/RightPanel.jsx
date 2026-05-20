@@ -1,331 +1,317 @@
-import { useState } from 'react';
-
-function fmt(n) {
-  if (n == null) return '—';
-  if (typeof n !== 'number') n = parseFloat(n);
-  if (isNaN(n)) return '—';
-  if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
-  if (Math.abs(n) >= 1_000)     return `$${(n / 1_000).toFixed(0)}K`;
-  return `$${n.toFixed(2)}`;
+function fmtUsd(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return '—';
+  if (Math.abs(num) >= 1_000_000) return `$${(num / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(num) >= 1_000) return `$${(num / 1_000).toFixed(1)}K`;
+  return `$${num.toFixed(2)}`;
 }
 
-function fmtNum(n) {
-  if (n == null) return '—';
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-  return String(n);
+function classifyLog(item) {
+  const category = String(item.category || '').toUpperCase();
+  const message = String(item.message || '').toLowerCase();
+  const tool = String(item.tool || '').toLowerCase();
+
+  if (item._isAction) {
+    if (item.success === false) return { tag: 'ERR', tone: 'bad' };
+    if (tool.includes('swap') || tool.includes('position')) return { tag: 'TRADE', tone: 'warm' };
+    return { tag: 'OK', tone: 'good' };
+  }
+
+  if (category === 'ERROR' || category.endsWith('_ERROR') || message.includes(' error')) return { tag: 'ERR', tone: 'bad' };
+  if (category === 'WARN' || category === 'WARNING' || category.endsWith('_WARN')) return { tag: 'WARN', tone: 'warn' };
+  return { tag: 'INFO', tone: 'neutral' };
 }
 
-function fmtPct(n) {
-  if (n == null) return '—';
-  return `${(n * 100).toFixed(1)}%`;
-}
+function buildDoctor(agentData, logs, actions, connected, lastUpdate, lastHeartbeat) {
+  const cfg = agentData.userConfig || {};
+  const positions = Object.keys(agentData.state?.positions || {});
+  const recentLogs = logs.slice(-120);
+  const recentActions = actions.slice(-40);
+  const recentErrors = recentLogs.filter((item) => classifyLog(item).tag === 'ERR');
+  const recentWarnings = recentLogs.filter((item) => classifyLog(item).tag === 'WARN');
+  const failedActions = recentActions.filter((item) => item.success === false);
+  const wallets = Array.isArray(cfg.wallets) ? cfg.wallets : [];
 
-function conditionColor(c) {
-  const map = { HOT: 'var(--neg)', COLD: 'var(--blue)', DEAD: 'var(--muted)', UNKNOWN: 'var(--muted)' };
-  return map[(c || '').toUpperCase()] || 'var(--muted)';
-}
+  const checks = [
+    {
+      label: 'WebSocket connection',
+      ok: connected,
+      severity: 'critical',
+      note: connected ? 'dashboard stream healthy' : 'dashboard disconnected from runtime',
+    },
+    {
+      label: 'Fresh runtime updates',
+      ok: !!lastUpdate && Date.now() - lastUpdate < 90_000,
+      severity: 'high',
+      note: lastUpdate ? `${Math.round((Date.now() - lastUpdate) / 1000)}s since last update` : 'no update received yet',
+    },
+    {
+      label: 'Heartbeat freshness',
+      ok: !!lastHeartbeat && Date.now() - lastHeartbeat < 45_000,
+      severity: 'medium',
+      note: lastHeartbeat ? `${Math.round((Date.now() - lastHeartbeat) / 1000)}s since heartbeat` : 'no heartbeat received yet',
+    },
+    {
+      label: 'Recent log errors',
+      ok: recentErrors.length === 0,
+      severity: 'high',
+      note: recentErrors.length === 0 ? 'no recent error lines' : `${recentErrors.length} error lines in recent logs`,
+    },
+    {
+      label: 'Failed actions',
+      ok: failedActions.length === 0,
+      severity: 'high',
+      note: failedActions.length === 0 ? 'execution actions look clean' : `${failedActions.length} failed actions in recent activity`,
+    },
+    {
+      label: 'Risk saturation',
+      ok: !cfg.maxPositions || positions.length < cfg.maxPositions,
+      severity: 'medium',
+      note: cfg.maxPositions ? `${positions.length}/${cfg.maxPositions} positions used` : `${positions.length} positions open`,
+    },
+    {
+      label: 'Multi-wallet shape',
+      ok: !cfg.multiWalletEnabled || wallets.length >= 2,
+      severity: 'medium',
+      note: cfg.multiWalletEnabled ? `${wallets.length} wallet config entries` : 'single-wallet mode',
+    },
+    {
+      label: 'Confirm-mode safety',
+      ok: cfg.executionMode === 'demo' || cfg.confirmMode !== false,
+      severity: 'critical',
+      note: cfg.executionMode === 'demo' ? 'demo mode lowers live risk' : (cfg.confirmMode ? 'manual approval enabled' : 'live buys may execute immediately'),
+    },
+    {
+      label: 'Telegram approval surface',
+      ok: !cfg.confirmMode || !!cfg.telegramChatId,
+      severity: 'medium',
+      note: cfg.confirmMode ? (cfg.telegramChatId ? 'chat id configured' : 'confirm mode on but telegram chat missing') : 'telegram optional',
+    },
+  ];
 
-function rugScoreColor(score) {
-  if (score == null) return 'var(--muted)';
-  if (score <= 20) return 'var(--pos)';
-  if (score <= 50) return 'var(--warn)';
-  return 'var(--neg)';
-}
+  const penalty = { critical: 18, high: 12, medium: 7 };
+  const score = Math.max(0, Math.round(100 - checks.reduce((sum, item) => sum + (item.ok ? 0 : penalty[item.severity]), 0)));
+  const failing = checks.filter((item) => !item.ok);
+  const status = score >= 85 ? 'healthy' : score >= 65 ? 'watch' : 'critical';
+  const recommendations = failing.map((item) => `${item.label}: ${item.note}`);
 
-function statusColor(status) {
-  const map = {
-    PENDING:  'var(--cyan)',
-    WATCHING: 'var(--warn)',
-    DEPLOYED: 'var(--pos)',
-    REJECTED: 'var(--neg)',
-    SKIP:     'var(--muted)',
+  return {
+    score,
+    status,
+    checks,
+    failing,
+    recommendations,
+    recentErrors: [...recentErrors, ...recentWarnings].slice(-8).reverse(),
   };
-  return map[(status || '').toUpperCase()] || 'var(--muted)';
 }
 
-function timeAgo(ts) {
-  if (!ts) return '';
-  const diff = Date.now() - new Date(ts).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'now';
-  if (mins < 60) return `${mins}m ago`;
-  return `${Math.floor(mins / 60)}h ago`;
-}
-
-function MetricRow({ label, value, valueColor }) {
+function Card({ title, children, aside }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', fontSize: 11 }}>
-      <span style={{ color: 'var(--muted)' }}>{label}</span>
-      <span style={{ color: valueColor || 'var(--text)', fontWeight: 500 }}>{value}</span>
+    <section className="deck-card">
+      <div className="card-head">
+        <div>
+          <p className="card-kicker">Doctor</p>
+          <h3>{title}</h3>
+        </div>
+        {aside ? <div className="card-aside">{aside}</div> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function CheckRow({ item }) {
+  return (
+    <div className="check-row">
+      <div>
+        <strong>{item.label}</strong>
+        <p>{item.note}</p>
+      </div>
+      <span className={`status-chip ${item.ok ? 'good' : item.severity === 'critical' ? 'bad' : 'warn'}`}>
+        {item.ok ? 'PASS' : 'FAIL'}
+      </span>
     </div>
   );
 }
 
-function MarketIntelCard({ marketIntel }) {
-  const condition = (marketIntel?.currentCondition || 'UNKNOWN').toUpperCase();
-  const latest = marketIntel?.snapshots?.[marketIntel.snapshots.length - 1];
-  const metrics = latest?.metrics || {};
-  const confidence = latest?.confidence || 0;
-  const history = (marketIntel?.snapshots || []).slice(-12);
+function ControlButton({ label, sublabel, onClick, variant = 'default' }) {
+  return (
+    <button className={`control-button ${variant}`} onClick={onClick}>
+      <strong>{label}</strong>
+      <span>{sublabel}</span>
+    </button>
+  );
+}
+
+export default function RightPanel({ agentData, logs, actions, connected, lastUpdate, lastHeartbeat, sendControl, onOpenSetup }) {
+  const doctor = buildDoctor(agentData, logs, actions, connected, lastUpdate, lastHeartbeat);
+  const report = agentData.lastReport || {};
+  const summary = report.summary || {};
+  const learning = agentData.learningState || {};
+  const marketSnapshots = agentData.marketIntel?.snapshots || [];
+  const latestSnapshot = marketSnapshots[marketSnapshots.length - 1];
+  const cfg = agentData.userConfig || {};
+  const strategyState = agentData.strategyState || { activeId: 'scalping', available: [] };
+  const automationState = agentData.automationState || { enabled: false, cronStarted: false, telegramPolling: false };
+  const supervisorState = agentData.supervisorState || { desiredRunning: false, agentRunning: false, pid: null, mode: null };
+  const paused = Boolean(agentData.tradingPlan?.session?.pausedUntil && new Date(agentData.tradingPlan.session.pausedUntil).getTime() > Date.now());
 
   return (
-    <div className="cyber-card">
-      <div className="section-header">Market Intelligence</div>
-
-      {/* Condition + confidence */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-        <span style={{
-          fontSize: 18, fontWeight: 700,
-          color: conditionColor(condition),
-          textShadow: `0 0 12px ${conditionColor(condition)}`,
-        }}>
-          {condition === 'HOT' ? '🔥' : condition === 'COLD' ? '❄️' : condition === 'DEAD' ? '💀' : '?'}
-          {' '}{condition}
-        </span>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10,
-            color: 'var(--muted)', marginBottom: 2 }}>
-            <span>confidence</span>
-            <span style={{ color: conditionColor(condition) }}>{confidence}%</span>
+    <aside className="right-column">
+      <Card title="Doctor / Error Triage" aside={<span className={`status-chip ${doctor.status}`}>{doctor.status.toUpperCase()}</span>}>
+        <div className="doctor-score-wrap">
+          <div className="doctor-score-ring">
+            <div className="doctor-score-core">
+              <span>score</span>
+              <strong>{doctor.score}</strong>
+            </div>
           </div>
-          <div className="progress-bar">
-            <div className="progress-bar-fill" style={{
-              width: `${confidence}%`,
-              background: conditionColor(condition),
-              boxShadow: `0 0 6px ${conditionColor(condition)}80`,
-            }} />
+          <div className="doctor-score-copy">
+            <p>Runtime health based on socket freshness, error lines, failed actions, safety config, and wallet topology.</p>
+            <ul className="compact-list">
+              <li>{doctor.failing.length === 0 ? 'No active blockers detected.' : `${doctor.failing.length} active issue(s) need operator attention.`}</li>
+              <li>{doctor.recentErrors.length > 0 ? `${doctor.recentErrors.length} recent warn/error signals are visible.` : 'Recent log stream is clean.'}</li>
+            </ul>
           </div>
         </div>
-      </div>
+      </Card>
 
-      {/* Metrics grid */}
-      {metrics.avg_swaps != null && (
-        <>
-          <MetricRow label="avg swaps/token" value={fmtNum(metrics.avg_swaps)} valueColor="var(--dim)" />
-          <MetricRow label="max swaps"        value={fmtNum(metrics.max_swaps)} />
-          <MetricRow label="buy ratio"        value={fmtPct(metrics.buy_ratio)}
-            valueColor={metrics.buy_ratio > 0.5 ? 'var(--pos)' : 'var(--neg)'} />
-          <MetricRow label="hot ratio"        value={fmtPct(metrics.hot_ratio)}
-            valueColor={metrics.hot_ratio > 0.7 ? 'var(--pos)' : 'var(--warn)'} />
-          {metrics.fresh_tokens_1h != null && (
-            <MetricRow label="fresh tokens/1h" value={metrics.fresh_tokens_1h} />
-          )}
-        </>
-      )}
+      <Card title="Operator Controls" aside={<span className="mini-label">live + persistent</span>}>
+        <div className="control-grid">
+          <ControlButton
+            label="Setup Wizard"
+            sublabel="Open Hermes-style onboarding"
+            variant="accent"
+            onClick={onOpenSetup}
+          />
+          <ControlButton
+            label="Refresh snapshot"
+            sublabel="Re-read state, logs, config"
+            onClick={() => sendControl('refresh_state')}
+          />
+          <ControlButton
+            label={paused ? 'Resume now' : 'Pause 60m'}
+            sublabel={paused ? 'Clear current session pause gate' : 'Live session gate via trading plan'}
+            variant="warn"
+            onClick={() => sendControl(paused ? 'resume_session' : 'pause_session', paused ? {} : { durationMin: 60 })}
+          />
+          <ControlButton
+            label={`Agent ${supervisorState.desiredRunning ? 'OFF' : 'ON'}`}
+            sublabel={supervisorState.desiredRunning ? 'Request full process shutdown' : 'Request supervisor to boot agent'}
+            variant={supervisorState.desiredRunning ? 'warn' : 'default'}
+            onClick={() => sendControl('set_agent_power', { enabled: !supervisorState.desiredRunning })}
+          />
+          <ControlButton
+            label={`Automation ${automationState.enabled ? 'OFF' : 'ON'}`}
+            sublabel={automationState.enabled ? 'Stop 24/7 automation loop' : 'Start 24/7 automation loop'}
+            variant={automationState.enabled ? 'warn' : 'default'}
+            onClick={() => sendControl('set_automation', { enabled: !automationState.enabled })}
+          />
+          <ControlButton
+            label={`Confirm ${cfg.confirmMode ? 'OFF' : 'ON'}`}
+            sublabel="Persist confirmMode for next restart"
+            onClick={() => sendControl('set_confirm_mode', { enabled: !cfg.confirmMode })}
+          />
+          <ControlButton
+            label={`Multi-wallet ${cfg.multiWalletEnabled ? 'OFF' : 'ON'}`}
+            sublabel="Persist topology mode in config"
+            onClick={() => sendControl('set_multi_wallet', { enabled: !cfg.multiWalletEnabled })}
+          />
+          <ControlButton
+            label={`Daily report ${cfg.dailyReportEnabled ? 'OFF' : 'ON'}`}
+            sublabel="Persist scheduler preference"
+            onClick={() => sendControl('set_daily_report', { enabled: !cfg.dailyReportEnabled })}
+          />
+        </div>
+        <p className="muted-copy">Agent power ON/OFF talks to the 24/7 supervisor. Automation ON/OFF controls the cron loop inside the running agent. Pause and resume act on the session gate only.</p>
+      </Card>
 
-      {/* Mini history chart */}
-      {history.length > 1 && (
-        <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 4 }}>
-            condition history ({history.length} snapshots)
-          </div>
-          <div style={{ display: 'flex', gap: 2, alignItems: 'flex-end', height: 24 }}>
-            {history.map((snap, i) => {
-              const c = (snap.condition || '').toUpperCase();
-              const color = conditionColor(c);
-              const h = c === 'HOT' ? 24 : c === 'COLD' ? 16 : 8;
+      <Card title="Strategy Control" aside={<span className="mini-label">hot apply</span>}>
+        <div className="strategy-grid">
+          {(strategyState.available || []).map((strategy) => (
+            <button
+              key={strategy.id}
+              className={`strategy-chip ${strategy.active ? 'active' : ''}`}
+              onClick={() => sendControl('set_strategy', { strategyId: strategy.id })}
+            >
+              <strong>{strategy.id}</strong>
+              <span>{strategy.name}</span>
+            </button>
+          ))}
+        </div>
+        <p className="muted-copy">Active strategy: <code>{strategyState.activeId || 'scalping'}</code>. Ponyou reads active strategy from disk hot, so this should apply without restart.</p>
+      </Card>
+
+      <Card title="Supervisor State" aside={<span className="mini-label">24x7</span>}>
+        <div className="stats-list">
+          <div className="stat-row"><span>Desired power</span><strong className={supervisorState.desiredRunning ? 'tone-good' : 'tone-bad'}>{supervisorState.desiredRunning ? 'ON' : 'OFF'}</strong></div>
+          <div className="stat-row"><span>Agent running</span><strong className={supervisorState.agentRunning ? 'tone-good' : 'tone-bad'}>{supervisorState.agentRunning ? 'YES' : 'NO'}</strong></div>
+          <div className="stat-row"><span>Mode</span><strong>{supervisorState.mode || '—'}</strong></div>
+          <div className="stat-row"><span>PID</span><strong>{supervisorState.pid ?? '—'}</strong></div>
+        </div>
+      </Card>
+
+      <Card title="Doctor Checks">
+        <div className="check-list">
+          {doctor.checks.map((item) => (
+            <CheckRow key={item.label} item={item} />
+          ))}
+        </div>
+      </Card>
+
+      <Card title="Operator Recommendations">
+        {doctor.recommendations.length > 0 ? (
+          <ul className="compact-list">
+            {doctor.recommendations.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted-copy">No corrective action suggested right now.</p>
+        )}
+      </Card>
+
+      <Card title="Recent Error Surface" aside={<span className="mini-label">{doctor.recentErrors.length}</span>}>
+        {doctor.recentErrors.length > 0 ? (
+          <div className="issue-list">
+            {doctor.recentErrors.map((item, index) => {
+              const type = classifyLog(item);
               return (
-                <div key={i} title={`${c} ${snap.confidence}% @ ${new Date(snap.ts).toLocaleTimeString()}`}
-                  style={{ flex: 1, height: h, background: color, opacity: 0.7, borderRadius: 1,
-                    transition: 'height 0.3s' }} />
+                <div className={`issue-row tone-${type.tone}`} key={`${item.timestamp || 'issue'}-${index}`}>
+                  <div className="issue-topline">
+                    <strong>{item.category || item.tool || type.tag}</strong>
+                    <span>{item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '—'}</span>
+                  </div>
+                  <p>{item.message || item.summary || 'No message'}</p>
+                </div>
               );
             })}
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9,
-            color: 'var(--muted)', marginTop: 2 }}>
-            <span>{timeAgo(history[0]?.ts)}</span>
-            <span>now</span>
-          </div>
+        ) : (
+          <p className="muted-copy">No recent warnings or errors in the visible log window.</p>
+        )}
+      </Card>
+
+      <Card title="Performance & Memory">
+        <div className="stats-list">
+          <div className="stat-row"><span>Report trades</span><strong>{summary.trades ?? '—'}</strong></div>
+          <div className="stat-row"><span>Report P&L</span><strong className={Number(summary.pnl_pct || 0) >= 0 ? 'tone-good' : 'tone-bad'}>{summary.pnl_pct != null ? `${Number(summary.pnl_pct).toFixed(2)}%` : '—'}</strong></div>
+          <div className="stat-row"><span>Win rate</span><strong>{summary.win_rate != null ? `${summary.win_rate}%` : '—'}</strong></div>
+          <div className="stat-row"><span>Lessons</span><strong>{learning.lessonCount ?? learning.lessons?.length ?? '—'}</strong></div>
+          <div className="stat-row"><span>Rug memory</span><strong>{learning.rugMemory?.length ?? '—'}</strong></div>
+          <div className="stat-row"><span>Last report capital</span><strong>{fmtUsd(summary.capital_usd)}</strong></div>
         </div>
-      )}
-    </div>
-  );
-}
+      </Card>
 
-function ObservedTokensCard({ observedTokens }) {
-  const [showAll, setShowAll] = useState(false);
-  const tokens = observedTokens?.observed || [];
-  const visible = showAll ? tokens : tokens.slice(-15);
-  const recent = [...visible].reverse();
-
-  if (tokens.length === 0) {
-    return (
-      <div className="cyber-card">
-        <div className="section-header">Market Scan</div>
-        <div style={{ color: 'var(--muted)', fontSize: 11, textAlign: 'center', padding: '10px 0' }}>
-          No tokens observed yet
+      <Card title="Market Intelligence">
+        <div className="stats-list">
+          <div className="stat-row"><span>Condition</span><strong>{String(agentData.marketIntel?.currentCondition || 'unknown').toUpperCase()}</strong></div>
+          <div className="stat-row"><span>Confidence</span><strong>{latestSnapshot?.confidence != null ? `${latestSnapshot.confidence}%` : '—'}</strong></div>
+          <div className="stat-row"><span>Snapshots</span><strong>{marketSnapshots.length}</strong></div>
+          <div className="stat-row"><span>Buy ratio</span><strong>{latestSnapshot?.metrics?.buy_ratio != null ? `${(latestSnapshot.metrics.buy_ratio * 100).toFixed(1)}%` : '—'}</strong></div>
+          <div className="stat-row"><span>Fresh tokens</span><strong>{latestSnapshot?.metrics?.fresh_tokens_1h ?? '—'}</strong></div>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="cyber-card">
-      <div className="section-header">
-        Market Scan
-        <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 10 }}>
-          {tokens.length} tokens
-        </span>
-      </div>
-
-      {/* Column headers */}
-      <div style={{ display: 'grid', gridTemplateColumns: '52px 1fr 52px 52px',
-        gap: 4, padding: '3px 0', borderBottom: '1px solid var(--border)',
-        marginBottom: 4, fontSize: 9, color: 'var(--muted)', letterSpacing: '0.05em' }}>
-        <span>SYMBOL</span>
-        <span>MCAP</span>
-        <span style={{ textAlign: 'right' }}>RUG</span>
-        <span style={{ textAlign: 'right' }}>STATUS</span>
-      </div>
-
-      <div style={{ maxHeight: 240, overflowY: 'auto' }}>
-        {recent.map((token, i) => (
-          <div key={token.mint || i} className="token-row" style={{
-            display: 'grid',
-            gridTemplateColumns: '52px 1fr 52px 52px',
-            gap: 4,
-            padding: '3px 0',
-            borderBottom: '1px solid rgba(26,26,58,0.5)',
-            fontSize: 11,
-          }}>
-            <span style={{ color: 'var(--cyan)', fontWeight: 600, overflow: 'hidden',
-              textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {token.symbol || '?'}
-            </span>
-            <span style={{ color: 'var(--dim)' }}>
-              {fmt(token.initial_mcap)}
-            </span>
-            <span style={{ textAlign: 'right', color: rugScoreColor(token.rug_score) }}>
-              {token.rug_score ?? '?'}
-            </span>
-            <span style={{ textAlign: 'right', color: statusColor(token.status), fontSize: 9, fontWeight: 600 }}>
-              {(token.status || '?').slice(0, 4)}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {tokens.length > 15 && (
-        <button onClick={() => setShowAll(v => !v)} style={{
-          marginTop: 6, width: '100%', background: 'none', border: '1px solid var(--border)',
-          color: 'var(--muted)', padding: '3px 8px', cursor: 'pointer',
-          fontSize: 10, fontFamily: 'inherit', borderRadius: 2,
-        }}>
-          {showAll ? '▲ show less' : `▼ show all ${tokens.length}`}
-        </button>
-      )}
-
-      {/* Flags summary */}
-      {recent.slice(0, 3).some(t => t.flags?.length > 0) && (
-        <div style={{ marginTop: 8 }}>
-          <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 4,
-            letterSpacing: '0.05em', textTransform: 'uppercase' }}>Recent Flags</div>
-          {recent.filter(t => t.flags?.length > 0).slice(0, 3).map((token, i) => (
-            <div key={i} style={{ marginBottom: 3, fontSize: 10, display: 'flex', gap: 6 }}>
-              <span style={{ color: 'var(--cyan)', flexShrink: 0 }}>{token.symbol}</span>
-              <span style={{ color: 'var(--warn)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {token.flags[0]}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DailyResultsCard({ tradingPlan }) {
-  const results = tradingPlan?.dailyResults || [];
-  if (results.length === 0) return null;
-
-  return (
-    <div className="cyber-card">
-      <div className="section-header">Daily Results</div>
-      <div style={{ maxHeight: 160, overflowY: 'auto' }}>
-        {[...results].reverse().map((r, i) => (
-          <div key={i} style={{
-            display: 'flex', justifyContent: 'space-between',
-            padding: '3px 0', borderBottom: '1px solid rgba(26,26,58,0.5)',
-            fontSize: 11,
-          }}>
-            <span style={{ color: 'var(--muted)' }}>Day {r.day} — {r.date}</span>
-            <span style={{
-              color: r.pnl_pct >= 0 ? 'var(--pos)' : 'var(--neg)',
-              fontWeight: 600,
-            }}>
-              {r.pnl_pct >= 0 ? '+' : ''}{(r.pnl_pct || 0).toFixed(1)}%
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function LearningCard({ learningState, lastReport }) {
-  const lessons = learningState?.lessonCount ?? learningState?.lessons?.length ?? 0;
-  const rugMemory = learningState?.rugMemory?.length || 0;
-  const darwinEnabled = lastReport?.darwinEnabled;
-  const pnl = lastReport?.summary?.pnl_pct;
-  const trades = lastReport?.summary?.trades;
-  const winRate = lastReport?.summary?.win_rate;
-
-  return (
-    <div className="cyber-card">
-      <div className="section-header">Agent Memory & Report</div>
-      <MetricRow label="Lessons learned" value={lessons} valueColor="var(--purple)" />
-      <MetricRow label="Rug memory" value={rugMemory} valueColor="var(--neg)" />
-      {lastReport && (
-        <>
-          <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 4,
-              letterSpacing: '0.05em', textTransform: 'uppercase' }}>Today's Report</div>
-            <MetricRow label="P&L"
-              value={pnl != null ? `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%` : '—'}
-              valueColor={pnl >= 0 ? 'var(--pos)' : 'var(--neg)'} />
-            <MetricRow label="Trades"   value={trades ?? '—'} />
-            <MetricRow label="Win rate" value={winRate != null ? `${winRate.toFixed(0)}%` : '—'}
-              valueColor={winRate >= 50 ? 'var(--pos)' : 'var(--warn)'} />
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function DarwinCard({ userConfig }) {
-  if (!userConfig?.darwinEnabled) return null;
-  return (
-    <div className="cyber-card">
-      <div className="section-header">Darwin Optimizer</div>
-      <MetricRow label="Status"      value="ENABLED"              valueColor="var(--pos)" />
-      <MetricRow label="Window"      value={`${userConfig.darwinWindowDays}d`} />
-      <MetricRow label="Boost"       value={`×${userConfig.darwinBoost}`}       valueColor="var(--pos)" />
-      <MetricRow label="Decay"       value={`×${userConfig.darwinDecay}`}        valueColor="var(--neg)" />
-      <MetricRow label="Floor/Ceil"  value={`${userConfig.darwinFloor} — ${userConfig.darwinCeiling}`} />
-      <MetricRow label="Min samples" value={userConfig.darwinMinSamples} />
-    </div>
-  );
-}
-
-export default function RightPanel({ agentData }) {
-  const { marketIntel, observedTokens, tradingPlan, learningState, lastReport, userConfig } = agentData;
-
-  return (
-    <aside style={{
-      background: 'var(--bg-panel)',
-      overflowY: 'auto',
-      overflowX: 'hidden',
-      padding: '10px 10px',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 10,
-    }}>
-      <MarketIntelCard marketIntel={marketIntel} />
-      <ObservedTokensCard observedTokens={observedTokens} />
-      <LearningCard learningState={learningState} lastReport={lastReport} />
-      <DailyResultsCard tradingPlan={tradingPlan} />
-      <DarwinCard userConfig={userConfig} />
+      </Card>
     </aside>
   );
 }

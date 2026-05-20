@@ -31,9 +31,8 @@ import {
   checkROI,
   checkTrailingStop,
   checkPartialTP,
-  getEffectiveStopLoss,
-  getEffectiveImmediateTakeProfit,
 } from "./strategy.js";
+import { buildRiskPolicy, evaluateExitPolicy } from "./risk-policy.js";
 
 /**
  * Simulate one trade through a price sequence.
@@ -54,13 +53,21 @@ export function simulateTrade({
   marketCondition = "NORMAL",
   stopLossPctOverride = null,
   takeProfitPctOverride = null,
+  policy = null,
 } = {}) {
   if (!Array.isArray(priceSequence) || priceSequence.length < 2) {
     throw new Error("priceSequence must be an array of at least 2 ticks");
   }
 
-  const effStopLoss = getEffectiveStopLoss(stopLossPctOverride);
-  const effImmediateTP = getEffectiveImmediateTakeProfit(takeProfitPctOverride);
+  const effectivePolicy = policy || buildRiskPolicy({
+    marketCondition,
+    config: {
+      management: {
+        stopLossPct: stopLossPctOverride,
+        takeProfitPct: takeProfitPctOverride,
+      },
+    },
+  });
 
   const entryTick = priceSequence[0];
   const entryTs = entryTick.ts;
@@ -72,6 +79,7 @@ export function simulateTrade({
   let exitTick = null;
   let exitReason = null;
   let realizedPnlPct = 0; // PnL captured from partial TPs so far
+  let profitSweepEligible = false;
 
   // Start from index 1 — the entry tick itself doesn't trigger exits.
   for (let i = 1; i < priceSequence.length; i++) {
@@ -81,17 +89,29 @@ export function simulateTrade({
 
     if (currentPnlPct > peakPnlPct) peakPnlPct = currentPnlPct;
 
-    // 1. Stop loss (hard floor)
-    if (currentPnlPct / 100 <= effStopLoss) {
+    const exitPolicy = evaluateExitPolicy({
+      pnlPct: currentPnlPct,
+      peakPnlPct,
+      policy: effectivePolicy,
+    });
+    profitSweepEligible = profitSweepEligible || exitPolicy.profitSweepEligible;
+
+    // 1. Hard emergency exits
+    if (exitPolicy.hardCutLoss) {
       exitTick = tick;
-      exitReason = `Stop Loss: ${currentPnlPct.toFixed(2)}% (SL ${(effStopLoss * 100).toFixed(0)}%)`;
+      exitReason = exitPolicy.hardCutLossReason;
+      break;
+    }
+    if (exitPolicy.hardStopLoss) {
+      exitTick = tick;
+      exitReason = exitPolicy.hardStopLossReason;
       break;
     }
 
     // 2. Immediate TP (user override)
-    if (effImmediateTP != null && currentPnlPct / 100 >= effImmediateTP) {
+    if (exitPolicy.takeProfit) {
       exitTick = tick;
-      exitReason = `Immediate TP: ${currentPnlPct.toFixed(2)}%`;
+      exitReason = exitPolicy.takeProfitReason;
       break;
     }
 
@@ -116,10 +136,9 @@ export function simulateTrade({
     }
 
     // 5. Trailing stop
-    const ts = checkTrailingStop(currentPnlPct, peakPnlPct);
-    if (ts.exit) {
+    if (exitPolicy.trailingStop) {
       exitTick = tick;
-      exitReason = ts.reason;
+      exitReason = exitPolicy.trailingStopReason;
       break;
     }
   }
@@ -144,8 +163,10 @@ export function simulateTrade({
     pnlPct: totalPnlPct,
     peakPnlPct,
     partialTpDone,
+    profitSweepEligible,
     finalSize: remainingSize,
     isWin: totalPnlPct > 0,
+    policy: effectivePolicy,
   };
 }
 
@@ -155,7 +176,7 @@ export function simulateTrade({
  *
  * @returns {object} summary — see test fixtures for shape.
  */
-export function backtest({ trades = [], marketCondition = "NORMAL", stopLossPctOverride = null, takeProfitPctOverride = null } = {}) {
+export function backtest({ trades = [], marketCondition = "NORMAL", stopLossPctOverride = null, takeProfitPctOverride = null, policy = null } = {}) {
   if (!Array.isArray(trades) || trades.length === 0) {
     return { total: 0, wins: 0, losses: 0, winRate: 0, totalPnlPct: 0, trades: [] };
   }
@@ -166,6 +187,7 @@ export function backtest({ trades = [], marketCondition = "NORMAL", stopLossPctO
       marketCondition: t.marketCondition ?? marketCondition,
       stopLossPctOverride: t.stopLossPctOverride ?? stopLossPctOverride,
       takeProfitPctOverride: t.takeProfitPctOverride ?? takeProfitPctOverride,
+      policy: t.policy ?? policy,
     })
   );
 
