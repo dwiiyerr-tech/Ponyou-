@@ -1048,6 +1048,21 @@ async function checkDeterministicExits(tokens) {
       updatePeakPnl(token.position_key || token.mint, currentPnlPct, token.wallet_address || null);
     }
 
+    // Rug monitor (onHigh callback) sets this flag when a HIGH-severity signal fires.
+    // Must be checked here so the position actually gets sold — the flag alone does nothing.
+    if (tracked.rug_force_exit) {
+      exits.push({
+        mint: token.mint,
+        symbol: token.symbol,
+        reason: tracked.rug_force_exit_reason || "rug_force_exit",
+        pnl_pct: currentPnlPct,
+        is_loss: currentPnlPct < 0,
+        wallet_address: token.wallet_address || null,
+        position_key: token.position_key || token.mint,
+      });
+      continue;
+    }
+
     const exitPolicy = evaluateExitPolicy({
       pnlPct: currentPnlPct,
       peakPnlPct: tracked.peak_pnl_pct || 0,
@@ -1212,7 +1227,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           pnl_pct: tradePnl,
           hold_minutes: holdMinutes,
           exit_reason: exit.reason,
-          rug_detected: exit.reason.includes("Rug"),
+          rug_detected: /rug/i.test(exit.reason),
           attribution,
         });
         recordTradeAttribution({
@@ -1299,9 +1314,10 @@ export async function runManagementCycle({ silent = false } = {}) {
         }
 
         if (telegramEnabled()) {
-          const icon = exit.is_loss ? "🛑" : "🎯";
+          const isRug = /rug/i.test(exit.reason);
+          const icon = isRug ? "☠️" : exit.is_loss ? "🛑" : "🎯";
           const lines = [
-            `${icon} <b>Exit</b> · ${htmlEscape(exit.symbol || "?")}`,
+            `${icon} <b>${isRug ? "RUG EXIT" : "Exit"}</b> · ${htmlEscape(exit.symbol || "?")}`,
             `PnL: ${fmt.pct(exit.pnl_pct)}`,
             fmt.it(exit.reason),
           ];
