@@ -112,6 +112,10 @@ import {
   readAutomationCommand, publishAutomationState, persistAutomationPreference,
   issueSupervisorCommand, publishSupervisorState, readSupervisorState,
 } from "./automation-control.js";
+import {
+  getDailyTradeGuardStatus, recordDailyTradeOutcome,
+  decideDailyTradeGuard, isDailyTradeGuardEntryBlocked,
+} from "./daily-trade-guard.js";
 
 log("startup", "Ponyou AI Agent starting...");
 const executionMode = resolveExecutionMode();
@@ -304,6 +308,78 @@ function stripThink(t) {
   return t ? t.replace(/<think>[\s\S]*?<\/think>/gi, "").trim() : t;
 }
 
+function formatDailyTradeGuardLine() {
+  const s = getDailyTradeGuardStatus(config.dailyTradeGuard);
+  if (!s.enabled) return "Daily Guard OFF";
+  const label = s.status === "pending_decision"
+    ? "WAITING"
+    : s.status === "stopped"
+      ? "STOPPED"
+      : s.status === "continued"
+        ? "CONTINUED"
+        : "RUNNING";
+  return `Daily Guard ${label} · W ${s.wins}/${s.max_wins_per_day} · L ${s.losses}/${s.max_losses_per_day}`;
+}
+
+function buildDailyGuardLearningContext(status, source = "telegram") {
+  const pending = status?.last_decision?.pendingDecision || status?.pending_decision || null;
+  const threshold = pending?.threshold || "manual";
+  return {
+    daily_guard: true,
+    source,
+    symbol: pending?.symbol || "DAILY_GUARD",
+    mint: pending?.mint || null,
+    pnl_pct: Number.isFinite(pending?.pnl_pct) ? pending.pnl_pct : null,
+    exit_reason: threshold === "win" ? "DAILY_WIN_LIMIT" : threshold === "loss" ? "DAILY_LOSS_LIMIT" : "DAILY_GUARD_STOP",
+    market_condition: getMarketIntelligence().condition,
+    daily_guard_status: {
+      date: status?.date,
+      wins: status?.wins || 0,
+      losses: status?.losses || 0,
+      trades: status?.trades || 0,
+      max_wins_per_day: status?.max_wins_per_day,
+      max_losses_per_day: status?.max_losses_per_day,
+      decision: status?.last_decision?.action || status?.status,
+    },
+  };
+}
+
+async function stopTradingForDailyGuard(source = "telegram") {
+  const status = decideDailyTradeGuard("stop", config.dailyTradeGuard);
+  const ctx = buildDailyGuardLearningContext(status, source);
+  const duration = config.dailyTradeGuard?.learningModeDurationMin || config.pilot.learningModeDurationMin;
+  const activated = activateLearningMode(ctx, ctx.exit_reason, duration);
+  if (activated && shouldRunAnalysis()) {
+    runLossAnalysis().catch(e => log("learning_error", e.message));
+  }
+  return { status, activated };
+}
+
+async function handleDailyTradeGuardOutcome(isWin, meta = {}) {
+  const result = recordDailyTradeOutcome(isWin, meta, config.dailyTradeGuard);
+  if (!result.enabled) return result;
+  if (!result.triggered) return result;
+
+  const thresholdLabel = result.threshold === "win" ? "win" : "loss";
+  log("daily_guard", `${thresholdLabel} limit reached ${result.count}/${result.limit}`);
+
+  if (telegramEnabled()) {
+    const lines = [
+      `🧭 <b>Daily Trade Guard</b>`,
+      `${thresholdLabel.toUpperCase()} limit tercapai: <b>${result.count}/${result.limit}</b>`,
+      `Hari ini: W ${result.wins}/${result.max_wins_per_day} · L ${result.losses}/${result.max_losses_per_day}`,
+      fmt.divider(),
+      `Lanjut trade? <code>/continue</code>`,
+      `Stop dan masuk deep learning? <code>/stoptrade</code>`,
+      fmt.it("Catatan: guard membangun conviction probabilistik, bukan janji coin pasti profit."),
+    ];
+    await sendHTML(lines.join("\n"));
+  }
+
+  return result;
+}
+
+
 // ─── Strategy / Confirm-Mode Telegram Commands ────────────────
 
 /**
@@ -334,6 +410,7 @@ async function handleStrategyTelegramCommand(text) {
     const ptp   = active.partial_tp?.enabled ? `${active.partial_tp.sell_pct}%@+${active.partial_tp.at_pct}%` : "off";
     const confirm = config.trading.confirmMode ? "🟡 ON" : "🟢 OFF";
     const automation = cronStarted ? "🟢 ON" : "🔴 OFF";
+    const dailyGuard = formatDailyTradeGuardLine();
     const supervisor = readSupervisorState();
     const agentPower = supervisor?.desiredRunning
       ? (supervisor?.agentRunning ? "🟢 ON" : "🟡 BOOTING")
@@ -351,9 +428,10 @@ async function handleStrategyTelegramCommand(text) {
       `<b>Confirm</b> · ${confirm} · pending ${pending.length}`,
       `<b>Agent Power</b> · ${agentPower}`,
       `<b>Automation</b> · ${automation}`,
+      `<b>Daily Guard</b> · ${htmlEscape(dailyGuard)}`,
       `<b>Plan</b> · ${planLine}`,
       fmt.divider(),
-      fmt.it("/strategy /strategies /stratset /confirm /auto /agent /pending /yes /no /pnl /status"),
+      fmt.it("/strategy /strategies /stratset /confirm /dailyguard /auto /agent /pending /yes /no /pnl /status"),
     ];
     await sendHTML(lines.join("\n"));
     return true;
@@ -446,6 +524,73 @@ async function handleStrategyTelegramCommand(text) {
     } else {
       await sendHTML(`Confirm mode is <b>${config.trading.confirmMode ? "ON" : "OFF"}</b>\nUsage: /confirm on|off`);
     }
+    return true;
+  }
+
+
+  if (cmd === "/dailyguard") {
+    const mode = (parts[1] || "").toLowerCase();
+    if (mode === "on" || mode === "off") {
+      config.dailyTradeGuard.enabled = mode === "on";
+      await sendHTML(`✅ Daily Guard <b>${mode.toUpperCase()}</b> (runtime).`);
+      return true;
+    }
+    if (["limit", "limits"].includes(mode)) {
+      const n = Number(parts[2]);
+      if (!Number.isFinite(n) || n <= 0) {
+        await sendHTML(`Usage: <code>/dailyguard limit 3</code>`);
+        return true;
+      }
+      config.dailyTradeGuard.maxWinsPerDay = Math.floor(n);
+      config.dailyTradeGuard.maxLossesPerDay = Math.floor(n);
+      await sendHTML(`✅ Daily Guard limit W/L = <b>${Math.floor(n)}</b> (runtime).`);
+      return true;
+    }
+    if (mode === "win" || mode === "wins" || mode === "loss" || mode === "losses") {
+      const n = Number(parts[2]);
+      if (!Number.isFinite(n) || n <= 0) {
+        await sendHTML(`Usage: <code>/dailyguard win 3</code> atau <code>/dailyguard loss 3</code>`);
+        return true;
+      }
+      if (mode.startsWith("win")) config.dailyTradeGuard.maxWinsPerDay = Math.floor(n);
+      else config.dailyTradeGuard.maxLossesPerDay = Math.floor(n);
+      await sendHTML(`✅ Daily Guard ${htmlEscape(mode)} = <b>${Math.floor(n)}</b> (runtime).`);
+      return true;
+    }
+    if (mode === "reset") {
+      decideDailyTradeGuard("reset", config.dailyTradeGuard);
+      await sendHTML(`✅ Daily Guard counters reset for today.`);
+      return true;
+    }
+
+    const s = getDailyTradeGuardStatus(config.dailyTradeGuard);
+    const pending = s.pending_decision
+      ? `\nPending: ${htmlEscape(s.pending_decision.threshold)} ${s.pending_decision.count}/${s.pending_decision.limit} · pilih <code>/continue</code> atau <code>/stoptrade</code>`
+      : "";
+    await sendHTML([
+      `🧭 <b>Daily Guard</b> · ${s.enabled ? "ON" : "OFF"}`,
+      `Status: <b>${htmlEscape(s.status)}</b>`,
+      `Hari ini: W ${s.wins}/${s.max_wins_per_day} · L ${s.losses}/${s.max_losses_per_day}`,
+      pending,
+      fmt.divider(),
+      fmt.it("/dailyguard on|off · /dailyguard limit 3 · /dailyguard win 3 · /dailyguard loss 3 · /dailyguard reset"),
+    ].filter(Boolean).join("\n"));
+    return true;
+  }
+
+  if (cmd === "/continue") {
+    const s = decideDailyTradeGuard("continue", config.dailyTradeGuard);
+    await sendHTML(`▶️ Daily Guard: lanjut trading hari ini. W ${s.wins}/${s.max_wins_per_day} · L ${s.losses}/${s.max_losses_per_day}`);
+    return true;
+  }
+
+  if (cmd === "/stoptrade") {
+    const { status, activated } = await stopTradingForDailyGuard("telegram");
+    await sendHTML([
+      `🧠 <b>Trading dihentikan</b> oleh Daily Guard`,
+      `Hari ini: W ${status.wins}/${status.max_wins_per_day} · L ${status.losses}/${status.max_losses_per_day}`,
+      `Deep learning: <b>${activated ? "ON" : "sudah aktif"}</b> · ${config.dailyTradeGuard?.learningModeDurationMin || config.pilot.learningModeDurationMin}m`,
+    ].join("\n"));
     return true;
   }
 
@@ -567,6 +712,13 @@ async function executePendingIntent(id) {
     consumeIntent(id, "expired");
     return sendHTML(`⏰ #${id} ${fmt.it("expired")}`);
   }
+
+
+  const gate = await checkAllGates("pending-intent");
+  if (gate.blocked) {
+    return sendHTML("⛔ #" + id + " blocked\n" + fmt.code(gate.reason));
+  }
+
 
   await sendHTML(`⏳ Eksekusi #${id}…`);
   const { args } = intent;
@@ -725,6 +877,17 @@ async function checkAllGates(source = "") {
       runLossAnalysis().catch(e => log("learning_error", e.message));
     }
     return { blocked: true, reason: `LEARNING_MODE: resume in ${learn.resume_in_min}min` };
+  }
+
+
+  // 3. Daily trade guard blocks new entries while Telegram decision is pending.
+  // Management exits stay allowed so open risk can still be reduced.
+  if (["screening", "geyser", "pending-intent", "fast-track"].includes(source)) {
+    const guard = isDailyTradeGuardEntryBlocked(config.dailyTradeGuard);
+    if (guard.blocked) {
+      log("daily_guard", `Gate: ${guard.reason} — skip ${source}`);
+      return { blocked: true, reason: guard.reason };
+    }
   }
 
   return { blocked: false };
@@ -1211,7 +1374,14 @@ export async function runManagementCycle({ silent = false } = {}) {
         // sold, hitting Jupiter with zero balance. Cheap insurance.
         await recordClose(exit.position_key || exit.mint, exit.reason, exit.wallet_address || null);
         _rugMonitor?.detachPosition(exit.position_key || exit.mint);
+        const tradePnl = exit.pnl_pct || 0;
         recordTrade(!exit.is_loss);
+        await handleDailyTradeGuardOutcome(!exit.is_loss, {
+          symbol: exit.symbol,
+          mint: exit.mint,
+          pnl_pct: tradePnl,
+          exit_reason: exit.reason,
+        });
         recordCounter("swaps_executed");
 
         if (/rug/i.test(exit.reason)) {
@@ -1228,7 +1398,6 @@ export async function runManagementCycle({ silent = false } = {}) {
 
         // Record performance
         const tracked = getTrackedPosition(exit.position_key || exit.mint, exit.wallet_address || null);
-        const tradePnl = exit.pnl_pct || 0;
         const holdMinutes = tracked ? (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000 : 0;
         const executionQuality = getExecutionQualityAssessment({
           walletAddress: exit.wallet_address || tracked?.wallet_address || null,
@@ -1325,7 +1494,7 @@ export async function runManagementCycle({ silent = false } = {}) {
         if (config.pilot.enabled && exit.is_loss) {
           handleTradeLoss({
             symbol: exit.symbol, mint: exit.mint,
-            pnl_pct: exit.pnl_pct,
+            pnl_pct: tradePnl,
             entry_usd: tracked?.initial_value_usd,
             exit_usd: tokenData?.usd,
             hold_minutes: tracked ? (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000 : 0,
@@ -1336,7 +1505,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           // Success analysis for big wins
           runSuccessAnalysis({
             symbol: exit.symbol, mint: exit.mint,
-            pnl_pct: exit.pnl_pct,
+            pnl_pct: tradePnl,
             hold_minutes: tracked ? (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000 : 0,
             exit_reason: exit.reason,
           }).catch(e => log("learning_error", e.message));
@@ -1385,6 +1554,11 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
               await recordClose(tokenIn, "LLM Manager Decision", walletAddress);
               _rugMonitor?.detachPosition(walletAddress ? `${tokenIn}::${walletAddress}` : tokenIn);
               recordTrade(true); // assume LLM exits for profit
+              await handleDailyTradeGuardOutcome(true, {
+                mint: tokenIn,
+                symbol: tokenIn?.slice(0, 8),
+                exit_reason: "LLM Manager Decision",
+              });
             }
           }
         },
@@ -1923,6 +2097,12 @@ async function handleSmartWalletSwap(event) {
       return;
     }
 
+    const gate = await checkAllGates("geyser");
+    if (gate.blocked) {
+      log("geyser_smart_buy", `entry blocked: ${gate.reason}`);
+      return;
+    }
+
     let token = null;
     try {
       const tokenSearch = await getTokenInfo({ query: mint });
@@ -2414,11 +2594,13 @@ async function handleIncomingTelegramMessage(msg) {
       ? `Day ${plan.day}/${plan.days_total} · PnL ${fmt.pct(plan.today_pnl_pct ?? 0)}`
       : fmt.it("plan belum diinisialisasi");
     const autoLine = cronStarted ? "🟢 ON" : "🔴 OFF";
+    const dailyGuard = formatDailyTradeGuardLine();
     const message = [
       `📊 <b>Status</b>`,
       planLine,
       `Market · ${htmlEscape(market.condition)}`,
       `Automation · ${autoLine}`,
+      `Daily Guard · ${htmlEscape(dailyGuard)}`,
     ].join("\n");
     await sendHTML(message);
     return;
