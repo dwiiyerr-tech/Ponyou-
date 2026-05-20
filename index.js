@@ -35,6 +35,8 @@ import {
 import { runFastTrackBatch } from "./fast-buy.js";
 import { startGeyserStream } from "./geyser.js";
 import { attachExitMonitor, checkPriceDrop } from "./geyser-exit-monitor.js";
+import { createRugMonitor, SEVERITY as RUG_SEVERITY } from "./rug-monitor.js";
+import { captureEntryMetadata } from "./tools/entry-metadata.js";
 import {
   initWalletManager, getActiveWallet, markWalletError,
   resetWalletErrors, getWalletCapitalSol, isMultiWalletEnabled, getAllWallets, buildCapitalAwareWalletPlan, getWalletByAddress,
@@ -613,6 +615,7 @@ async function executePendingIntent(id) {
         amount: args.amount,
       }];
   for (const exec of executions) {
+    const walletAddress = exec.wallet_address || result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null;
     await trackPosition({
       position: args.token_out,
       pool: "gmgn",
@@ -625,13 +628,24 @@ async function executePendingIntent(id) {
         market_condition: getMarketIntelligence().condition,
         workflow: { verdict: "manual" },
         execution_context: {
-          wallet_address: exec.wallet_address || result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
+          wallet_address: walletAddress,
           provider: result?.execution_provider || "auto",
           slippage: Number(args.slippage || result?.slippage || 0),
         },
       },
-      wallet_address: exec.wallet_address || result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
+      wallet_address: walletAddress,
     });
+    if (_rugMonitor) {
+      const positionKey = walletAddress ? `${args.token_out}::${walletAddress}` : args.token_out;
+      try {
+        const meta = await captureEntryMetadata(args.token_out, rugMonitorFetchers);
+        const deployerBal = meta.top_holders_snapshot?.find(h => h.wallet === meta.deployer_wallet)?.balance ?? 0;
+        _rugMonitor.attachPosition(positionKey, { ...meta, deployer_balance_at_entry: deployerBal });
+        log("rug_monitor", `attached ${positionKey} (partial=${meta.partial})`);
+      } catch (e) {
+        log("rug_monitor", `attach failed for ${positionKey}: ${e.message}`);
+      }
+    }
   }
   recordTrade(null);
   consumeIntent(id, "executed", { result: result?.hash || result?.signature || "ok" });
@@ -1158,6 +1172,7 @@ export async function runManagementCycle({ silent = false } = {}) {
         // management cycle would re-attempt the exit on a position already
         // sold, hitting Jupiter with zero balance. Cheap insurance.
         await recordClose(exit.position_key || exit.mint, exit.reason, exit.wallet_address || null);
+        _rugMonitor?.detachPosition(exit.position_key || exit.mint);
         recordTrade(!exit.is_loss);
         recordCounter("swaps_executed");
 
@@ -1317,6 +1332,7 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
             const walletAddress = result.wallet_address || result.would_swap?.wallet_address || null;
             if (tokenOut === "SOL" || tokenOut === "So11111111111111111111111111111111111111112") {
               await recordClose(tokenIn, "LLM Manager Decision", walletAddress);
+              _rugMonitor?.detachPosition(walletAddress ? `${tokenIn}::${walletAddress}` : tokenIn);
               recordTrade(true); // assume LLM exits for profit
             }
           }
@@ -1797,6 +1813,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
 let _geyserStream = null;
 let _turboStarted = false;
 let _exitMonitorCleanup = null;
+let _rugMonitor = null;
 const _geyserLastByMint = new Map();
 let _geyserLastGlobalTs = 0;
 const SOL_MINT_STR = "So11111111111111111111111111111111111111112";
@@ -1899,6 +1916,91 @@ async function seedSmartWallets() {
   }
 }
 
+// ─── Rug Monitor Glue ─────────────────────────────────────────
+const rugMonitorFetchers = {
+  getMintInfo: async (mint) => {
+    try {
+      const mod = await import("./tools/rug-signals.js");
+      if (typeof mod.fetchMintInfo === "function") return mod.fetchMintInfo(mint);
+    } catch (_) {}
+    return null;
+  },
+  getPoolInfo: async (mint) => {
+    try {
+      const mod = await import("./tools/dexscreener.js");
+      const pools = (typeof mod.fetchPools === "function") ? await mod.fetchPools(mint) : null;
+      const top = Array.isArray(pools) ? pools[0] : null;
+      return top ? { pool_address: top.pairAddress || top.address, lp_usd: top.liquidityUsd || top.liquidity_usd } : null;
+    } catch (_) { return null; }
+  },
+  getTopHolders: async (mint) => {
+    try {
+      const mod = await import("./tools/rug-signals.js");
+      if (typeof mod.fetchTopHolders === "function") return mod.fetchTopHolders(mint, 10);
+    } catch (_) {}
+    return [];
+  },
+  getTokenBalance: async (owner, mint) => {
+    try {
+      const mod = await import("./tools/rug-signals.js");
+      if (typeof mod.fetchTokenBalance === "function") return mod.fetchTokenBalance(owner, mint);
+    } catch (_) {}
+    return 0;
+  },
+  getMintAccount: async (mint) => {
+    try {
+      const mod = await import("./tools/rug-signals.js");
+      if (typeof mod.fetchMintInfo === "function") return mod.fetchMintInfo(mint);
+    } catch (_) {}
+    return { mint_authority: null, freeze_authority: null };
+  },
+  getLargestAccounts: async (mint) => {
+    try {
+      const mod = await import("./tools/rug-signals.js");
+      if (typeof mod.fetchTopHolders === "function") return mod.fetchTopHolders(mint, 10);
+    } catch (_) {}
+    return [];
+  },
+  getPoolLiquidityUsd: async (poolAddr) => {
+    try {
+      const mod = await import("./tools/dexscreener.js");
+      if (typeof mod.fetchPoolByAddress === "function") {
+        const p = await mod.fetchPoolByAddress(poolAddr);
+        return p?.liquidityUsd ?? p?.liquidity_usd ?? null;
+      }
+    } catch (_) {}
+    return null;
+  },
+};
+
+function _rugLog(level, signalType, positionKey, meta) {
+  const tag = level === "HIGH" ? "🔴" : level === "MEDIUM" ? "🟡" : "🟢";
+  const msg = `${tag} [RUG_MONITOR] ${level} on ${positionKey} signal=${signalType} src=${meta?.source || "?"}`;
+  log("rug_monitor", msg);
+  if (telegramEnabled()) {
+    sendHTML(`${tag} <b>RUG_MONITOR ${level}</b>\nPosition: <code>${positionKey}</code>\nSignal: ${signalType}\nSource: ${meta?.source || "?"}`).catch(() => {});
+  }
+  return msg;
+}
+
+const rugMonitorCallbacks = {
+  onLow: (positionKey, signalType, meta) => {
+    _rugLog("LOW", signalType, positionKey, meta);
+  },
+  onMedium: (positionKey, signalType, meta) => {
+    _rugLog("MEDIUM", signalType, positionKey, meta);
+  },
+  onHigh: (positionKey, signalType, meta) => {
+    _rugLog("HIGH", signalType, positionKey, meta);
+    const pos = getState()?.positions?.[positionKey];
+    if (pos) {
+      pos.rug_force_exit = true;
+      pos.rug_force_exit_reason = `rug_monitor_${signalType}`;
+      pos.rug_force_exit_ts = Date.now();
+    }
+  },
+};
+
 function startTurboButtons() {
   if (_turboStarted) return;
   _turboStarted = true;
@@ -1925,6 +2027,20 @@ function startTurboButtons() {
       log("turbo", "Exit monitor attached to Geyser stream");
     } else {
       log("turbo", "Geyser disabled (HELIUS_ATLAS_WS_URL not set) — polling-only");
+    }
+    if (config.rugMonitor?.enabled) {
+      try {
+        _rugMonitor = createRugMonitor({
+          geyserStream: _geyserStream,
+          config: config.rugMonitor,
+          callbacks: rugMonitorCallbacks,
+          fetchers: rugMonitorFetchers,
+          log,
+        });
+        log("rug_monitor", `enabled (polling=${config.rugMonitor.pollingIntervalSec}s)`);
+      } catch (e) {
+        log("rug_monitor_error", `init failed: ${e.message}`);
+      }
     }
   } catch (e) {
     log("turbo_error", `startGeyserStream failed: ${e.message}`);
@@ -1995,6 +2111,7 @@ async function shutdown(signal) {
   _cronTasks.forEach(t => t.stop());
   if (_geyserStream?.close) _geyserStream.close();
   _geyserStream = null;
+  try { _rugMonitor?.shutdown(); } catch (_) {}
   process.exit(0);
 }
 process.on("unhandledRejection", (reason, promise) => {
