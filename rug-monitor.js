@@ -52,3 +52,16 @@ export function detectLpMovement({ lpAtEntry, currentLp, transferTo = null, remo
   if (thresholds.low !== null && deltaPct <= thresholds.low) return SEVERITY.LOW;
   return SEVERITY.NONE;
 }
+
+export function detectAuthorityChange({ atEntry, current }) {
+  const entryMint = atEntry?.mint_authority ?? null;
+  const currMint = current?.mint_authority ?? null;
+  const entryFreeze = atEntry?.freeze_authority ?? null;
+  const currFreeze = current?.freeze_authority ?? null;
+  const becameSet = (a, b) => a === null && b !== null;
+  const transferredToBurn = (a, b) => a !== null && b !== null && a !== b && BURN_ADDRESSES.includes(b);
+  if (becameSet(entryMint, currMint) && !BURN_ADDRESSES.includes(currMint)) return SEVERITY.HIGH;
+  if (becameSet(entryFreeze, currFreeze) && !BURN_ADDRESSES.includes(currFreeze)) return SEVERITY.HIGH;
+  if (transferredToBurn(entryMint, currMint) || transferredToBurn(entryFreeze, currFreeze)) return SEVERITY.LOW;
+  return SEVERITY.NONE;
+}

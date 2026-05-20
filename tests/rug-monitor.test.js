@@ -78,3 +78,20 @@ describe("detectLpMovement", () => {
     expect(LP_PROGRAMS.raydiumV4).toBe("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
   });
 });
+
+import { detectAuthorityChange } from "../rug-monitor.js";
+
+describe("detectAuthorityChange", () => {
+  it("returns NONE when both authorities unchanged", () => {
+    expect(detectAuthorityChange({ atEntry: { mint_authority: null, freeze_authority: null }, current: { mint_authority: null, freeze_authority: null } })).toBe(SEVERITY.NONE);
+  });
+  it("returns HIGH when mint authority null -> address", () => {
+    expect(detectAuthorityChange({ atEntry: { mint_authority: null, freeze_authority: null }, current: { mint_authority: "Auth111111111111111111111111111111111111111", freeze_authority: null } })).toBe(SEVERITY.HIGH);
+  });
+  it("returns HIGH when freeze authority null -> address", () => {
+    expect(detectAuthorityChange({ atEntry: { mint_authority: null, freeze_authority: null }, current: { mint_authority: null, freeze_authority: "Auth222222222222222222222222222222222222222" } })).toBe(SEVERITY.HIGH);
+  });
+  it("returns LOW when authority transferred to burn", () => {
+    expect(detectAuthorityChange({ atEntry: { mint_authority: "Auth1111111111111111111111111111111111111111", freeze_authority: null }, current: { mint_authority: "1nc1nerator11111111111111111111111111111111", freeze_authority: null } })).toBe(SEVERITY.LOW);
+  });
+});
