@@ -8,7 +8,7 @@ import { log } from "../logger.js";
 import { listSmartWallets } from "../smart-wallets.js";
 import { recordSmartWalletSnapshot, summarizeSmartWalletHistory } from "../smart-wallet-history.js";
 import { analyzeHolderStructure } from "../holder-memory.js";
-import { gatherRugSignals } from "./rug-signals.js";
+import { detectBundledLaunch, gatherRugSignals } from "./rug-signals.js";
 import { classifyNarrative, summarizeNarrative } from "./narratives.js";
 import { discoverBirdeyeTokens, enrichTokensWithBirdeye, isBirdeyeEnabled } from "./birdeye.js";
 
@@ -336,6 +336,7 @@ export async function getTokenSecurityDetails({ mint }) {
 
     const top10Pct    = holders.slice(0, 10).reduce((s, h) => s + (h.pct || 0), 0);
     const dustHolders = holders.filter(h => (h.sol_balance || 0) < 0.2);
+    const bundledLaunch = detectBundledLaunch({ holders });
 
     // Layer 1+2 rug signals (Token-2022 extensions + Helius-powered)
     const launchTs = dsPair?.pairCreatedAt ? Math.floor(dsPair.pairCreatedAt / 1000) : null;
@@ -350,6 +351,7 @@ export async function getTokenSecurityDetails({ mint }) {
       rugSignals: {
         top10_concentration_pct: parseFloat(top10Pct.toFixed(2)),
         dust_holders: dustHolders.length,
+        ...bundledLaunch,
         ...enrichedSignals,
       },
       holders,
@@ -371,6 +373,7 @@ export async function getTokenSecurityDetails({ mint }) {
       rug_signals: {
         top10_concentration_pct: parseFloat(top10Pct.toFixed(2)),
         dust_holders:            dustHolders.length,
+        ...bundledLaunch,
         is_renounced:            sec.renounced,
         is_honeypot:             null,
         freeze_authority:        !!sec.freeze_authority,

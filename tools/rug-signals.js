@@ -448,6 +448,61 @@ export function getWashTradeScore(dsPair) {
   return { wash_score: Math.min(100, score), buy_sell_ratio: Number(ratio.toFixed(2)) };
 }
 
+function parseHolderTimestampMs(value) {
+  if (value == null) return null;
+  if (Number.isFinite(Number(value))) {
+    const n = Number(value);
+    return n > 1e12 ? n : n * 1000;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function holderSupplyValue(holder = {}, pctMode = false) {
+  if (pctMode) return Number(holder.pct ?? holder.percentage ?? holder.percent ?? 0) || 0;
+  return Number(holder.balance ?? holder.amount ?? holder.quantity ?? holder.ui_amount ?? 0) || 0;
+}
+
+export function detectBundledLaunch({ holders = [], creationWindowMs = 60 * 60 * 1000 } = {}) {
+  const list = Array.isArray(holders) ? holders : [];
+  const groups = new Map();
+
+  for (const holder of list) {
+    const funder = holder?.funded_by;
+    if (!funder) continue;
+    const fundedAt = parseHolderTimestampMs(holder.funded_at);
+    if (!Number.isFinite(fundedAt)) continue;
+    if (!groups.has(funder)) groups.set(funder, []);
+    groups.get(funder).push(fundedAt);
+  }
+
+  let bundledScore = 0;
+  for (const times of groups.values()) {
+    times.sort((a, b) => a - b);
+    let left = 0;
+    for (let right = 0; right < times.length; right++) {
+      while (times[right] - times[left] > creationWindowMs) left++;
+      bundledScore = Math.max(bundledScore, right - left + 1);
+    }
+  }
+
+  const pctMode = list.some(h => Number.isFinite(Number(h?.pct ?? h?.percentage ?? h?.percent)));
+  const values = list
+    .map(holder => holderSupplyValue(holder, pctMode))
+    .filter(value => Number.isFinite(value) && value > 0)
+    .sort((a, b) => b - a);
+  const top20 = values.slice(0, 20).reduce((sum, value) => sum + value, 0);
+  const total = pctMode ? 100 : values.reduce((sum, value) => sum + value, 0);
+  const top20Pct = total > 0 ? Number(((top20 / total) * 100).toFixed(2)) : 0;
+
+  return {
+    bundled: bundledScore > 5,
+    bundled_score: bundledScore,
+    supply_concentrated: top20Pct > 60,
+    top20_pct: top20Pct,
+  };
+}
+
 // ─── Aggregator ──────────────────────────────────────────────────
 
 /**

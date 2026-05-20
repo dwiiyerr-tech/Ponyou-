@@ -10,6 +10,12 @@ import { applyFeeEntryGuard, getSolanaGasFee, shouldSkipEntriesForGasFee } from 
 import { discoverTokens, getTokenSecurityDetails, getTokenKlines } from "./tools/dexscreener.js";
 import { preSwapGuard, swapToken } from "./tools/jupiter.js";
 import { config, computeDeployAmount, computeVolatilityAdjustedSize } from "./config.js";
+import { computeRegimeSizeMultiplier } from "./market-safety.js";
+import {
+  filterNarrativeContagion,
+  isRugExitReason,
+  recordRuggedNarrativesForExit,
+} from "./narrative-contagion.js";
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape } from "./telegram.js";
@@ -113,6 +119,8 @@ log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " (demo/dry
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
 
 const MAX_CANDIDATES_PER_CYCLE = 20;
+
+export { computeRegimeSizeMultiplier } from "./market-safety.js";
 
 // Initialize multi-agent router for research/narrative tasks.
 const agentRouter = new AgentRouter({
@@ -287,6 +295,7 @@ async function getPortfolioSnapshot() {
 let _cronTasks = [];
 let _managementBusy = false;
 let _screeningBusy = false;
+let _lastSolPrice = null;
 // cronStarted is hoisted here so startCronJobs / stopCronJobs (defined below
 // and exported) can safely reference it from another module's evaluation order.
 let cronStarted = false;

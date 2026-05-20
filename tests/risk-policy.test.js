@@ -35,6 +35,21 @@ describe("risk policy", () => {
     expect(policy.exit.immediateTakeProfitPct).toBe(18);
   });
 
+  it("caps cold market stop loss and take profit overrides", () => {
+    const policy = buildRiskPolicy({
+      marketCondition: "COLD",
+      config: {
+        management: {
+          stopLossPct: -20,
+          takeProfitPct: 180,
+        },
+      },
+    });
+
+    expect(policy.exit.hardStopLossPct).toBe(-10);
+    expect(policy.exit.immediateTakeProfitPct).toBe(130);
+  });
+
   it("falls back to default stop loss when override is outside the valid range", () => {
     const policy = buildRiskPolicy({
       marketCondition: "COLD",

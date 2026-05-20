@@ -420,6 +420,12 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {} }) {
   }
 
   // ─── Layer 2: Helius behavioural signals ─────────────────
+  if (rs.bundled) {
+    score += 25; reasons.push(`Bundled launch: ${rs.bundled_score || 0} holders funded by same wallet within launch window`);
+  }
+  if (rs.supply_concentrated) {
+    score += 20; reasons.push(`Top20 holders control ${rs.top20_pct || 0}% supply`);
+  }
   if (rs.bundle_buyers_pct > 30)       { score += 25; reasons.push(`${rs.bundle_buyers_pct}% bought in launch window — bundle snipers`); }
   if (rs.same_funder_holders >= 3)     { score += 20; reasons.push(`${rs.same_funder_holders} top holders share funder ${rs.common_funder?.slice(0, 8)} — sybil cluster`); }
   if (rs.lp_locked === false)          { score += 15; reasons.push("LP not locked"); }
