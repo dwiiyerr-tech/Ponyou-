@@ -126,20 +126,21 @@ describe("detectHolderDump", () => {
 import { createRugMonitor } from "../rug-monitor.js";
 import { vi } from "vitest";
 
+const makeStubs = () => ({
+  geyserStream: { subscribe: vi.fn().mockReturnValue("subid"), unsubscribe: vi.fn() },
+  config: {
+    enabled: true,
+    pollingIntervalSec: 30,
+    devSellThresholds: { low: -5, medium: -20, high: -50 },
+    lpMovementThresholds: { low: -20, medium: -50, high: null },
+    holderDumpThresholds: { low: -10, medium: -25, high: -50 },
+    actions: { low: { type: "tighten_trail" }, medium: { type: "sell_partial" }, high: { type: "sell_all" } },
+  },
+  callbacks: { onLow: vi.fn(), onMedium: vi.fn(), onHigh: vi.fn() },
+  fetchers: { getMintAccount: vi.fn(), getTokenBalance: vi.fn(), getLargestAccounts: vi.fn(), getPoolLiquidityUsd: vi.fn() },
+});
+
 describe("createRugMonitor lifecycle", () => {
-  const makeStubs = () => ({
-    geyserStream: { subscribe: vi.fn().mockReturnValue("subid"), unsubscribe: vi.fn() },
-    config: {
-      enabled: true,
-      pollingIntervalSec: 30,
-      devSellThresholds: { low: -5, medium: -20, high: -50 },
-      lpMovementThresholds: { low: -20, medium: -50, high: null },
-      holderDumpThresholds: { low: -10, medium: -25, high: -50 },
-      actions: { low: { type: "tighten_trail" }, medium: { type: "sell_partial" }, high: { type: "sell_all" } },
-    },
-    callbacks: { onLow: vi.fn(), onMedium: vi.fn(), onHigh: vi.fn() },
-    fetchers: { getMintAccount: vi.fn(), getTokenBalance: vi.fn(), getLargestAccounts: vi.fn(), getPoolLiquidityUsd: vi.fn() },
-  });
 
   const baseMeta = (overrides = {}) => ({
     mint: "M", deployer_wallet: "D", lp_address: "L",
@@ -179,5 +180,34 @@ describe("createRugMonitor lifecycle", () => {
     rm.attachPosition("M2::W", baseMeta({ mint: "M2" }));
     rm.shutdown();
     expect(rm.getMonitoredPositions()).toHaveLength(0);
+  });
+});
+
+describe("polling fallback", () => {
+  it("calls fetchers and emits HIGH on dev dump detected via polling", async () => {
+    vi.useFakeTimers();
+    const s = makeStubs();
+    s.fetchers.getTokenBalance = vi.fn().mockResolvedValue(0);
+    s.fetchers.getMintAccount = vi.fn().mockResolvedValue({ mint_authority: null, freeze_authority: null });
+    s.fetchers.getLargestAccounts = vi.fn().mockResolvedValue([]);
+    s.fetchers.getPoolLiquidityUsd = vi.fn().mockResolvedValue(25000);
+    const rm = createRugMonitor(s);
+    rm.attachPosition("M::W", {
+      mint: "M", deployer_wallet: "D", lp_address: "L",
+      top_holders_snapshot: [{ wallet: "H1", balance: 100 }],
+      authorities: { mint_authority: null, freeze_authority: null },
+      lp_usd_at_entry: 25000,
+      deployer_balance_at_entry: 1000,
+      entry_ts: Date.now(),
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await Promise.resolve();
+    expect(s.callbacks.onHigh).toHaveBeenCalled();
+    const [posKey, signalType, meta] = s.callbacks.onHigh.mock.calls[0];
+    expect(posKey).toBe("M::W");
+    expect(signalType).toBe("dev_sell");
+    expect(meta.source).toBe("polling");
+    rm.shutdown();
+    vi.useRealTimers();
   });
 });

@@ -95,6 +95,56 @@ export function createRugMonitor({ geyserStream, config, callbacks, fetchers, lo
     };
   }
 
+  const pollingMs = (config.pollingIntervalSec || 30) * 1000;
+
+  function _emit(state, positionKey, detectorKey, severity, signalType, evidence, source) {
+    if (!shouldEmit(severity, state.last_severity_emitted[detectorKey])) return;
+    state.last_severity_emitted[detectorKey] = severity;
+    const meta = { severity, signal_type: signalType, source, evidence, ts: Date.now() };
+    if (severity === SEVERITY.HIGH && callbacks.onHigh) callbacks.onHigh(positionKey, signalType, meta);
+    else if (severity === SEVERITY.MEDIUM && callbacks.onMedium) callbacks.onMedium(positionKey, signalType, meta);
+    else if (severity === SEVERITY.LOW && callbacks.onLow) callbacks.onLow(positionKey, signalType, meta);
+  }
+
+  async function _pollOnce(positionKey, state) {
+    if (state.shutdown) return;
+    const m = state.meta;
+    try {
+      const bal = await fetchers.getTokenBalance(m.deployer_wallet, m.mint);
+      const sev = detectDevSell({ balanceAtEntry: m.deployer_balance_at_entry, currentBalance: bal, thresholds: config.devSellThresholds });
+      _emit(state, positionKey, "dev_sell", sev, "dev_sell", { current: bal, atEntry: m.deployer_balance_at_entry }, "polling");
+    } catch (e) { log("rug_monitor", `dev_sell poll failed for ${positionKey}: ${e.message}`); }
+    try {
+      const currentLpUsd = await fetchers.getPoolLiquidityUsd(m.lp_address);
+      const sev = detectLpMovement({ lpAtEntry: m.lp_usd_at_entry, currentLp: currentLpUsd, deployerWallet: m.deployer_wallet, thresholds: config.lpMovementThresholds });
+      _emit(state, positionKey, "lp", sev, "lp_movement", { current: currentLpUsd, atEntry: m.lp_usd_at_entry }, "polling");
+    } catch (e) { log("rug_monitor", `lp poll failed for ${positionKey}: ${e.message}`); }
+    try {
+      const mintAcct = await fetchers.getMintAccount(m.mint);
+      const sev = detectAuthorityChange({ atEntry: m.authorities, current: mintAcct });
+      _emit(state, positionKey, "authority", sev, "authority_change", { current: mintAcct }, "polling");
+    } catch (e) { log("rug_monitor", `authority poll failed for ${positionKey}: ${e.message}`); }
+    try {
+      const current = await fetchers.getLargestAccounts(m.mint);
+      const snapshotMap = new Map((m.top_holders_snapshot || []).map(h => [h.wallet, h.balance]));
+      const events = (current || []).map(h => ({ tsMs: Date.now(), deltaTokens: (h.balance || 0) - (snapshotMap.get(h.wallet) || 0) }));
+      state.holder_events.push(...events);
+      const cutoff = Date.now() - 5 * 60_000;
+      state.holder_events = state.holder_events.filter(e => e.tsMs >= cutoff);
+      const snapshotTotal = (m.top_holders_snapshot || []).reduce((s, h) => s + (h.balance || 0), 0);
+      const sev = detectHolderDump({ snapshotTotal, events: state.holder_events, windowMs: 5 * 60_000, nowMs: Date.now(), thresholds: config.holderDumpThresholds });
+      _emit(state, positionKey, "holders", sev, "holder_dump", { eventsCount: state.holder_events.length }, "polling");
+    } catch (e) { log("rug_monitor", `holders poll failed for ${positionKey}: ${e.message}`); }
+  }
+
+  function _schedulePolling(positionKey, state) {
+    if (state.shutdown) return;
+    state.polling_handle = setTimeout(async () => {
+      await _pollOnce(positionKey, state);
+      if (!state.shutdown) _schedulePolling(positionKey, state);
+    }, pollingMs);
+  }
+
   function attachPosition(positionKey, meta) {
     if (shuttingDown) return;
     if (positions.has(positionKey)) {
@@ -104,6 +154,7 @@ export function createRugMonitor({ geyserStream, config, callbacks, fetchers, lo
     }
     const state = _newState(meta);
     positions.set(positionKey, state);
+    _schedulePolling(positionKey, state);
   }
 
   function detachPosition(positionKey) {
