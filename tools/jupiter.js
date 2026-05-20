@@ -11,6 +11,9 @@ import { log } from "../logger.js";
 import { config } from "../config.js";
 import { getActiveWallet, getWalletByAddress } from "./wallet-manager.js";
 import { submitSwapBundle, awaitBundleLanding, isJitoEnabled } from "./jito.js";
+import { submitWithAdaptiveRetry } from "./jito-executor.js";
+import { simulatePreflight } from "./tx-simulator.js";
+import { getRpcQuorum, getFeeOracle } from "./exec-edge-singletons.js";
 
 const ULTRA_BASE   = "https://ultra-api.jup.ag";
 const JUPITER_V6   = "https://quote-api.jup.ag/v6";
@@ -24,55 +27,95 @@ function getWallet() {
 }
 
 // ── Jito swap path (Jupiter v6 quote → bundle via BlockEngine) ──────────────
-async function swapViaJito({ inputMint, outputMint, amountRaw, slippageBps, wallet }) {
-  // Step 1: v6 quote
+async function swapViaJito({ inputMint, outputMint, amountRaw, slippageBps, wallet, executionContext = {} }) {
+  if (!config.executionEdge?.enabled) {
+    return legacyJitoFlow({ inputMint, outputMint, amountRaw, slippageBps, wallet });
+  }
+  const rpcQuorum = getRpcQuorum();
+  const feeOracle = getFeeOracle();
+  if (!rpcQuorum || !feeOracle) {
+    return legacyJitoFlow({ inputMint, outputMint, amountRaw, slippageBps, wallet });
+  }
+
   const quoteUrl = `${JUPITER_V6}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}`;
   const quoteRes = await fetch(quoteUrl);
   if (!quoteRes.ok) throw new Error(`Jupiter v6 quote ${quoteRes.status}: ${await quoteRes.text()}`);
   const quote = await quoteRes.json();
   if (quote.error) throw new Error(`Jupiter v6 quote: ${quote.error}`);
 
-  // Step 2: v6 swap (get serialized VersionedTransaction)
+  const result = await submitWithAdaptiveRetry({
+    builtTxFactory: async ({ priorityFee, blockhash: _bh }) => {
+      const swapRes = await fetch(`${JUPITER_V6}/swap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          quoteResponse: quote,
+          userPublicKey: wallet.publicKey.toString(),
+          wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: false,
+          computeUnitPriceMicroLamports: priorityFee,
+          prioritizationFeeLamports: 0,
+        }),
+      });
+      if (!swapRes.ok) throw new Error(`Jupiter v6 swap ${swapRes.status}: ${await swapRes.text()}`);
+      const swapData = await swapRes.json();
+      if (!swapData.swapTransaction) throw new Error("Jupiter v6 swap: no transaction returned");
+      const tx = VersionedTransaction.deserialize(Buffer.from(swapData.swapTransaction, "base64"));
+      tx.sign([wallet]);
+      return tx;
+    },
+    wallet,
+    rpcQuorum,
+    feeOracle,
+    simulator: { simulatePreflight },
+    jitoSubmit: async ({ tx, tip }) => submitSwapBundle({
+      signedSwapTx: tx,
+      wallet,
+      recentBlockhash: tx.message.recentBlockhash,
+      tipLamports: tip,
+      region: config.jito.region || "fra",
+      authToken: config.jito.authToken || null,
+    }),
+    jitoAwait: async ({ bundleId, timeoutMs }) => awaitBundleLanding({
+      bundleId,
+      region: config.jito.region || "fra",
+      authToken: config.jito.authToken || null,
+      timeoutMs,
+    }),
+    urgency: executionContext.urgency || "urgent",
+    maxAttempts: config.executionEdge.executor.maxAttempts,
+    attemptTimeoutMs: config.executionEdge.executor.attemptTimeoutMs,
+    defaultCuLimit: config.executionEdge.executor.defaultCuLimit,
+    maxCuLimit: config.executionEdge.executor.maxCuLimit,
+    maxTipLamports: config.executionEdge.feeOracle.maxTipLamports,
+    log,
+  });
+
+  log("swap", `exec_edge landed: tx=${result.hash} attempts=${result.attempts.length} tip=${result.total_tip_lamports} time=${result.landing_time_ms}ms`);
+  return { hash: result.hash, amount_out: quote.outAmount ?? null, jito_bundle_id: result.hash, attempts: result.attempts, total_tip_lamports: result.total_tip_lamports };
+}
+
+// Legacy Jito path — used when executionEdge.enabled = false or singletons not ready
+async function legacyJitoFlow({ inputMint, outputMint, amountRaw, slippageBps, wallet }) {
+  const quoteUrl = `${JUPITER_V6}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}`;
+  const quoteRes = await fetch(quoteUrl);
+  if (!quoteRes.ok) throw new Error(`Jupiter v6 quote ${quoteRes.status}: ${await quoteRes.text()}`);
+  const quote = await quoteRes.json();
+  if (quote.error) throw new Error(`Jupiter v6 quote: ${quote.error}`);
+
   const swapRes = await fetch(`${JUPITER_V6}/swap`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      quoteResponse: quote,
-      userPublicKey: wallet.publicKey.toString(),
-      wrapAndUnwrapSol: true,
-      dynamicComputeUnitLimit: true,
-      prioritizationFeeLamports: 0, // Jito tip handles priority
-    }),
+    body: JSON.stringify({ quoteResponse: quote, userPublicKey: wallet.publicKey.toString(), wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true, prioritizationFeeLamports: 0 }),
   });
   if (!swapRes.ok) throw new Error(`Jupiter v6 swap ${swapRes.status}: ${await swapRes.text()}`);
   const swapData = await swapRes.json();
   if (!swapData.swapTransaction) throw new Error("Jupiter v6 swap: no transaction returned");
-
-  // Step 3: deserialize + sign
   const tx = VersionedTransaction.deserialize(Buffer.from(swapData.swapTransaction, "base64"));
   tx.sign([wallet]);
-  const recentBlockhash = tx.message.recentBlockhash;
-
-  // Step 4: submit [swapTx, tipTx] as Jito bundle
-  const bundleId = await submitSwapBundle({
-    signedSwapTx: tx,
-    wallet,
-    recentBlockhash,
-    tipLamports: config.jito.tipLamports,
-    region: config.jito.region || "fra",
-    authToken: config.jito.authToken || null,
-  });
-
-  // Step 5: await landing (≤30s)
-  const landing = await awaitBundleLanding({
-    bundleId,
-    region: config.jito.region || "fra",
-    authToken: config.jito.authToken || null,
-    timeoutMs: 30_000,
-  });
-
+  const bundleId = await submitSwapBundle({ signedSwapTx: tx, wallet, recentBlockhash: tx.message.recentBlockhash, tipLamports: config.jito.tipLamports, region: config.jito.region || "fra", authToken: config.jito.authToken || null });
+  const landing = await awaitBundleLanding({ bundleId, region: config.jito.region || "fra", authToken: config.jito.authToken || null, timeoutMs: 30_000 });
   if (!landing.landed) throw new Error(`Jito bundle not landed: ${JSON.stringify(landing.status?.err)}`);
-
   const hash = landing.status?.transactions?.[0] || bundleId;
   log("swap", `Jito bundle landed: ${bundleId} tx=${hash}`);
   return { hash, amount_out: quote.outAmount ?? null, jito_bundle_id: bundleId };
