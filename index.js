@@ -36,6 +36,10 @@ import { runFastTrackBatch } from "./fast-buy.js";
 import { startGeyserStream } from "./geyser.js";
 import { attachExitMonitor, checkPriceDrop } from "./geyser-exit-monitor.js";
 import { createRugMonitor, SEVERITY as RUG_SEVERITY } from "./rug-monitor.js";
+import { Connection } from "@solana/web3.js";
+import { createRpcQuorum } from "./tools/rpc-quorum.js";
+import { createFeeOracle } from "./tools/fee-oracle.js";
+import { setRpcQuorum, setFeeOracle, shutdownSingletons } from "./tools/exec-edge-singletons.js";
 import { captureEntryMetadata } from "./tools/entry-metadata.js";
 import {
   initWalletManager, getActiveWallet, markWalletError,
@@ -2042,6 +2046,34 @@ function startTurboButtons() {
         log("rug_monitor_error", `init failed: ${e.message}`);
       }
     }
+    if (config.executionEdge?.enabled) {
+      try {
+        const conns = config.executionEdge.rpcEndpoints.map(e => {
+          const conn = new Connection(e.url, "confirmed");
+          return {
+            url: e.url,
+            label: e.label,
+            call: async (method, ...args) => {
+              if (typeof conn[method] === "function") return conn[method](...args);
+              throw new Error(`connection does not support ${method}`);
+            },
+          };
+        });
+        const rq = createRpcQuorum({
+          endpoints: config.executionEdge.rpcEndpoints,
+          timeoutMs: config.executionEdge.executor.rpcCallTimeoutMs,
+          connectionFactory: () => conns,
+          log,
+        });
+        setRpcQuorum(rq);
+        const fo = createFeeOracle({ rpcQuorum: rq, config: config.executionEdge, log });
+        fo.start();
+        setFeeOracle(fo);
+        log("exec_edge", `enabled, fee_oracle started, rpc_quorum active (${config.executionEdge.rpcEndpoints.length} endpoints)`);
+      } catch (e) {
+        log("exec_edge_error", `init failed: ${e.message}`);
+      }
+    }
   } catch (e) {
     log("turbo_error", `startGeyserStream failed: ${e.message}`);
   }
@@ -2112,6 +2144,7 @@ async function shutdown(signal) {
   if (_geyserStream?.close) _geyserStream.close();
   _geyserStream = null;
   try { _rugMonitor?.shutdown(); } catch (_) {}
+  try { shutdownSingletons(); } catch (_) {}
   process.exit(0);
 }
 process.on("unhandledRejection", (reason, promise) => {
