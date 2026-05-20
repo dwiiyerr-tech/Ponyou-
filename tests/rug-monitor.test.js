@@ -47,3 +47,34 @@ describe("detectDevSell", () => {
     expect(detectDevSell({ balanceAtEntry: null, currentBalance: 100, thresholds })).toBe(SEVERITY.NONE);
   });
 });
+
+import { detectLpMovement, BURN_ADDRESSES, LP_PROGRAMS } from "../rug-monitor.js";
+
+describe("detectLpMovement", () => {
+  const thresholds = { low: -20, medium: -50, high: null };
+  const deployer = "Dep111111111111111111111111111111111111111";
+
+  it("returns NONE when LP unchanged", () => {
+    expect(detectLpMovement({ lpAtEntry: 100000, currentLp: 100000, thresholds })).toBe(SEVERITY.NONE);
+  });
+  it("returns NONE for <20% drop, LOW at 20%+", () => {
+    expect(detectLpMovement({ lpAtEntry: 100000, currentLp: 85000, thresholds })).toBe(SEVERITY.NONE);
+    expect(detectLpMovement({ lpAtEntry: 100000, currentLp: 79000, thresholds })).toBe(SEVERITY.LOW);
+  });
+  it("returns MEDIUM for 20-50% drop", () => {
+    expect(detectLpMovement({ lpAtEntry: 100000, currentLp: 60000, thresholds })).toBe(SEVERITY.MEDIUM);
+  });
+  it("returns HIGH for >50% drop", () => {
+    expect(detectLpMovement({ lpAtEntry: 100000, currentLp: 40000, thresholds: { low: -20, medium: -50, high: -50 } })).toBe(SEVERITY.HIGH);
+  });
+  it("returns NONE when LP transfer goes to known burn", () => {
+    expect(detectLpMovement({ lpAtEntry: 100000, currentLp: 0, transferTo: "1nc1nerator11111111111111111111111111111111", thresholds })).toBe(SEVERITY.NONE);
+  });
+  it("returns HIGH on removeLiquidity by deployer regardless of drop", () => {
+    expect(detectLpMovement({ lpAtEntry: 100000, currentLp: 95000, removeLiquidityBy: deployer, deployerWallet: deployer, thresholds })).toBe(SEVERITY.HIGH);
+  });
+  it("exposes burn addresses + LP programs", () => {
+    expect(BURN_ADDRESSES).toContain("1nc1nerator11111111111111111111111111111111");
+    expect(LP_PROGRAMS.raydiumV4).toBe("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
+  });
+});
