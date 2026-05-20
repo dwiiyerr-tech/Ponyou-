@@ -155,6 +155,49 @@ export function createRugMonitor({ geyserStream, config, callbacks, fetchers, lo
     const state = _newState(meta);
     positions.set(positionKey, state);
     _schedulePolling(positionKey, state);
+    if (geyserStream?.subscribe) {
+      if (meta.deployer_token_account) {
+        const sub = geyserStream.subscribe(
+          { kind: "account", account: meta.deployer_token_account },
+          (evt) => {
+            const sev = detectDevSell({
+              balanceAtEntry: meta.deployer_balance_at_entry,
+              currentBalance: evt?.tokenBalance,
+              thresholds: config.devSellThresholds,
+            });
+            _emit(state, positionKey, "dev_sell", sev, "dev_sell", { current: evt?.tokenBalance }, "geyser");
+          }
+        );
+        state.geyser_subs.push(sub);
+      }
+      if (meta.lp_address) {
+        const sub = geyserStream.subscribe(
+          { kind: "account", account: meta.lp_address },
+          (evt) => {
+            const sev = detectLpMovement({
+              lpAtEntry: meta.lp_usd_at_entry,
+              currentLp: evt?.lpUsd ?? evt?.currentLp,
+              transferTo: evt?.transferTo,
+              removeLiquidityBy: evt?.removeLiquidityBy,
+              deployerWallet: meta.deployer_wallet,
+              thresholds: config.lpMovementThresholds,
+            });
+            _emit(state, positionKey, "lp", sev, "lp_movement", { evt }, "geyser");
+          }
+        );
+        state.geyser_subs.push(sub);
+      }
+      if (meta.mint) {
+        const sub = geyserStream.subscribe(
+          { kind: "account", account: meta.mint },
+          (evt) => {
+            const sev = detectAuthorityChange({ atEntry: meta.authorities, current: evt });
+            _emit(state, positionKey, "authority", sev, "authority_change", { current: evt }, "geyser");
+          }
+        );
+        state.geyser_subs.push(sub);
+      }
+    }
   }
 
   function detachPosition(positionKey) {
