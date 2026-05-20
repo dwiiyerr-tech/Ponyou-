@@ -2,7 +2,7 @@ import { normalizeRegime } from "./market-regime.js";
 
 const DEFAULT_POLICY = Object.freeze({
   entry: {
-    hardBlockRugScore: 60,
+    hardBlockRugScore: 35,
     shadowConfidenceFloor: 20,
     probeConfidenceFloor: 35,
     probeCautionThreshold: 22,
@@ -12,7 +12,7 @@ const DEFAULT_POLICY = Object.freeze({
   sizing: {
     minFraction: 0,
     maxFraction: 1,
-    probeSizeFraction: 0.35,
+    probeSizeFraction: 0.05,
     hotBoost: 0.1,
     coldPenalty: 0.1,
   },
@@ -99,13 +99,12 @@ export function buildRiskPolicy({ marketCondition = "NORMAL", conviction = {}, t
   const flagCount = Array.isArray(token.flags) ? token.flags.length : 0;
 
   if (convictionScore >= 70 && convictionConfidence >= 45) {
-    policy.entry.probeCautionThreshold = Math.max(16, policy.entry.probeCautionThreshold - 6);
     policy.sizing.probeSizeFraction = clamp(policy.sizing.probeSizeFraction + 0.05, 0.1, 0.6);
   }
 
   if (rugScore >= policy.entry.hardBlockRugScore) {
     policy.entry.flagTolerance = 0;
-  } else if (rugScore >= 35) {
+  } else if (rugScore >= 20) {
     policy.entry.flagTolerance = 0;
     policy.sizing.probeSizeFraction = Math.min(policy.sizing.probeSizeFraction, 0.25);
   }
@@ -129,6 +128,14 @@ export function buildRiskPolicy({ marketCondition = "NORMAL", conviction = {}, t
 
   policy.exit.hardStopLossPct = stopLossPct;
   policy.exit.immediateTakeProfitPct = takeProfitPct;
+  const trailingTrigger = Number.isFinite(config?.management?.trailingTriggerPct)
+    ? clamp(config.management.trailingTriggerPct, 1, 30)
+    : policy.exit.trailingTriggerPct;
+  const trailingDrop = Number.isFinite(config?.management?.trailingDropPct)
+    ? clamp(config.management.trailingDropPct, 0.5, 30)
+    : policy.exit.trailingDropPct;
+  policy.exit.trailingTriggerPct = trailingTrigger;
+  policy.exit.trailingDropPct = trailingDrop;
 
   return policy;
 }

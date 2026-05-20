@@ -472,19 +472,31 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
   let heliusReason = null;
   let heliusErrorCount = 0;
   let shyftFallbackUsed = false;
+  let shyftReason = null;
 
   if (heliusExpected && heliusCircuitOpen()) {
     // Try Shyft fallback first.
     const shyftKey = process.env.SHYFT_API_KEY;
     if (shyftKey && holderOwners.length > 0) {
+      let shyftError = null;
       try {
-        fresh = await getFreshFundedCountShyft(mint, shyftKey);
-        shyftFallbackUsed = true;
-        heliusReason = "helius_circuit_open:shyft_fallback_used";
-        log("rug_signal_info", `Shyft fallback: fresh_funded=${fresh.fresh_funded_holders}`);
+        const shyftResult = await getFreshFundedCountShyft(mint, shyftKey);
+        shyftError = shyftResult?._error ? new Error(shyftResult._error) : null;
+        if (shyftResult == null || shyftResult === 0 || Number(shyftResult?.fresh_funded_holders || 0) === 0 || shyftError) {
+          heliusDegraded = true;
+          heliusReason = "Helius circuit open, Shyft fallback degraded";
+          shyftReason = shyftError?.message || "empty_response";
+        } else {
+          fresh = shyftResult;
+          shyftFallbackUsed = true;
+          heliusReason = "helius_circuit_open:shyft_fallback_used";
+          log("rug_signal_info", `Shyft fallback: fresh_funded=${fresh.fresh_funded_holders}`);
+        }
       } catch (e) {
+        shyftError = e;
         heliusDegraded = true;
         heliusReason = `Helius circuit open, Shyft fallback failed: ${e.message}`;
+        shyftReason = shyftError?.message || "empty_response";
       }
     } else {
       heliusDegraded = true;
@@ -526,6 +538,7 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
     _helius_degraded: heliusDegraded,
     _data_quality: heliusDegraded ? "degraded" : "full",
     _helius_reason: heliusReason,
+    _shyft_reason: shyftReason,
     _helius_error_count: heliusErrorCount,
     _ts: Date.now(),
   };
