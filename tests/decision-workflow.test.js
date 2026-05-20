@@ -50,7 +50,7 @@ describe("decision workflow", () => {
     });
 
     expect(result.verdict).toBe("probe");
-    expect(result.recommended_amount_sol).toBe(0.8);
+    expect(result.recommended_amount_sol).toBe(0.7);
     expect(result.llm_can_buy).toBe(true);
   });
 
@@ -70,5 +70,58 @@ describe("decision workflow", () => {
     expect(result.verdict).toBe("active");
     expect(result.fast_track_eligible).toBe(true);
     expect(result.recommended_amount_sol).toBe(1.5);
+  });
+
+  it("passes normalized cold market into risk policy", () => {
+    const result = evaluateCandidateDecision({
+      token: {
+        flags: [],
+        rug_score: 6,
+        kelly: { should_skip: false },
+        momentum_entry_pass: true,
+        volatility_adjusted_size: 1,
+      },
+      conviction: { conviction_score: 70, confidence_score: 50 },
+      marketCondition: "cold",
+    });
+
+    expect(result.reasons).toContain("cold_market");
+    expect(result.policy.entry.activeConfidenceFloor).toBe(55);
+    expect(result.verdict).toBe("probe");
+  });
+
+  it("does not let conviction reduce caution when rug score is elevated", () => {
+    const result = evaluateCandidateDecision({
+      token: {
+        flags: [],
+        rug_score: 35,
+        kelly: { should_skip: false },
+        momentum_entry_pass: true,
+        volatility_adjusted_size: 1,
+      },
+      conviction: { conviction_score: 80, confidence_score: 70 },
+      marketCondition: "NORMAL",
+    });
+
+    expect(result.reasons).toContain("rug_score=35");
+    expect(result.reasons).not.toContain("strong_conviction");
+    expect(result.caution_score).toBe(25);
+  });
+
+  it("adds 12 caution for a single non-critical flag", () => {
+    const result = evaluateCandidateDecision({
+      token: {
+        flags: [{ type: "thin_liquidity", severity: "medium" }],
+        rug_score: 6,
+        kelly: { should_skip: false },
+        momentum_entry_pass: true,
+        volatility_adjusted_size: 1,
+      },
+      conviction: { conviction_score: 65, confidence_score: 50 },
+      marketCondition: "NORMAL",
+    });
+
+    expect(result.reasons).toContain("single_flag");
+    expect(result.caution_score).toBe(12);
   });
 });

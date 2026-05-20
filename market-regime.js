@@ -22,5 +22,5 @@ export function isActiveRegime(regime) {
 
 export function isTradingAllowed(regime) {
   const r = normalizeRegime(regime);
-  return r !== REGIMES.DEAD;
+  return r !== REGIMES.DEAD && r !== REGIMES.EXTREME;
 }

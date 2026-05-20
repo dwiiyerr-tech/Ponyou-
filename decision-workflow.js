@@ -12,8 +12,10 @@ export function evaluateCandidateDecision({
   config = {},
 } = {}) {
   const normalMarket = String(marketCondition || "UNKNOWN").toUpperCase().trim();
+  const convictionScore = Number(conviction.conviction_score || 0);
+  const convictionConfidence = Number(conviction.confidence_score || 0);
   const policy = policyOverride || buildRiskPolicy({
-    marketCondition,
+    marketCondition: normalMarket,
     conviction,
     token,
     config,
@@ -63,16 +65,14 @@ export function evaluateCandidateDecision({
     cautionScore += 20;
     reasons.push("dead_market");
   }
-  if ((conviction.confidence_score || 0) < policy.entry.shadowConfidenceFloor) {
+  if (convictionConfidence < policy.entry.shadowConfidenceFloor) {
     cautionScore += 16;
     reasons.push("low_conviction_confidence");
   }
-  if ((conviction.conviction_score || 0) < 35) {
+  if (convictionScore < 35) {
     cautionScore += 14;
     reasons.push("weak_conviction");
   }
-  const convictionScore = conviction.conviction_score || 0;
-  const convictionConfidence = conviction.confidence_score || 0;
   const canConvictionReduce = !(
     (token.rug_score || 0) >= 35 ||
     criticalFlags.length >= 1 ||
@@ -90,14 +90,14 @@ export function evaluateCandidateDecision({
   if (token.kelly?.should_skip || normalMarket === "DEAD" || cautionScore >= 45 || (token.rug_score || 0) >= policy.entry.hardBlockRugScore) {
     verdict = "skip";
     sizeMultiplier = 0;
-  } else if ((conviction.confidence_score || 0) < policy.entry.shadowConfidenceFloor || (conviction.conviction_score || 0) < 35) {
+  } else if (convictionConfidence < policy.entry.shadowConfidenceFloor || convictionScore < 35) {
     verdict = "shadow";
     sizeMultiplier = 0;
   } else if (
     cautionScore >= policy.entry.probeCautionThreshold ||
-    (conviction.conviction_score || 0) < 65 ||
-    (conviction.confidence_score || 0) < policy.entry.activeConfidenceFloor ||
-    (conviction.confidence_score || 0) < (policy.entry.probeConfidenceFloor ?? 0)
+    convictionScore < 65 ||
+    convictionConfidence < policy.entry.activeConfidenceFloor ||
+    convictionConfidence < (policy.entry.probeConfidenceFloor ?? 0)
   ) {
     verdict = "probe";
     sizeMultiplier = Math.min(policy.sizing.probeSizeFraction, probeSizeFraction);

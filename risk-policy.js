@@ -22,6 +22,7 @@ const DEFAULT_POLICY = Object.freeze({
     immediateTakeProfitPct: null,
     trailingTriggerPct: 5,
     trailingDropPct: 6,
+    trailingDropMode: "absolute",
     profitSweepPct: 40,
   },
   rug: {
@@ -114,15 +115,12 @@ export function buildRiskPolicy({ marketCondition = "NORMAL", conviction = {}, t
     policy.sizing.probeSizeFraction = Math.min(policy.sizing.probeSizeFraction, 0.25);
   }
 
-  const defaultStopLossPct = policy.exit.hardStopLossPct;
-  let stopLossPct = defaultStopLossPct;
-  if (Number.isFinite(config?.management?.stopLossPct)) {
-    stopLossPct = config.management.stopLossPct;
-    if (stopLossPct < -50 || stopLossPct > -1) {
-      console.warn(`[risk-policy] stopLossPct ${stopLossPct} out of range [-50, -1], using default`);
-      stopLossPct = defaultStopLossPct;
-    }
-  }
+  const rawStop = Number.isFinite(config?.management?.stopLossPct)
+    ? config.management.stopLossPct
+    : policy.exit.hardStopLossPct;
+  const stopLossPct = rawStop >= -50 && rawStop <= -1
+    ? rawStop
+    : (console.warn(`[risk-policy] stopLossPct ${rawStop} out of valid range, using default`), policy.exit.hardStopLossPct);
   const takeProfitPct = Number.isFinite(config?.management?.takeProfitPct)
     ? config.management.takeProfitPct
     : Number.isFinite(config?.management?.autoTakeProfitPct)
@@ -147,9 +145,12 @@ export function evaluateExitPolicy({
   const hardCutLoss = pnl <= policyExit.hardCutLossPct;
   const hardStopLoss = pnl <= policyExit.hardStopLossPct;
   const takeProfit = policyExit.immediateTakeProfitPct != null && pnl >= policyExit.immediateTakeProfitPct;
+  const trailingThreshold = policyExit.trailingDropMode === "proportional"
+    ? peak * (1 - policyExit.trailingDropPct / 100)
+    : peak - policyExit.trailingDropPct;
   const trailingStop = policyExit.trailingDropPct > 0
     && peak >= policyExit.trailingTriggerPct
-    && pnl <= peak - policyExit.trailingDropPct;
+    && pnl <= trailingThreshold + 1e-9;
   const profitSweepEligible = policyExit.profitSweepPct > 0 && pnl >= policyExit.profitSweepPct;
 
   return {
@@ -197,6 +198,7 @@ export function describeRiskPolicy(policy = buildRiskPolicy()) {
       immediateTakeProfitPct: policy.exit.immediateTakeProfitPct,
       trailingTriggerPct: policy.exit.trailingTriggerPct,
       trailingDropPct: policy.exit.trailingDropPct,
+      trailingDropMode: policy.exit.trailingDropMode,
       profitSweepPct: policy.exit.profitSweepPct,
     },
     rug: { ...policy.rug },

@@ -148,7 +148,7 @@ class AgentRouter {
         }
       }
       // Jika retry fail dan agent bukan claude, coba fallback ke claude
-      if (lastError && agent !== "claude") {
+      if (lastError && agent !== "claude" && this.callLLM) {
         try {
           result = await this._callClaude(prompt, systemPrompt);
           console.warn(`[Router] Fallback to claude after ${agent} failed: ${lastError.message}`);
@@ -156,6 +156,8 @@ class AgentRouter {
         } catch (fallbackErr) {
           lastError = fallbackErr;
         }
+      } else if (lastError && agent !== "claude" && !this.callLLM) {
+        console.warn("[Router] Fallback to claude skipped: callLLM not injected");
       }
       if (lastError) throw lastError;
 

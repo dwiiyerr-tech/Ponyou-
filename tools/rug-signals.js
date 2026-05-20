@@ -32,6 +32,14 @@ function putCache(mint, value) {
   _signalCache.set(mint, { ts: Date.now(), value });
 }
 
+function putDegradedCache(mint, value) {
+  const degradedTtlMs = 5 * 60 * 1000;
+  _signalCache.set(mint, {
+    ts: Date.now() - (CACHE_TTL_MS - degradedTtlMs),
+    value,
+  });
+}
+
 // ─── Layer 1: Token-2022 Mint Extensions ─────────────────────────
 
 /**
@@ -516,12 +524,17 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
     _helius_used: heliusOK,
     _helius_expected: heliusExpected,
     _helius_degraded: heliusDegraded,
+    _data_quality: heliusDegraded ? "degraded" : "full",
     _helius_reason: heliusReason,
     _helius_error_count: heliusErrorCount,
     _ts: Date.now(),
   };
 
-  putCache(mint, signals);
+  if (heliusDegraded) {
+    putDegradedCache(mint, signals);
+  } else {
+    putCache(mint, signals);
+  }
   return signals;
 }
 
