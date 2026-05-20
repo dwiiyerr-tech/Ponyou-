@@ -45,9 +45,18 @@ Status: pending
 Priority: <high | medium | low>
 Safety: <safe | needs_review>
 Goal: <one-line description of what this PR achieves>
+Workers:
+  research: gemini
+  build: codex
+  review: claude
 Tasks:
-- [ ] <task 1>
-- [ ] <task 2>
+- [ ] <task 1>           (worker: gemini)
+- [ ] <task 2>           (worker: codex)
+- [ ] Write tests        (worker: codex)
+- [ ] Review & finalize  (worker: claude)
 Added: <YYYY-MM-DD>
+
+Worker options: gemini | codex | claude
+Default flow: gemini (research) → codex (build + tests) → claude (review)
 
 -->
