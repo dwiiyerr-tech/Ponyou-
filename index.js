@@ -1,6 +1,7 @@
 import "dotenv/config";
 import cron from "node-cron";
 import readline from "readline";
+import { createRugCircuitBreaker } from "./rug-circuit-breaker.js";
 import { agentLoop } from "./agent.js";
 import AgentRouter from "./agent-router.js";
 import { log } from "./logger.js";
@@ -680,7 +681,14 @@ async function checkAllGates(source = "") {
     };
   }
 
-  // 1. Session pause (target hit)
+  // 1. Rug wave circuit breaker
+  const cbStatus = _rugCircuitBreaker.getStatus();
+  if (cbStatus.locked) {
+    log("rug_circuit_breaker", `Hard lock active — ${cbStatus.resumeInMin}min remaining`);
+    return { blocked: true, reason: `RUG_CIRCUIT_BREAKER: ${cbStatus.lockReason} — resume in ${cbStatus.resumeInMin}min` };
+  }
+
+  // 2. Session pause (target hit)
   if (config.pilot.enabled) {
     const gate = checkSessionGate();
     if (gate.just_resumed) {
@@ -1196,6 +1204,18 @@ export async function runManagementCycle({ silent = false } = {}) {
         _rugMonitor?.detachPosition(exit.position_key || exit.mint);
         recordTrade(!exit.is_loss);
         recordCounter("swaps_executed");
+
+        if (/rug/i.test(exit.reason)) {
+          const cb = _rugCircuitBreaker.recordExit(exit.mint, exit.reason);
+          if (cb.tripped && telegramEnabled()) {
+            const s = _rugCircuitBreaker.getStatus();
+            sendHTML(
+              `🚨 <b>RUG CIRCUIT BREAKER TRIPPED</b>\n` +
+              `${s.recentCount} rug exits in ${Math.round(s.windowMs / 60000)}min\n` +
+              `Hard lock: <b>${s.resumeInMin}min</b> — no new entries`
+            ).catch(() => {});
+          }
+        }
 
         // Record performance
         const tracked = getTrackedPosition(exit.position_key || exit.mint, exit.wallet_address || null);
@@ -1836,6 +1856,12 @@ let _geyserStream = null;
 let _turboStarted = false;
 let _exitMonitorCleanup = null;
 let _rugMonitor = null;
+const _rugCircuitBreaker = createRugCircuitBreaker({
+  maxEvents: config.risk?.rugCircuitBreaker?.maxEvents ?? 3,
+  windowMs: (config.risk?.rugCircuitBreaker?.windowMinutes ?? 30) * 60 * 1000,
+  lockDurationMs: (config.risk?.rugCircuitBreaker?.lockHours ?? 4) * 60 * 60 * 1000,
+  log,
+});
 const _geyserLastByMint = new Map();
 let _geyserLastGlobalTs = 0;
 const SOL_MINT_STR = "So11111111111111111111111111111111111111112";
