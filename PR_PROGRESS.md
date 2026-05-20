@@ -48,7 +48,7 @@ claude -c -p "/autowork resume from PR_PROGRESS.md and PR_QUEUE.md"
 no
 
 ### Next action
-No pending PRs. Add new tasks via `./addtask.sh <description>` or `/newtask <description>`.
+Run `/autowork` to start PR-002 (DexVisibilityRiskAnalyzer) — first pending PR in queue.
 
 ---
 
@@ -63,3 +63,17 @@ Add permanent notes below this line.
 - daily-trade-guard.js uses file-based state (daily-trade-guard-state.json) — auto-reset on UTC date change
 - Guard is disabled by default (dailyTradeGuard.enabled: false in config) — enable via user-config.json
 - /stoptrade activates learning mode for learningModeDurationMin minutes
+
+## New tasks added: 2026-05-21
+
+| PR | Title | Priority | Safety |
+|----|-------|----------|--------|
+| PR-002 | DexVisibilityRiskAnalyzer | high | safe |
+| PR-003 | ThreeCandleConfirmationStrategy | high | safe |
+| PR-004 | CabalPlayAnalyzer | high | safe |
+| PR-005 | WalletPingAgent | high | medium |
+| PR-006 | Day Phase Trade (1 SOL gate) | medium | needs_review |
+| PR-007 | Transaksi Murah / Direct RPC (Rust) | medium | needs_review |
+
+All 6 PRs: Status pending. Agent flow: Gemini (research) → Codex gpt-5.5 (build+tests) → Claude (review).
+PR-006 and PR-007 require human review before go-live (balance gate + live trading flags).
