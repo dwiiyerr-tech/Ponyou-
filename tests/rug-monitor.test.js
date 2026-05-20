@@ -122,3 +122,62 @@ describe("detectHolderDump", () => {
     expect(detectHolderDump({ snapshotTotal: 10_000_000, events: [{ tsMs: ago(60_000), deltaTokens: 5_000_000 }, { tsMs: ago(30_000), deltaTokens: -1_500_000 }], windowMs: 5*60_000, nowMs: now, thresholds })).toBe(SEVERITY.LOW);
   });
 });
+
+import { createRugMonitor } from "../rug-monitor.js";
+import { vi } from "vitest";
+
+describe("createRugMonitor lifecycle", () => {
+  const makeStubs = () => ({
+    geyserStream: { subscribe: vi.fn().mockReturnValue("subid"), unsubscribe: vi.fn() },
+    config: {
+      enabled: true,
+      pollingIntervalSec: 30,
+      devSellThresholds: { low: -5, medium: -20, high: -50 },
+      lpMovementThresholds: { low: -20, medium: -50, high: null },
+      holderDumpThresholds: { low: -10, medium: -25, high: -50 },
+      actions: { low: { type: "tighten_trail" }, medium: { type: "sell_partial" }, high: { type: "sell_all" } },
+    },
+    callbacks: { onLow: vi.fn(), onMedium: vi.fn(), onHigh: vi.fn() },
+    fetchers: { getMintAccount: vi.fn(), getTokenBalance: vi.fn(), getLargestAccounts: vi.fn(), getPoolLiquidityUsd: vi.fn() },
+  });
+
+  const baseMeta = (overrides = {}) => ({
+    mint: "M", deployer_wallet: "D", lp_address: "L",
+    top_holders_snapshot: [],
+    authorities: { mint_authority: null, freeze_authority: null },
+    entry_ts: 1,
+    ...overrides,
+  });
+
+  it("attachPosition stores metadata and is idempotent", () => {
+    const s = makeStubs();
+    const rm = createRugMonitor(s);
+    rm.attachPosition("M::W", baseMeta());
+    rm.attachPosition("M::W", baseMeta());
+    expect(rm.getMonitoredPositions()).toHaveLength(1);
+    rm.shutdown();
+  });
+
+  it("detachPosition removes state", () => {
+    const s = makeStubs();
+    const rm = createRugMonitor(s);
+    rm.attachPosition("M::W", baseMeta());
+    rm.detachPosition("M::W");
+    expect(rm.getMonitoredPositions()).toHaveLength(0);
+  });
+
+  it("detachPosition for unknown key is a no-op", () => {
+    const s = makeStubs();
+    const rm = createRugMonitor(s);
+    expect(() => rm.detachPosition("X::Y")).not.toThrow();
+  });
+
+  it("shutdown detaches all positions", () => {
+    const s = makeStubs();
+    const rm = createRugMonitor(s);
+    rm.attachPosition("M1::W", baseMeta({ mint: "M1" }));
+    rm.attachPosition("M2::W", baseMeta({ mint: "M2" }));
+    rm.shutdown();
+    expect(rm.getMonitoredPositions()).toHaveLength(0);
+  });
+});
