@@ -23,6 +23,11 @@ import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-bla
 import { blockDev, unblockDev, listBlockedDevs } from "../dev-blocklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets } from "../smart-wallets.js";
 import { discoverSmartWallets, listDiscoveredWallets } from "./wallet-discovery.js";
+import { analyzeDexVisibilityRisk } from "./dex-visibility-risk-analyzer.js";
+import { analyzeThreeCandleConfirmation } from "./three-candle-confirmation-strategy.js";
+import { analyzeCabalPlay } from "./cabal-play-analyzer.js";
+import { processWalletPing } from "./wallet-ping-agent.js";
+import { analyzeDayPhase } from "./day-phase-analyzer.js";
 import { learnPatterns, listPatterns } from "./rug-patterns.js";
 import { clearSignalCache } from "./rug-signals.js";
 import { harvestMarketRugs } from "./rug-harvester.js";
@@ -212,6 +217,11 @@ const toolMap = {
   list_smart_wallets: listSmartWallets,
   discover_smart_wallets: discoverSmartWallets,
   list_discovered_wallets: listDiscoveredWallets,
+  analyze_dex_visibility_risk: analyzeDexVisibilityRisk,
+  analyze_three_candle_confirmation: analyzeThreeCandleConfirmation,
+  analyze_cabal_play: analyzeCabalPlay,
+  process_wallet_ping: processWalletPing,
+  analyze_day_phase: analyzeDayPhase,
   learn_rug_patterns: learnPatterns,
   list_rug_patterns: listPatterns,
   clear_rug_signal_cache: () => { clearSignalCache(); return { cleared: true }; },

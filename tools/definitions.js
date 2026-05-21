@@ -246,6 +246,132 @@ export const tools = [
     }
   },
 
+  // ─── Analysis Modules ───────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "analyze_dex_visibility_risk",
+      description: "Read-only analysis: classify DEX paid, ads, or boost visibility as bullish timing or distribution risk. Never executes trades.",
+      parameters: {
+        type: "object",
+        properties: {
+          tokenAgeMinutes: { type: "number" },
+          visibilitySignalAgeMinutes: { type: "number" },
+          hasDexPaid: { type: "boolean" },
+          hasAds: { type: "boolean" },
+          hasBoost: { type: "boolean" },
+          pricePumpPercent: { type: "number" },
+          volumeUsd: { type: "number" },
+          uniqueWallets: { type: "number" },
+          organicCommunityScore: { type: "number" },
+          narrativeScore: { type: "number" },
+          top10HolderConcentration: { type: "number" },
+          devWalletNotHolding: { type: "boolean" },
+          marketCondition: { type: "string", enum: ["HOT", "NORMAL", "COLD"] }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "analyze_three_candle_confirmation",
+      description: "Read-only staged-entry FOMO guard using three-candle context. Returns WAIT, BLOCK_ENTRY, MARK_POSITION, HOLD_MARK, FULL_ENTRY, or RESET guidance only.",
+      parameters: {
+        type: "object",
+        properties: {
+          state: { type: "string" },
+          candles: { type: "array", items: { type: "object" } },
+          buyPressurePercent: { type: "number" },
+          volumeRatio: { type: "number" },
+          greenReversal: { type: "boolean" },
+          higherLow: { type: "boolean" },
+          pricePumpPercent: { type: "number" },
+          bouncePercent: { type: "number" },
+          secondDipPercent: { type: "number" },
+          drawdownFromMarkPercent: { type: "number" },
+          basePositionSizeSol: { type: "number" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "analyze_cabal_play",
+      description: "Read-only coordinated-wallet analysis for group cabal, solo cabal, conflict cabal, distribution risk, and FOMO risk. Never returns BUY or SELL.",
+      parameters: {
+        type: "object",
+        properties: {
+          wallets: { type: "array", items: { type: "object" } },
+          holders: { type: "array", items: { type: "object" } },
+          rugSignals: { type: "object" },
+          sameFunderWallets: { type: "number" },
+          relatedWalletCount: { type: "number" },
+          coordinatedBuyWallets: { type: "number" },
+          coordinatedSellWallets: { type: "number" },
+          maxHolderPct: { type: "number" },
+          top10HolderConcentration: { type: "number" },
+          pricePumpPercent: { type: "number" },
+          socialHypeScore: { type: "number" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "process_wallet_ping",
+      description: "Read-only wallet monitoring analysis. Scores wallet quality, classifies ping severity, and emits alert actions only. isDirectBuySignal is always false.",
+      parameters: {
+        type: "object",
+        properties: {
+          walletAddress: { type: "string" },
+          event: { type: "string", enum: ["BUY", "SELL", "CREATE_POOL", "LP_ADD", "BURN", "TRANSFER"] },
+          tokenMint: { type: "string" },
+          tokenAgeMinutes: { type: "number" },
+          pricePumpPercent: { type: "number" },
+          positionSizeSol: { type: "number" },
+          avgPositionSizeSol: { type: "number" },
+          buyerRankInPool: { type: "number" },
+          totalBuyersInPool: { type: "number" },
+          relatedWallets: { type: "array", items: { type: "object" } },
+          allCurrentBuyers: { type: "array", items: { type: "object" } },
+          stats: { type: "object" },
+          creatorWallet: { type: "string" },
+          blacklistedTokens: { type: "array", items: { type: "string" } },
+          recentWalletEvents: { type: "number" },
+          freshWalletBuyerPercent: { type: "number" },
+          smartWalletSellCount: { type: "number" },
+          volumeToLiquidityRatio: { type: "number" },
+          prevVolToLiqRatio: { type: "number" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "analyze_day_phase",
+      description: "Read-only 3-7 day swing watchlist analysis for cooldown-sideways tokens. Requires a 1 SOL balance gate and never executes trades.",
+      parameters: {
+        type: "object",
+        properties: {
+          walletBalanceSol: { type: "number" },
+          currentPrice: { type: "number" },
+          athPrice: { type: "number" },
+          sidewaysDays: { type: "number" },
+          fdvUsd: { type: "number" },
+          socialScore: { type: "number" },
+          volumeToday: { type: "number" },
+          volumeYesterday: { type: "number" },
+          volumeDayBefore: { type: "number" },
+          entryDayOfWeek: { type: "string" }
+        }
+      }
+    }
+  },
+
   // ─── Wallet & Portfolio ──────────────────────────────────
   {
     type: "function",
