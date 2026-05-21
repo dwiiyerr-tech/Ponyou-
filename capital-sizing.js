@@ -1,5 +1,6 @@
 import { computeFractionalKellySize } from "./kelly.js";
 import { normalizeRegime, REGIMES, isTradingAllowed } from "./market-regime.js";
+import { selectKellyMode } from "./kelly-mode-selector.js";
 
 const DEFAULT_CAPITAL_SIZING = {
   microThreshold: 50,
@@ -21,6 +22,7 @@ export function getCapitalAwareSizing({
   maxFraction = 0.8,
   minSampleTrades = 5,
   capitalSizing = {},
+  kellyModeOpts = null,
 } = {}) {
   if (!solPriceUsd || solPriceUsd <= 0) {
     return { should_skip: true, reason: "sol_price_unavailable", tier: "UNKNOWN", deploy_amount_sol: 0 };
@@ -118,9 +120,25 @@ export function getCapitalAwareSizing({
     return { should_skip: true, reason: "full_tier_sparse_data", tier: "FULL", deploy_amount_sol: 0 };
   }
 
+  // Kelly mode: determine effective bankroll based on experience + conviction
+  let effectiveBankroll = bankrollSol;
+  if (kellyModeOpts) {
+    const modeResult = selectKellyMode({
+      bankrollSol,
+      deployedSol:           kellyModeOpts.deployedSol           ?? 0,
+      maxPositions:          kellyModeOpts.maxPositions           ?? 3,
+      winRate:               kellyModeOpts.winRate                ?? 0,
+      liveTrades:            kellyModeOpts.liveTrades             ?? 0,
+      conviction:            kellyModeOpts.conviction             ?? 0,
+      mode3Approved:         kellyModeOpts.mode3Approved          ?? false,
+      semanticMemoryEntries: kellyModeOpts.semanticMemoryEntries  ?? 0,
+    });
+    effectiveBankroll = modeResult.effectiveBankroll;
+  }
+
   const kellyFraction = isGrowth ? fraction * 0.5 : fraction;
   const kelly = computeFractionalKellySize({
-    bankrollSol,
+    bankrollSol: effectiveBankroll,
     baseDeployAmountSol,
     trades,
     context,

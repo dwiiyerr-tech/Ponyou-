@@ -72,6 +72,9 @@ Add permanent notes below this line.
 -->
 
 ## Notes
+- 2026-05-21 19:04 +08: Codex co-leader handled PR-008 task 3 only. Tightened `strategy-composer.js` candidate generation: composed candidates now preserve both parent signals, use id-based hybrid names, carry regime/parent metadata, and reject malformed parents. LLM-generated candidates now accept direct, nested, or JSON-string rule payloads, strip candidate metadata out of rules, tag regime, and reject invalid schema, invalid numeric risk thresholds, or BUY/SELL action payloads before gate entry. Expanded `tests/strategy-composer.test.js` to 10 focused cases. Verification passed: `node --check strategy-composer.js`; `node --check tests/strategy-composer.test.js`; `npx vitest run tests/strategy-composer.test.js` -> 10/10; `npx vitest run tests/strategy-registry.test.js tests/strategy-gate.test.js tests/strategy-composer.test.js` -> 21/21. PR_QUEUE checkbox updated for the strategy-composer task; remaining PR-008 Codex tasks left unchecked.
+- 2026-05-21 18:56 +08: Codex co-leader handled PR-008 task 2 only. Added `strategy-gate.js` as an analysis-only triple evidence gate with injectable readers, candidate evidence defaults, local backtest support, and local trade-attribution live evidence lookup. Added focused `tests/strategy-gate.test.js` coverage for pass/fail layers, backtest profit factor, short-circuiting, attribution-file live evidence, and snapshot evidence. Verification passed: `node --check strategy-gate.js`; `node --check tests/strategy-gate.test.js`; `npx vitest run tests/strategy-gate.test.js tests/strategy-registry.test.js` -> 14/14. PR_QUEUE checkbox updated for the strategy-gate task; remaining PR-008 Codex tasks left unchecked.
+- 2026-05-21 18:47 +08: Codex co-leader handled PR-008 task 1 only. Added `strategy-registry.js` with candidate catalog, activation/rejection/deactivation transitions, JSON persistence, best-active lookup, and cloned read APIs. Added focused `tests/strategy-registry.test.js` coverage. Verification passed: `node --check strategy-registry.js`; `npx vitest run tests/strategy-registry.test.js` -> 7/7. PR_QUEUE checkbox updated for the strategy-registry task; remaining PR-008 Codex tasks left unchecked.
 - 2026-05-21 18:39 +08: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 is already done in PR_QUEUE; Claude decide/review gate remains open in collab task 1. Fresh verification passed: PR-007 tool module syntax checks and focused Vitest suite 33/33. Submitted corrected Codex result to task 1 with failures=0; no PR_QUEUE checkbox/status changes were needed. This supersedes one immediately prior submit that encoded "0" as a failure list item.
 - 2026-05-21 18:32 +08: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 is already done in PR_QUEUE; Claude decide/review gate remains open in collab task 1. Fresh verification passed: PR-007 tool module syntax checks and focused Vitest suite 33/33. Submitted corrected Codex result to task 1 with failures=0; no PR_QUEUE checkbox/status changes were needed.
 - 2026-05-21 18:25 +08: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 is already done in PR_QUEUE; Claude decide/review gate remains open in collab task 1. Fresh verification passed: PR-007 tool module syntax checks and focused Vitest suite 33/33. No PR_QUEUE checkbox/status changes were needed.
@@ -103,6 +106,16 @@ Add permanent notes below this line.
 - 2026-05-21: Codex co-leader run found no open Codex handoffs. Selection reached PR-007; build remains blocked by the existing explicit human approval gate for direct RPC trading/live execution paths. No PR_QUEUE checkbox/status changes and no code changes.
 - 2026-05-21: Codex co-leader run found no open Codex handoffs and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review in Claude-owned decide; no PR_QUEUE checkbox/status changes and no code changes.
 - 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; focused checks passed (`node --check` for PR-007 tool modules, `npx vitest run tests/risk-guard.test.js tests/rpc-failover.test.js tests/priority-fee-manager.test.js tests/direct-rpc-trading.test.js` -> 33/33).
+
+## New task added: PR-011
+Status: pending
+Goal: Vault profit sweep (configurable % + interval + wallet + toggle) + Trading Plan 30 (N-trade target mode, on/off, auto-stop)
+Added: 2026-05-21
+
+## New task added: PR-010
+Status: pending
+Goal: Gap-filling specialist agent — detects uncovered features/stuck tasks, decomposes large tasks, routes to right sub-agent
+Added: 2026-05-21
 
 ## New task added: PR-009
 Status: pending
