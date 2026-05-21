@@ -91,7 +91,7 @@ Plan: docs/superpowers/plans/2026-05-21-strategy-evolution.md
 ---
 
 ## PR-009: Full Integration Audit — Test All Features, Fix All Errors
-Status: pending
+Status: in_progress
 Priority: high
 Safety: safe
 Goal: Jalankan seluruh test suite Ponyou, temukan semua error dan bug, pastikan semua fitur (orchestration layer, data pipeline, strategi, skill registry, security guards, capital sizing, Kelly, RPC, collaboration MCP) saling terhubung dan berjalan benar end-to-end.
@@ -100,8 +100,8 @@ Workers:
   build: codex
   review: claude
 Tasks:
-- [ ] Jalankan full vitest suite — catat semua FAIL + error output                              (worker: codex)
-- [ ] Fix import/export errors antar modul (circular deps, missing exports)                     (worker: codex)
+- [x] Jalankan full vitest suite — catat semua FAIL + error output                              (worker: codex)
+- [x] Fix import/export errors antar modul (circular deps, missing exports)                     (worker: codex)
 - [ ] Fix integration: orchestration layer ↔ strategy registry ↔ evolution engine              (worker: codex)
 - [ ] Fix integration: capital-sizing ↔ kelly-mode-selector ↔ risk_guard                       (worker: codex)
 - [ ] Fix integration: conviction-memory ↔ trade-attribution ↔ strategy-gate                   (worker: codex)
