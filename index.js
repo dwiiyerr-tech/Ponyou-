@@ -108,6 +108,11 @@ import { getCapitalAwareSizing } from "./capital-sizing.js";
 import { evaluateCandidateDecision } from "./decision-workflow.js";
 import { recordDecision } from "./decision-log.js";
 import { assertOperationalReadiness, formatReadinessReport } from "./readiness.js";
+import { StrategyEvolutionEngine } from "./strategy-evolution-engine.js";
+import { StrategyEvolutionBus } from "./strategy-evolution-bus.js";
+import { StrategyRegistry } from "./strategy-registry.js";
+import { StrategyGate } from "./strategy-gate.js";
+import { StrategyProposal } from "./strategy-proposal.js";
 import {
   readAutomationCommand, publishAutomationState, persistAutomationPreference,
   issueSupervisorCommand, publishSupervisorState, readSupervisorState,
@@ -136,6 +141,22 @@ const agentRouter = new AgentRouter({
   rufloEnabled: false, // disable ruflo for now
 });
 log("startup", `AgentRouter initialized — Gemini: ${!!process.env.GEMINI_API_KEY}, Codex: true`);
+
+// Strategy Evolution Engine — opt-in via config.strategy.evolution.enabled
+if (config.strategy?.evolution?.enabled) {
+  const _strategyRegistry = new StrategyRegistry({ persistPath: "./data/strategy-registry.json" });
+  const _strategyBus = new StrategyEvolutionBus({ maxQueue: 5 });
+  const _strategyGate = new StrategyGate({});
+  const _strategyProposal = new StrategyProposal({ sendTelegram: sendMessage });
+  const _evolutionEngine = new StrategyEvolutionEngine({
+    bus: _strategyBus,
+    gate: _strategyGate,
+    registry: _strategyRegistry,
+    proposal: _strategyProposal,
+  });
+  _evolutionEngine.start();
+  log("startup", "Strategy Evolution Engine started (strategy.evolution.enabled=true).");
+}
 
 export function getAgentRouter() {
   return agentRouter;
@@ -1679,8 +1700,12 @@ export async function runScreeningCycle({ silent = false } = {}) {
     }
 
     // ─── Filter + Rug Memory ─────────────────────
+    const narrativeFiltered = filterNarrativeContagion(cappedCandidates);
+    if (narrativeFiltered.length < cappedCandidates.length) {
+      log("screening", `Narrative contagion: removed ${cappedCandidates.length - narrativeFiltered.length}/${cappedCandidates.length} candidates`);
+    }
     const scoredCandidates = [];
-    for (const token of cappedCandidates.slice(0, 8)) {
+    for (const token of narrativeFiltered.slice(0, 8)) {
       if (isTokenBlacklisted(token.mint)) continue;
       if (isTokenOnCooldown(token.mint)) continue;
       if (token.creator && isDevBlocked(token.creator)) continue;
@@ -1759,6 +1784,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
         Math.max(0, momentumScore / 4) +
         (filterResult.passed ? 8 : -5)
       ));
+      const recentWinRate = recentTrades.length > 0
+        ? recentTrades.filter(t => (t.profit_pct || 0) > 0).length / recentTrades.length
+        : 0;
       const kelly = config.kelly?.enabled
         ? getCapitalAwareSizing({
             bankrollSol: walletSol,
@@ -1776,6 +1804,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
             maxFraction: config.kelly?.maxFraction ?? 0.8,
             minSampleTrades: config.kelly?.minSampleTrades ?? 5,
             capitalSizing: config.capitalSizing,
+            kellyModeOpts: config.kelly?.kellyMode ? {
+              deployedSol: totalExposedSol,
+              maxPositions: config.positions?.maxOpen ?? 3,
+              winRate: recentWinRate,
+              liveTrades: recentTrades.length,
+              conviction: 0,
+              mode3Approved: config.kelly?.mode3Approved ?? false,
+              semanticMemoryEntries: 0,
+            } : null,
           })
         : {
             deploy_amount_sol: preKellyAmount,
