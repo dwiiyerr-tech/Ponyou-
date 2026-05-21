@@ -77,20 +77,33 @@ Single-page layout, dark theme, auto-refresh via WebSocket.
 
 ## 4. Setup Wizard (`/wizard`)
 
-Multi-step form, 6 steps, progress bar, Back/Next navigation.
+Multi-step form, 13 steps grouped by domain. Progress bar + Back/Next navigation. All fields pre-filled from existing `user-config.json` if present.
 
-| Step | Content |
-|------|---------|
-| 1/6 Wallet | Wallet private key (masked input), wallet address |
-| 2/6 RPC | Primary RPC URL, backup RPC 1, backup RPC 2 |
-| 3/6 Telegram | Bot token, chat ID, [Send Test Message] button |
-| 4/6 Strategy | Radio: scalp / conservative / aggressive — with descriptions |
-| 5/6 Vault | Toggle on/off, vault wallet address, sweep %, interval days |
-| 6/6 Review | Preview of generated `user-config.json` (private key masked) → [💾 Save & Launch] |
+| Step | Group | Fields |
+|------|-------|--------|
+| 1/13 | **Wallet & RPC** | `walletAddress`, `privateKey` (masked), `rpcUrl`, `backupRpcUrl1`, `backupRpcUrl2` |
+| 2/13 | **Telegram** | `telegramBotToken`, `telegramChatId`, [Send Test Message] button |
+| 3/13 | **LLM / AI Model** | `llmProvider` (openrouter/custom), `llmModel`, `llmBaseUrl` (optional), API key env var reference |
+| 4/13 | **Strategy & Trading Mode** | Strategy preset (scalp/conservative/aggressive), `confirmMode` toggle, `confirmTtlMin` |
+| 5/13 | **Screening Filters** | `minMcap`, `maxMcap`, `minTvl`, `maxTvl`, `minVolume`, `minHolders`, `maxBundlePct`, `maxBotHoldersPct`, `maxTop10Pct` |
+| 6/13 | **Position Management** | `deployAmountSol`, `gasReserve`, `positionSizePct`, `stopLossPct`, `takeProfitPct`, `autoTakeProfitPct`, `trailingTakeProfit` toggle, `trailingTriggerPct`, `trailingDropPct` |
+| 7/13 | **Pilot / Daily Plan** | `pilotEnabled`, `pilotCapitalUsd`, `dailyTargetPct`, `dailyStopLossPct`, `planDays`, `maxConsecutiveLosses` |
+| 8/13 | **Daily Trade Guard** | `dailyTradeGuard.enabled`, `maxWinsPerDay`, `maxLossesPerDay`, `learningModeDurationMin` |
+| 9/13 | **Trading Plan 30** | `tradingPlan.enabled`, `tradingPlan.targetTrades`, `tradingPlan.resetOnNewSession` |
+| 10/13 | **Vault / Savings** | `vault.sweep.enabled`, `vaultWallet`, `sweepPct`, `sweepIntervalDays`, `minSweepSol` |
+| 11/13 | **Kelly & Risk** | `kelly.enabled`, `kellyFraction`, `kellyMinFraction`, `kellyMaxFraction`, `risk.maxPositions`, `risk.maxDeployAmount` |
+| 12/13 | **Advanced Features** | `jito.enabled` + region + tipLamports, `fastTrack.enabled` + key thresholds, `multiWallet.enabled`, `strategy.evolution.enabled`, `darwin.enabled`, `schedule` intervals |
+| 13/13 | **Review & Save** | Full preview of generated `user-config.json` (private key masked) → [💾 Save & Launch] |
 
-**First-time detection:** If `user-config.json` does not exist or has no `walletAddress` set → `GET /` redirects to `/wizard`. After wizard save → redirect to `/`.
+**UX rules:**
+- Steps 3–12 collapsible/skippable — operator can jump straight to Review with defaults
+- Required fields (step 1–2) gated: cannot proceed to step 3 without walletAddress + telegramChatId
+- Tooltip per field shows default value and short description
+- [Reset to defaults] button on each step
 
-**Re-entry:** Existing config pre-fills all fields. Operator can re-run wizard anytime from dashboard via Settings link.
+**First-time detection:** If `user-config.json` does not exist or has no `walletAddress` → `GET /` redirects to `/wizard`. After wizard save → redirect to `/`.
+
+**Re-entry:** Existing config pre-fills all fields. Operator can re-run wizard anytime via Settings link in dashboard header.
 
 ---
 
