@@ -155,6 +155,11 @@ run_once() {
       return 4 ;;
   esac
 
+  # Gap scan — detects stuck PRs, modules without tests, unwired tools
+  node gap-agent.js --threshold 1 --output gap-report.md >> "$LOG" 2>&1 \
+    && log INFO "Gap scan: clean." \
+    || log WARN "Gap scan: issues found — see gap-report.md"
+
   log INFO "Running /autowork..."
   if claude -c -p "/autowork auto-run. Continue from PR_PROGRESS.md and PR_QUEUE.md. Pause if limit appears and write next PR plan." \
     --output-format text \
