@@ -71,7 +71,67 @@ Single-page layout, dark theme, auto-refresh via WebSocket.
 **Header:** bot status (running/stopped), balance SOL, PnL today USD  
 **Left panel:** open positions table — token symbol, PnL%, hold time  
 **Right panel:** start/stop/kill buttons + strategy dropdown + feature toggles  
-**Bottom panel:** live log feed, last 50 lines, auto-scroll, color-coded by level  
+**Bottom panel:** live log feed, last 50 lines, auto-scroll, color-coded by level
+
+Dashboard has a second tab: **Commands** — maps all 20 bot slash commands to UI controls.
+
+```
+┌─────────────────────────────────────────────────────┐
+│  [Dashboard]  [Commands]  [Settings ⚙]              │
+├─────────────────────────────────────────────────────┤
+│  🤖 BOT CONTROL                                     │
+│  [▶ Auto ON] [⏹ Auto OFF]  [✅ Confirm ON/OFF]      │
+│  [🧠 Agent ON] [🧠 Agent OFF]                       │
+│                                                     │
+│  📈 TRADING                                         │
+│  [▶ Continue]  [⏹ Stop Trade]                       │
+│  Pending intents: 2  [View /pending]                │
+│  Intent #3: BUY WIF 0.05 SOL  [✅ Yes] [❌ No]     │
+│                                                     │
+│  🎯 STRATEGY                                        │
+│  Active: scalp  [scalp ▼] [Set Strategy]           │
+│  [List Strategies]                                  │
+│                                                     │
+│  🛡 GUARDS & PLANS                                  │
+│  Daily Guard: OFF  [ON] [OFF]  Wins 2/3 · Loss 1/3 │
+│  Trading Plan: 12/30  [Reset Plan]  [Plan Status]  │
+│                                                     │
+│  ☠ KILL SWITCH                                     │
+│  [Kill Token: _________ ] [Kill]  [Unkill]         │
+│  [Kill State]                                       │
+│                                                     │
+│  📊 INFO                                            │
+│  [Metrics]  [Wallets]  [Menu]                       │
+└─────────────────────────────────────────────────────┘
+```
+
+**Command mapping (20 commands):**
+
+| Group | Command | Dashboard Control |
+|-------|---------|-------------------|
+| Bot Control | `/auto on\|off` | Toggle button |
+| Bot Control | `/confirm on\|off` | Toggle button |
+| Bot Control | `/agent on\|off` | Toggle button |
+| Bot Control | `/menu` | Info button |
+| Trading | `/continue` | Button |
+| Trading | `/stoptrade` | Button |
+| Trading | `/pending` | List with Yes/No per intent |
+| Trading | `/yes <id>` | Inline button per pending intent |
+| Trading | `/no <id>` | Inline button per pending intent |
+| Strategy | `/strategies` | List display |
+| Strategy | `/strategy <name>` | Dropdown + view |
+| Strategy | `/stratset <name>` | Dropdown + set button |
+| Guards | `/dailyguard on\|off` | Toggle + limit inputs |
+| Guards | `/dailyguard limit N` | Number input |
+| Guards | `/plan` | Status display |
+| Guards | `/resetplan` | Button |
+| Kill | `/kill <mint>` | Text input + button |
+| Kill | `/unkill <mint>` | Text input + button |
+| Kill | `/killstate` | Info button |
+| Info | `/metrics` | Info button |
+| Info | `/wallets` | Info button |
+
+**Execution:** Each button → `POST /api/cmd` with `{ cmd: "/stoptrade" }` or `{ cmd: "/stratset", args: ["scalp"] }` → server calls internal `handleTelegramCommand(cmd + " " + args)` directly (same handler used by Telegram).
 
 ---
 
@@ -139,11 +199,15 @@ POST /api/command      → { cmd: "start"|"stop"|"kill"|"unkill" }
 POST /api/strategy     → { strategy: "scalp"|"conservative"|"aggressive" }
 POST /api/toggle       → { feature: "vault"|"tradingPlan"|"dailyGuard", enabled: bool }
 POST /api/resetplan    → resets trading plan session
+POST /api/cmd          → { cmd: "/stoptrade"|"/continue"|"/kill"|..., args?: string[] }
 GET  /wizard/config    → load existing config for pre-filling wizard
 POST /wizard/save      → write user-config.json from wizard payload
 ```
 
-**Command execution:** `POST /api/command` writes to `automation-command.json`. Bot's existing `automation-control.js` polling loop picks it up on next cycle. No `exec()`, no shell calls.
+**`POST /api/cmd` — universal command bridge:**
+Calls `handleTelegramCommand(cmd + " " + args.join(" "))` directly — the same internal handler used by the Telegram bot. Returns `{ ok: true, response: "<text output>" }`. Response text is shown in a toast notification on dashboard. No `exec()`, no shell calls.
+
+**`POST /api/command` (bot lifecycle):** writes to `automation-command.json`. Bot's existing `automation-control.js` polling loop picks it up on next cycle.
 
 ---
 
