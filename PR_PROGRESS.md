@@ -10,33 +10,45 @@ You can add notes below the divider line.
 
 ## AutoWork Progress
 
-Updated: 2026-05-21T00:00:00Z
+Updated: 2026-05-21T04:35:00Z
 
-Current PR: PR-001
-Current status: done
+Current PR: PR-007
+Current status: ready_for_review
+
+### Agents used
+- Gemini: research + risk analysis
+- Claude: orchestration + build + review
 
 ### Completed work
-- Created daily-trade-guard.js with full state machine (running/pending_decision/continued/stopped)
-- Added dailyTradeGuard config block to config.js with env-var fallbacks
-- Wired handleDailyTradeGuardOutcome into trade exit handler in index.js
-- Added /continue, /stoptrade, /dailyguard, /resetguard Telegram commands
-- Added Daily Guard status line to /status and formatDailyTradeGuardLine helper
-- Added buildDailyGuardAnalysisPrompt to learning-mode.js for deep learning integration
-- Written 4 tests in tests/daily-trade-guard.test.js — all passing
-- Full test suite: 449 tests passing, 0 failing
+- tools/rpcFailover.js — RPC failover with latency sorting, circuit breaker, health loop
+- tools/priorityFeeManager.js — dynamic priority fees (p25/p50/p75/p90 percentiles, RPC fallbacks)
+- tools/risk_guard.js — pure pre-trade risk validator (balance gate, trade size cap, slippage cap)
+- tools/directRpcTrading.js — simulation-first orchestrator, DRY_RUN=true default, LIVE_TRADING=false gate
+- tools/skill_registry.js — central registry of PR-007 tools
+- tests/risk-guard.test.js — 9 tests (balance gate, trade size, fee reserve, slippage)
+- tests/rpc-failover.test.js — 5 tests (latency sort, failover on ECONNREFUSED, circuit breaker)
+- tests/priority-fee-manager.test.js — 8 tests (all modes, congestion detection, fallbacks)
+- tests/direct-rpc-trading.test.js — 11 tests (dry run, live gate, sim failure, rust_cli_not_built)
 
 ### Remaining work
-- None — PR-001 complete
+- Rust CLI (direct-rpc-engine) not built — requires Rust toolchain. directRpcTrading.js returns { reason: 'rust_cli_not_built' } gracefully when binary missing. Build separately if Rust is available.
 
 ### Changed files
-- daily-trade-guard.js (new)
-- tests/daily-trade-guard.test.js (new)
-- config.js (+11 lines: dailyTradeGuard block)
-- index.js (+186 lines: guard integration, Telegram commands)
-- learning-mode.js (+42 lines: buildDailyGuardAnalysisPrompt)
+- tools/rpcFailover.js (new)
+- tools/priorityFeeManager.js (new)
+- tools/risk_guard.js (new)
+- tools/directRpcTrading.js (new)
+- tools/skill_registry.js (new)
+- tests/risk-guard.test.js (new)
+- tests/rpc-failover.test.js (new)
+- tests/priority-fee-manager.test.js (new)
+- tests/direct-rpc-trading.test.js (new)
+- PR_QUEUE.md (status + checkboxes updated)
+- PR_PROGRESS.md (this file)
 
 ### Tests run
-- npx vitest run — 449 passed, 0 failed
+- npx vitest run tests/risk-guard.test.js tests/rpc-failover.test.js tests/priority-fee-manager.test.js tests/direct-rpc-trading.test.js
+- Result: PASS 33/33, FAIL 0
 
 ### Limit status
 clear
@@ -48,7 +60,7 @@ claude -c -p "/autowork resume from PR_PROGRESS.md and PR_QUEUE.md"
 no
 
 ### Next action
-Run `/autowork` to start PR-002 (DexVisibilityRiskAnalyzer) — first pending PR in queue.
+Human review of PR-007 modules. To enable live trading after review: set liveTradingEnabled=true + dryRun=false in DirectRpcTrading constructor AND build Rust CLI separately.
 
 ---
 
@@ -60,20 +72,38 @@ Add permanent notes below this line.
 -->
 
 ## Notes
+- 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has all Codex tasks checked. Fresh verification: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. No PR_QUEUE checkbox/status changes were needed.
+- 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has all Codex tasks checked. Verification rerun: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. Submitted corrected Codex result to orchestration task 1 with failures=0; no code or PR_QUEUE status changes were needed.
+- 2026-05-21: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review in Claude-owned decide stage. Verification rerun: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. No PR_QUEUE checkbox/status changes were needed.
+- 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has all Codex tasks checked. Verification rerun: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. Submitted corrected task 1 result with failures=0; no PR_QUEUE status changes were needed.
+- 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has all Codex tasks checked. Verification rerun: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. Submitted corrected Codex result to orchestration task 1 with failures=0; no code changes or PR_QUEUE status changes were needed.
+- 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has all Codex tasks checked. Verification rerun: PR-007 tool module syntax checks passed, focused Vitest checks passed 33/33. Submitted corrected Codex result to orchestration task 1 with failures=0; no code changes were made.
+- 2026-05-21: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has all Codex tasks checked. Verification rerun: PR-007 tool module syntax checks passed, focused Vitest checks passed 33/33. Submitted corrected Codex result to orchestration task 1 with failures=0.
+- 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review. Fresh verification: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. No PR_QUEUE checkbox/status changes were needed.
+- 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has all Codex tasks checked. Verification rerun: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. Submitted task 1 result to orchestration with a corrected failures=0 testing artifact; no PR_QUEUE status changes were needed.
+- 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has all Codex tasks checked. Verification rerun: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. Submitted corrected Codex result to orchestration task 1 with failures=0; no code changes or PR_QUEUE status changes were needed.
+- 2026-05-21: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has all Codex tasks checked. Verification rerun: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. Submitted Codex result to orchestration task 1 with failures=0.
+- 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has Codex tasks checked. Verification rerun: PR-007 tool module syntax checks passed, focused Vitest checks passed 33/33. Submitted Codex result to orchestration task 1.
+- 2026-05-21: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; syntax checks passed for PR-007 tool modules and focused Vitest checks passed 33/33. No PR_QUEUE checkbox/status changes were needed.
+- 2026-05-21: PR-001 through PR-006 removed from the active queue per human request. PR-007 is the latest active PR and remains blocked until separately approved.
 - daily-trade-guard.js uses file-based state (daily-trade-guard-state.json) — auto-reset on UTC date change
 - Guard is disabled by default (dailyTradeGuard.enabled: false in config) — enable via user-config.json
 - /stoptrade activates learning mode for learningModeDurationMin minutes
+- 2026-05-21: Codex co-leader check found no open Codex handoffs. Next queue item is PR-007, but implementation is blocked by the explicit human approval gate recorded above for direct RPC trading/live execution paths. No PR_QUEUE checkboxes changed.
+- 2026-05-21: Codex co-leader pass found no open Codex handoffs. PR-007 remains the first unchecked Codex PR, but build remains blocked by the explicit human approval gate for direct RPC trading/live execution paths. No code or PR_QUEUE checkbox changes made.
+- 2026-05-21: Codex co-leader run found no open Codex handoffs. Selection reached PR-007, but the recorded human approval gate still blocks implementation of direct RPC trading paths. No PR_QUEUE checkbox/status changes and no code changes.
+- 2026-05-21: Codex co-leader run found no open Codex handoffs. PR-007 remains the first unchecked Codex PR, but build is still blocked by the explicit human approval gate for direct RPC trading/live execution paths. No PR_QUEUE checkbox/status changes and no code changes.
+- 2026-05-21: Codex co-leader run found no open Codex handoffs. PR-007 remains blocked by the explicit human approval gate for direct RPC trading/live execution paths. No PR_QUEUE checkbox/status changes and no code changes.
+- 2026-05-21: Codex co-leader run found no open Codex handoffs. Selection reached PR-007 again; explicit human approval is still required before building direct RPC trading/live execution code. No PR_QUEUE checkbox/status changes and no code changes.
+- 2026-05-21: Codex co-leader run found no open Codex handoffs. Selection reached PR-007; build remains blocked by the existing explicit human approval gate for direct RPC trading/live execution paths. No PR_QUEUE checkbox/status changes and no code changes.
+- 2026-05-21: Codex co-leader run found no open Codex handoffs and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review in Claude-owned decide; no PR_QUEUE checkbox/status changes and no code changes.
+- 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; focused checks passed (`node --check` for PR-007 tool modules, `npx vitest run tests/risk-guard.test.js tests/rpc-failover.test.js tests/priority-fee-manager.test.js tests/direct-rpc-trading.test.js` -> 33/33).
 
 ## New tasks added: 2026-05-21
 
 | PR | Title | Priority | Safety |
 |----|-------|----------|--------|
-| PR-002 | DexVisibilityRiskAnalyzer | high | safe |
-| PR-003 | ThreeCandleConfirmationStrategy | high | safe |
-| PR-004 | CabalPlayAnalyzer | high | safe |
-| PR-005 | WalletPingAgent | high | medium |
-| PR-006 | Day Phase Trade (1 SOL gate) | medium | needs_review |
 | PR-007 | Transaksi Murah / Direct RPC (Rust) | medium | needs_review |
 
-All 6 PRs: Status pending. Agent flow: Gemini (research) → Codex gpt-5.5 (build+tests) → Claude (review).
-PR-006 and PR-007 require human review before go-live (balance gate + live trading flags).
+Latest active PR: PR-007. Agent flow: Gemini (research) -> Codex (build+tests) -> Claude (review).
+PR-001 through PR-006 were removed from the active queue on 2026-05-21. PR-007 still requires explicit human review before go-live because it introduces direct RPC trading/live execution paths.
