@@ -11,8 +11,15 @@ import {
 } from "./llm-provider.js";
 import { compressToolOutput } from "./compressor.js";
 
+const ANALYSIS_ONLY_TOOLS = new Set([
+  "analyze_dex_visibility_risk",
+  "analyze_three_candle_confirmation",
+  "analyze_cabal_play",
+  "process_wallet_ping",
+  "analyze_day_phase",
+]);
 const MANAGER_TOOLS  = new Set(["swap_token", "get_token_info", "get_token_security_details", "get_wallet_balance"]);
-const SCREENER_TOOLS = new Set(["swap_token", "discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info", "get_wallet_balance"]);
+const SCREENER_TOOLS = new Set(["swap_token", "discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info", "get_wallet_balance", ...ANALYSIS_ONLY_TOOLS]);
 const GENERAL_INTENT_ONLY_TOOLS = new Set([
   "self_update",
   "update_config",
@@ -31,13 +38,13 @@ const INTENT_TOOLS = {
   blocklist:   new Set(["add_to_blacklist", "block_deployer"]),
   selfupdate:  new Set(["self_update"]),
   balance:     new Set(["get_wallet_balance"]),
-  screen:      new Set(["discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info"]),
+  screen:      new Set(["discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info", "analyze_dex_visibility_risk", "analyze_three_candle_confirmation", "analyze_cabal_play", "analyze_day_phase"]),
   lessons:     new Set(["add_lesson", "list_lessons"]),
   // Tool names below must also exist in tools/definitions.js — otherwise the
   // getToolsForRole filter silently drops them and the LLM never sees the intent.
-  wallets:     new Set(["discover_smart_wallets", "list_discovered_wallets", "list_smart_wallets", "add_smart_wallet", "remove_smart_wallet", "get_smart_money_rank", "get_smart_money_inflow"]),
-  rugscan:     new Set(["score_rug_risk", "learn_rug_patterns", "list_rug_patterns", "harvest_market_rugs", "get_rug_memory_summary", "report_rug", "get_token_security_details", "list_blacklist", "list_blocked_deployers"]),
-  narrative:   new Set(["classify_narrative", "get_narrative_heat", "get_trending_narratives", "discover_tokens"]),
+  wallets:     new Set(["discover_smart_wallets", "list_discovered_wallets", "list_smart_wallets", "add_smart_wallet", "remove_smart_wallet", "get_smart_money_rank", "get_smart_money_inflow", "process_wallet_ping", "analyze_cabal_play"]),
+  rugscan:     new Set(["score_rug_risk", "learn_rug_patterns", "list_rug_patterns", "harvest_market_rugs", "get_rug_memory_summary", "report_rug", "get_token_security_details", "list_blacklist", "list_blocked_deployers", "analyze_dex_visibility_risk", "analyze_cabal_play"]),
+  narrative:   new Set(["classify_narrative", "get_narrative_heat", "get_trending_narratives", "discover_tokens", "analyze_day_phase"]),
   ticker:      new Set(["resolve_ticker", "list_tickers", "register_ticker", "get_token_info"]),
 };
 
@@ -49,11 +56,11 @@ const INTENT_PATTERNS = [
   { intent: "blocklist",   re: /\b(blacklist|block|rugger|block dev)\b/i },
   { intent: "config",      re: /\b(config|setting|threshold|update|set |change)\b/i },
   { intent: "balance",     re: /\b(balance|wallet|sol|how much)\b/i },
-  { intent: "wallets",     re: /\b(smart\s*wallet|discover\s*wallet|scan\s*wallet|copy\s*trade|smart\s*money)\b/i },
+  { intent: "wallets",     re: /\b(smart\s*wallet|discover\s*wallet|scan\s*wallet|copy\s*trade|smart\s*money|cabal|wallet\s*ping)\b/i },
   { intent: "rugscan",     re: /\b(rug|honeypot|scam|junk|sampah|pattern|fingerprint|learn\s*pattern|harvest)\b/i },
-  { intent: "narrative",   re: /\b(narasi|narrative|theme|tema|heat|hot|cold|trend|tag)\b/i },
+  { intent: "narrative",   re: /\b(narasi|narrative|theme|tema|heat|hot|cold|trend|tag|day\s*phase|swing|cooldown|sideways)\b/i },
   { intent: "ticker",      re: /\b(ticker|symbol|resolve|disambig|mint\s*for|which\s*pepe|which\s*bonk)\b/i },
-  { intent: "screen",      re: /\b(screen|candidate|find|search|research|token)\b/i },
+  { intent: "screen",      re: /\b(screen|candidate|find|search|research|token|dex\s*visibility|three\s*candle|candle|fomo)\b/i },
   { intent: "lessons",     re: /\b(lesson|learned|teach|what did you learn)\b/i },
 ];
 
