@@ -72,6 +72,11 @@ Add permanent notes below this line.
 -->
 
 ## Notes
+- 2026-05-21 18:39 +08: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 is already done in PR_QUEUE; Claude decide/review gate remains open in collab task 1. Fresh verification passed: PR-007 tool module syntax checks and focused Vitest suite 33/33. Submitted corrected Codex result to task 1 with failures=0; no PR_QUEUE checkbox/status changes were needed. This supersedes one immediately prior submit that encoded "0" as a failure list item.
+- 2026-05-21 18:32 +08: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 is already done in PR_QUEUE; Claude decide/review gate remains open in collab task 1. Fresh verification passed: PR-007 tool module syntax checks and focused Vitest suite 33/33. Submitted corrected Codex result to task 1 with failures=0; no PR_QUEUE checkbox/status changes were needed.
+- 2026-05-21 18:25 +08: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 is already done in PR_QUEUE; Claude decide/review gate remains open in collab task 1. Fresh verification passed: PR-007 tool module syntax checks and focused Vitest suite 33/33. No PR_QUEUE checkbox/status changes were needed.
+- 2026-05-21 18:19 +08: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 is already done in PR_QUEUE; Claude decide/review gate remains open in collab task 1. Fresh verification passed: PR-007 tool module syntax checks and focused Vitest suite 33/33. Submitted corrected Codex result to task 1 with failures=0; no PR_QUEUE status changes were needed.
+- 2026-05-21 18:12 +08: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 is already marked done in PR_QUEUE; no PR_QUEUE checkbox/status changes were needed. Fresh verification passed: `node --check` for PR-007 tool modules and focused Vitest suite 33/33. Submitted corrected Codex result to orchestration task 1 with failures=0.
 - 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has all Codex tasks checked. Fresh verification: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. No PR_QUEUE checkbox/status changes were needed.
 - 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; PR_QUEUE already has all Codex tasks checked. Verification rerun: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. Submitted corrected Codex result to orchestration task 1 with failures=0; no code or PR_QUEUE status changes were needed.
 - 2026-05-21: Codex co-leader run found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review in Claude-owned decide stage. Verification rerun: PR-007 tool module syntax checks passed and focused Vitest checks passed 33/33. No PR_QUEUE checkbox/status changes were needed.
@@ -98,6 +103,11 @@ Add permanent notes below this line.
 - 2026-05-21: Codex co-leader run found no open Codex handoffs. Selection reached PR-007; build remains blocked by the existing explicit human approval gate for direct RPC trading/live execution paths. No PR_QUEUE checkbox/status changes and no code changes.
 - 2026-05-21: Codex co-leader run found no open Codex handoffs and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review in Claude-owned decide; no PR_QUEUE checkbox/status changes and no code changes.
 - 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; focused checks passed (`node --check` for PR-007 tool modules, `npx vitest run tests/risk-guard.test.js tests/rpc-failover.test.js tests/priority-fee-manager.test.js tests/direct-rpc-trading.test.js` -> 33/33).
+
+## New task added: PR-008
+Status: pending
+Goal: Autonomous strategy evolution engine — triple evidence gate (backtest→paper→live ≥80%), Telegram proposal, Kelly Mode 1/2/3 progressive unlock
+Added: 2026-05-21
 
 ## New tasks added: 2026-05-21
 
