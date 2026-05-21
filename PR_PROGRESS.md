@@ -104,6 +104,11 @@ Add permanent notes below this line.
 - 2026-05-21: Codex co-leader run found no open Codex handoffs and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review in Claude-owned decide; no PR_QUEUE checkbox/status changes and no code changes.
 - 2026-05-21: Codex co-leader pass found no open Codex handoff and no pending/in_progress PR with unchecked Codex tasks. PR-007 remains ready_for_review for Claude decide/review; focused checks passed (`node --check` for PR-007 tool modules, `npx vitest run tests/risk-guard.test.js tests/rpc-failover.test.js tests/priority-fee-manager.test.js tests/direct-rpc-trading.test.js` -> 33/33).
 
+## New task added: PR-009
+Status: pending
+Goal: Full integration audit — run all tests, fix all errors/bugs, ensure all features (orchestration, strategy, skills, security, Kelly, RPC, MCP) connected end-to-end
+Added: 2026-05-21
+
 ## New task added: PR-008
 Status: pending
 Goal: Autonomous strategy evolution engine — triple evidence gate (backtest→paper→live ≥80%), Telegram proposal, Kelly Mode 1/2/3 progressive unlock
