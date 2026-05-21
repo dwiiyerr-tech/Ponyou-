@@ -70,6 +70,63 @@ get_status() {
   grep -m1 "^Current status:" PR_PROGRESS.md 2>/dev/null | awk '{print $NF}' || echo "unknown"
 }
 
+get_current_pr() {
+  grep -m1 "^Current PR:" PR_PROGRESS.md 2>/dev/null | awk '{print $NF}' || echo ""
+}
+
+# Returns 0 (true) if current PR has Safety: safe
+current_pr_is_safe() {
+  local PR
+  PR=$(get_current_pr)
+  [[ -z "$PR" ]] && return 1
+  # Find the PR block and check its Safety field
+  awk "/^## ${PR}:/,/^---/" PR_QUEUE.md 2>/dev/null | grep -q "^Safety: safe"
+}
+
+# Returns 0 (true) if all tasks in current PR are checked [x]
+all_tasks_checked() {
+  local PR
+  PR=$(get_current_pr)
+  [[ -z "$PR" ]] && return 1
+  local block
+  block=$(awk "/^## ${PR}:/,/^---/" PR_QUEUE.md 2>/dev/null)
+  echo "$block" | grep -q "^\- \[ \]" && return 1  # unchecked task exists
+  return 0
+}
+
+# Auto-implement: commit untracked/modified files and mark PR done
+auto_implement() {
+  local PR
+  PR=$(get_current_pr)
+  log INFO "Auto-implement: ${PR} is safe + all tasks checked. Committing and marking done."
+
+  # Stage untracked tools/ and tests/ files (new implementations)
+  local new_files
+  new_files=$(git ls-files --others --exclude-standard tools/ tests/ 2>/dev/null || true)
+  if [[ -n "$new_files" ]]; then
+    echo "$new_files" | xargs git add --
+  fi
+
+  # Stage PR_QUEUE.md and PR_PROGRESS.md updates
+  git add PR_QUEUE.md PR_PROGRESS.md 2>/dev/null || true
+
+  # Only commit if there's something staged
+  if ! git diff --cached --quiet 2>/dev/null; then
+    git commit -m "feat(autowork): auto-implement ${PR} — all tasks done, safety=safe
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>" >> "$LOG" 2>&1 && \
+      log INFO "Auto-implement commit created for ${PR}."
+  fi
+
+  # Mark PR done in queue
+  sed -i "s/^Status: ready_for_review/Status: done/" PR_QUEUE.md 2>/dev/null || true
+  log INFO "${PR} marked done."
+}
+
+human_approval_needed() {
+  grep -q "^Human approval needed: yes" PR_PROGRESS.md 2>/dev/null
+}
+
 run_once() {
   local STATUS
   STATUS=$(get_status)
@@ -80,9 +137,18 @@ run_once() {
     return 2  # signal: nothing to do
   fi
 
+  if human_approval_needed; then
+    log WARN "Human approval gate active (PR_PROGRESS.md). Loop paused until human approves. Sleeping ${LIMIT_WAIT}s."
+    return 5
+  fi
+
   case "$STATUS" in
     ready_for_review)
-      log INFO "Status: ready_for_review — waiting for human. Sleeping ${REVIEW_WAIT}s."
+      if current_pr_is_safe && all_tasks_checked; then
+        auto_implement
+        return 0  # re-run immediately; PR now done
+      fi
+      log INFO "Status: ready_for_review — needs human review (safety!=safe). Sleeping ${REVIEW_WAIT}s."
       return 3 ;;
     paused_by_limit)
       log WARN "Status: paused_by_limit — token limit hit. Sleeping ${LIMIT_WAIT}s before retry."
@@ -121,6 +187,7 @@ while true; do
     2) sleep "$DONE_WAIT" ;;
     3) sleep "$REVIEW_WAIT" ;;
     4) sleep "$LIMIT_WAIT" ;;
+    5) sleep "$LIMIT_WAIT" ;;
     *) sleep "$INTERVAL" ;;
   esac
 done
