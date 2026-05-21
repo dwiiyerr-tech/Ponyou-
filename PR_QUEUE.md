@@ -90,5 +90,31 @@ Plan: docs/superpowers/plans/2026-05-21-strategy-evolution.md
 
 ---
 
+## PR-009: Full Integration Audit — Test All Features, Fix All Errors
+Status: pending
+Priority: high
+Safety: safe
+Goal: Jalankan seluruh test suite Ponyou, temukan semua error dan bug, pastikan semua fitur (orchestration layer, data pipeline, strategi, skill registry, security guards, capital sizing, Kelly, RPC, collaboration MCP) saling terhubung dan berjalan benar end-to-end.
+Workers:
+  research: gemini
+  build: codex
+  review: claude
+Tasks:
+- [ ] Jalankan full vitest suite — catat semua FAIL + error output                              (worker: codex)
+- [ ] Fix import/export errors antar modul (circular deps, missing exports)                     (worker: codex)
+- [ ] Fix integration: orchestration layer ↔ strategy registry ↔ evolution engine              (worker: codex)
+- [ ] Fix integration: capital-sizing ↔ kelly-mode-selector ↔ risk_guard                       (worker: codex)
+- [ ] Fix integration: conviction-memory ↔ trade-attribution ↔ strategy-gate                   (worker: codex)
+- [ ] Fix integration: collaboration MCP ↔ agent-router ↔ decision-workflow                    (worker: codex)
+- [ ] Fix integration: skill_registry ↔ directRpcTrading ↔ rpcFailover ↔ priorityFeeManager   (worker: codex)
+- [ ] Fix integration: dex-visibility + cabal-play + three-candle + day-phase ↔ strategy-composer (worker: codex)
+- [ ] Fix integration: wallet-ping-agent ↔ wallet-discovery ↔ smart-wallet-strategy            (worker: codex)
+- [ ] Verifikasi semua security guards terhubung ke agent main loop                            (worker: codex)
+- [ ] Re-run full suite — target 0 FAIL, 0 uncaught errors                                    (worker: codex)
+- [ ] Review & finalize                                                                        (worker: claude)
+Added: 2026-05-21
+
+---
+
 ## Codex Co-Leader Notes
 - 2026-05-21: Codex co-leader loop enabled via ops/codex-coleader-loop.sh. Claude remains final review/decision gate; Codex handles build/test tasks.
