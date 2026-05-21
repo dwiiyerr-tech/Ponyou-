@@ -10,9 +10,9 @@ You can add notes below the divider line.
 
 ## AutoWork Progress
 
-Updated: 2026-05-21T04:35:00Z
+Updated: 2026-05-22T17:45:00Z
 
-Current PR: PR-007
+Current PR: PR-011
 Current status: ready_for_review
 
 ### Agents used
@@ -72,6 +72,7 @@ Add permanent notes below this line.
 -->
 
 ## Notes
+- 2026-05-21 20:00 +08: Codex co-leader handled PR-011 first Codex task only. Added normalized vault sweep config support (`vault.sweep.enabled`, `vault.sweep.sweepPct`, `vault.sweep.sweepIntervalDays`, `vault.sweep.minSweepSol`, `vault.sweep.vaultWallet`) while preserving legacy flat `vaultPct`, `vaultIntervalDays`, and `vaultWallet`. Added `vault-profit-sweep.js` as an analysis-only sweep helper entrypoint; hardened `vault.js` sweep calculations and transfer gates for disabled/minimum-sweep cases; expanded `tests/vault-profit-sweep.test.js` to 9 cases. Verification passed: `node --check config.js vault.js vault-profit-sweep.js tests/vault-profit-sweep.test.js`; `npx vitest run tests/vault-profit-sweep.test.js` -> 9/9; `npx vitest run tests/module-graph.test.js` -> 1/1. PR_QUEUE updated to mark only the first PR-011 Codex task complete and set PR-011 `in_progress`; remaining PR-011 trigger/Telegram/trading-plan/config tasks left unchecked. Submitted Codex result to orchestration task 1, then submitted a corrected testing artifact with failures=0.
 - 2026-05-21 19:29 +08: Codex co-leader handled PR-009 import/export task only. Added `tests/module-graph.test.js`, a static ESM module graph regression test that scans repo JS/MJS/CJS files without importing runtime entrypoints and verifies relative imports resolve, named local imports/re-exports exist, and static local dependency cycles are absent. Current graph had 0 missing paths, 0 missing exports, and 0 cycles. Verification passed: `node --check tests/module-graph.test.js`; `npx vitest run tests/module-graph.test.js` -> 1/1. PR_QUEUE updated to check the import/export task; remaining PR-009 integration tasks left unchecked. No open Codex handoff/task id was present, so no collab submit was needed.
 - 2026-05-21 19:20 +08: Codex co-leader handled PR-009 first Codex audit task only. Full suite verification passed with no failures: `npx vitest run` -> 86 test files passed, 565 tests passed, FAIL 0. PR_QUEUE updated to mark the full-suite capture task complete and PR-009 status `in_progress`; remaining PR-009 fix/integration tasks left unchecked. No open Codex handoff/task id was present, so no collab submit was needed.
 - 2026-05-21 19:13 +08: Codex co-leader handled PR-008 `strategy-evolution-bus.js` task only. Reworked `StrategyEvolutionBus` to keep EventEmitter compatibility while enforcing async serial candidate dispatch, positive `maxQueue` validation, queue overflow warnings/events that drop the oldest queued candidate, `candidate_error` emission, and a `drain()` helper for deterministic tests. Expanded `tests/strategy-evolution-bus.test.js` to 5 focused cases covering subscriber delivery, backpressure, named events, async serialization, and listener errors. Verification passed: `node --check strategy-evolution-bus.js`; `node --check tests/strategy-evolution-bus.test.js`; `npx vitest run tests/strategy-evolution-bus.test.js` -> 5/5; `node --check strategy-registry.js && node --check strategy-gate.js && node --check strategy-composer.js && node --check strategy-evolution-engine.js`; `npx vitest run tests/strategy-registry.test.js tests/strategy-gate.test.js tests/strategy-composer.test.js tests/strategy-evolution-bus.test.js tests/strategy-evolution-engine.test.js` -> 31/31. PR_QUEUE checkbox for the strategy-evolution-bus task is checked; no open Codex handoff/task id was present.

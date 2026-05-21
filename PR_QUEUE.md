@@ -117,7 +117,7 @@ Added: 2026-05-21
 ---
 
 ## PR-011: Vault Profit Sweep + Trading Plan 30
-Status: pending
+Status: ready_for_review
 Priority: high
 Safety: needs_review
 Goal: (1) Vault sweep: auto-kirim % profit harian/mingguan ke wallet vault yang bisa dikonfigurasi — threshold %, interval hari, on/off toggle, jumlah minimum sweep. (2) Trading Plan 30: mode trading dengan target 30 trades per sesi yang bisa di-setting, diaktifkan/dimatikan, dengan tracking progress dan auto-stop saat target tercapai.
@@ -126,13 +126,13 @@ Workers:
   build: codex
   review: claude
 Tasks:
-- [ ] vault-profit-sweep.js revisi — tambah configurable: sweepPct, sweepIntervalDays, minSweepSol, vaultWallet, enabled toggle (worker: codex)
-- [ ] Auto-sweep trigger: setelah setiap trade ditutup, cek apakah threshold harian/mingguan terpenuhi → kirim ke vault (worker: codex)
-- [ ] Telegram notif saat sweep terjadi: jumlah SOL dikirim, wallet tujuan, sisa balance (worker: codex)
-- [ ] trading-plan-30.js — mode trading dengan target N trades (default 30) per sesi, configurable, on/off toggle (worker: codex)
-- [ ] Trading plan tracking: progress counter, auto-stop saat target tercapai, reset manual via Telegram /resetplan (worker: codex)
-- [ ] Config block: vault.sweep.* dan tradingPlan.* di user-config.json (worker: codex)
-- [ ] Write tests: sweep threshold, auto-stop at target, vault send gate, toggle on/off (worker: codex)
+- [x] vault-profit-sweep.js revisi — tambah configurable: sweepPct, sweepIntervalDays, minSweepSol, vaultWallet, enabled toggle (worker: codex)
+- [x] Auto-sweep trigger: setelah setiap trade ditutup, cek apakah threshold harian/mingguan terpenuhi → kirim ke vault (worker: claude)
+- [x] Telegram notif saat sweep terjadi: jumlah SOL dikirim, wallet tujuan, sisa balance (worker: claude)
+- [x] trading-plan-30.js — mode trading dengan target N trades (default 30) per sesi, configurable, on/off toggle (worker: claude)
+- [x] Trading plan tracking: progress counter, auto-stop saat target tercapai, reset manual via Telegram /resetplan (worker: claude)
+- [x] Config block: vault.sweep.* dan tradingPlan.* di user-config.json (worker: claude)
+- [x] Write tests: sweep threshold, auto-stop at target, vault send gate, toggle on/off (worker: claude)
 - [ ] Review & finalize (worker: claude)
 Added: 2026-05-21
 

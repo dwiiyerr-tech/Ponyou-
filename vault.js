@@ -1,13 +1,15 @@
 /**
  * Vault — Sistem Tabungan Otomatis.
  *
- * Setiap 7 hari, kirim 35% dari saldo SOL trading ke wallet vault.
+ * Setiap N hari, kirim persentase profit/saldo SOL trading ke wallet vault.
  * Tujuan: pisahkan profit dari modal trading, hindari over-trading.
  *
  * Konfigurasi:
- *   vaultWallet     — alamat Solana tujuan (user-config.json atau .env)
- *   vaultPct        — persentase yang dikirim (default 35%)
- *   vaultIntervalDays — interval hari (default 7)
+ *   vault.sweep.enabled — on/off sweep gate
+ *   vault.sweep.vaultWallet — alamat Solana tujuan (user-config.json atau .env)
+ *   vault.sweep.sweepPct — persentase yang dikirim (default 35%)
+ *   vault.sweep.sweepIntervalDays — interval hari (default 7)
+ *   vault.sweep.minSweepSol — minimum transfer (default 0.001 SOL)
  *
  * Cara kerja:
  *   1. Cek apakah sudah 7 hari sejak vault terakhir
@@ -25,7 +27,11 @@ import { log } from "./logger.js";
 import { config } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VAULT_STATE_FILE = path.join(__dirname, "vault-state.json");
+let VAULT_STATE_FILE = path.join(__dirname, "vault-state.json");
+
+export function _setVaultStateFile(filePath) {
+  VAULT_STATE_FILE = filePath;
+}
 
 // ─── State ─────────────────────────────────────────────────────
 
@@ -55,16 +61,93 @@ function saveVaultState(state) {
 
 // ─── Config helpers ────────────────────────────────────────────
 
-function getVaultWallet() {
-  return process.env.VAULT_WALLET || config.vault?.walletAddress || null;
+function finiteNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }
 
-function getVaultPct() {
-  return config.vault?.pct ?? 35;
+function boundedNumber(value, fallback, min, max) {
+  const number = finiteNumber(value, fallback);
+  return Math.min(max, Math.max(min, number));
 }
 
-function getVaultIntervalDays() {
-  return config.vault?.intervalDays ?? 7;
+function boolValue(value, fallback) {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function nonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
+}
+
+export function getVaultSweepConfig(overrides = {}) {
+  const vault = config.vault || {};
+  const sweep = vault.sweep || {};
+  const enabled = boolValue(
+    overrides.enabled ?? sweep.enabled ?? vault.enabled,
+    true,
+  );
+  const vaultWallet = nonEmptyString(
+    overrides.vaultWallet,
+    process.env.VAULT_WALLET,
+    sweep.vaultWallet,
+    vault.vaultWallet,
+    vault.walletAddress,
+  );
+  const sweepPct = boundedNumber(
+    overrides.sweepPct ?? overrides.pct ?? sweep.sweepPct ?? sweep.pct ?? vault.sweepPct ?? vault.pct,
+    35,
+    0,
+    100,
+  );
+  const sweepIntervalDays = Math.max(1, finiteNumber(
+    overrides.sweepIntervalDays ?? overrides.intervalDays ?? sweep.sweepIntervalDays ?? sweep.intervalDays ?? vault.sweepIntervalDays ?? vault.intervalDays,
+    7,
+  ));
+  const minSweepSol = Math.max(0, finiteNumber(
+    overrides.minSweepSol ?? sweep.minSweepSol ?? vault.minSweepSol,
+    0.001,
+  ));
+
+  return {
+    enabled,
+    vaultWallet,
+    sweepPct,
+    sweepIntervalDays,
+    minSweepSol,
+  };
+}
+
+function getVaultWallet(overrides = {}) {
+  return getVaultSweepConfig(overrides).vaultWallet;
+}
+
+function getVaultPct(overrides = {}) {
+  return getVaultSweepConfig(overrides).sweepPct;
+}
+
+function getVaultIntervalDays(overrides = {}) {
+  return getVaultSweepConfig(overrides).sweepIntervalDays;
+}
+
+function getMinSweepSol(overrides = {}) {
+  return getVaultSweepConfig(overrides).minSweepSol;
+}
+
+function zeroSweepResult(cfg, reason, extra = {}) {
+  return {
+    amount_sol: 0,
+    amount_usd: 0,
+    pct: cfg.sweepPct,
+    enabled: cfg.enabled,
+    min_sweep_sol: cfg.minSweepSol,
+    reason,
+    ...extra,
+  };
 }
 
 // ─── Core Logic ────────────────────────────────────────────────
@@ -73,9 +156,14 @@ function getVaultIntervalDays() {
  * Cek apakah sudah waktunya vault.
  * @returns {{ due: boolean, days_since_last: number, days_remaining: number }}
  */
-export function isVaultDue() {
+export function isVaultDue(overrides = {}) {
   const state = loadVaultState();
-  const intervalDays = getVaultIntervalDays();
+  const cfg = getVaultSweepConfig(overrides);
+  const intervalDays = cfg.sweepIntervalDays;
+
+  if (!cfg.enabled) {
+    return { due: false, disabled: true, days_since_last: 0, days_remaining: intervalDays, first_vault: false };
+  }
 
   if (!state.lastVaultDate) {
     return { due: false, days_since_last: 0, days_remaining: intervalDays, first_vault: true };
@@ -96,25 +184,61 @@ export function isVaultDue() {
  * @param {number} liquidSol — SOL liquid (tidak termasuk gas reserve)
  * @returns {{ amount_sol: number, pct: number }}
  */
-export function computeVaultAmount(liquidSol) {
-  const pct = getVaultPct();
+export function computeVaultAmount(liquidSol, overrides = {}) {
+  const cfg = getVaultSweepConfig(overrides);
+  if (!cfg.enabled) {
+    return {
+      amount_sol: 0,
+      pct: cfg.sweepPct,
+      available_sol: 0,
+      enabled: false,
+      min_sweep_sol: cfg.minSweepSol,
+      reason: "vault_sweep_disabled",
+    };
+  }
+  const pct = cfg.sweepPct;
   const gasReserve = config.management?.gasReserve ?? 0.2;
   const available = Math.max(0, liquidSol - gasReserve);
   const vaultSol = parseFloat((available * pct / 100).toFixed(6));
-  return { amount_sol: vaultSol, pct, available_sol: available };
+  if (vaultSol < cfg.minSweepSol) {
+    return {
+      amount_sol: 0,
+      pct,
+      available_sol: available,
+      raw_amount_sol: vaultSol,
+      enabled: true,
+      min_sweep_sol: cfg.minSweepSol,
+      reason: "below_min_sweep",
+    };
+  }
+  return { amount_sol: vaultSol, pct, available_sol: available, enabled: true, min_sweep_sol: cfg.minSweepSol };
 }
 
-export function computeProfitSweepAmount(netProfitUsd, solPriceUsd = 0) {
-  if (!(netProfitUsd > 0) || !(solPriceUsd > 0)) {
-    return { amount_sol: 0, amount_usd: 0, pct: getVaultPct() };
+export function computeProfitSweepAmount(netProfitUsd, solPriceUsd = 0, overrides = {}) {
+  const cfg = getVaultSweepConfig(overrides);
+  if (!cfg.enabled) {
+    return zeroSweepResult(cfg, "vault_sweep_disabled");
   }
-  const pct = getVaultPct();
+  if (!(netProfitUsd > 0) || !(solPriceUsd > 0)) {
+    return zeroSweepResult(cfg, "invalid_profit_or_sol_price");
+  }
+  const pct = cfg.sweepPct;
   const amountUsd = netProfitUsd * pct / 100;
   const amountSol = amountUsd / solPriceUsd;
+  const roundedSol = parseFloat(amountSol.toFixed(6));
+  const roundedUsd = parseFloat(amountUsd.toFixed(2));
+  if (roundedSol < cfg.minSweepSol) {
+    return zeroSweepResult(cfg, "below_min_sweep", {
+      raw_amount_sol: roundedSol,
+      raw_amount_usd: roundedUsd,
+    });
+  }
   return {
-    amount_sol: parseFloat(amountSol.toFixed(6)),
-    amount_usd: parseFloat(amountUsd.toFixed(2)),
+    amount_sol: roundedSol,
+    amount_usd: roundedUsd,
     pct,
+    enabled: true,
+    min_sweep_sol: cfg.minSweepSol,
   };
 }
 
@@ -124,24 +248,34 @@ export function computeProfitSweepAmount(netProfitUsd, solPriceUsd = 0) {
  * @param {number} solPriceUsd — harga SOL untuk estimasi USD
  * @returns {Promise<{ success: boolean, tx?: string, amount_sol: number, amount_usd: number }>}
  */
-export async function executeVaultTransfer(amountSol, solPriceUsd = 0) {
-  const vaultWallet = getVaultWallet();
+export async function executeVaultTransfer(amountSol, solPriceUsd = 0, overrides = {}) {
+  const cfg = getVaultSweepConfig(overrides);
+  const vaultWallet = cfg.vaultWallet;
+
+  if (!cfg.enabled) {
+    return { success: false, disabled: true, error: "Vault sweep disabled" };
+  }
 
   if (!vaultWallet) {
     return { success: false, error: "VAULT_WALLET tidak dikonfigurasi. Set di .env atau user-config.json." };
   }
 
-  if (amountSol < 0.001) {
-    return { success: false, error: `Jumlah terlalu kecil: ${amountSol} SOL (minimum 0.001 SOL)` };
+  const amount = Number(amountSol);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { success: false, error: `Jumlah tidak valid: ${amountSol} SOL` };
+  }
+
+  if (amount < cfg.minSweepSol) {
+    return { success: false, error: `Jumlah terlalu kecil: ${amount} SOL (minimum ${cfg.minSweepSol} SOL)` };
   }
 
   if (process.env.DRY_RUN === "true") {
-    const estUsd = amountSol * solPriceUsd;
-    log("vault", `DRY RUN — vault ${amountSol} SOL (~$${estUsd.toFixed(2)}) → ${vaultWallet}`);
+    const estUsd = amount * solPriceUsd;
+    log("vault", `DRY RUN — vault ${amount} SOL (~$${estUsd.toFixed(2)}) → ${vaultWallet}`);
     return {
       dry_run: true,
       success: true,
-      amount_sol: amountSol,
+      amount_sol: amount,
       amount_usd: estUsd,
       vault_wallet: vaultWallet,
       message: "DRY RUN — tidak ada transaksi nyata",
@@ -164,7 +298,7 @@ export async function executeVaultTransfer(amountSol, solPriceUsd = 0) {
       throw new Error(`Alamat vault tidak valid: ${vaultWallet}`);
     }
 
-    const lamports = Math.floor(amountSol * LAMPORTS_PER_SOL);
+    const lamports = Math.floor(amount * LAMPORTS_PER_SOL);
 
     const transaction = new Transaction().add(
       SystemProgram.transfer({
@@ -175,19 +309,19 @@ export async function executeVaultTransfer(amountSol, solPriceUsd = 0) {
     );
 
     const sig = await sendAndConfirmTransaction(connection, transaction, [wallet]);
-    const amountUsd = amountSol * solPriceUsd;
+    const amountUsd = amount * solPriceUsd;
 
-    log("vault", `VAULT TRANSFER SUKSES: ${amountSol} SOL (~$${amountUsd.toFixed(2)}) → ${vaultWallet} | tx: ${sig}`);
+    log("vault", `VAULT TRANSFER SUKSES: ${amount} SOL (~$${amountUsd.toFixed(2)}) → ${vaultWallet} | tx: ${sig}`);
 
     // Simpan ke state
     const vaultState = loadVaultState();
     vaultState.lastVaultDate = new Date().toISOString();
     vaultState.lastVaultTx = sig;
-    vaultState.totalVaultedSol = parseFloat(((vaultState.totalVaultedSol || 0) + amountSol).toFixed(6));
+    vaultState.totalVaultedSol = parseFloat(((vaultState.totalVaultedSol || 0) + amount).toFixed(6));
     vaultState.totalVaultedUsd = parseFloat(((vaultState.totalVaultedUsd || 0) + amountUsd).toFixed(2));
     vaultState.vaultHistory.push({
       ts: new Date().toISOString(),
-      amount_sol: amountSol,
+      amount_sol: amount,
       amount_usd: parseFloat(amountUsd.toFixed(2)),
       tx: sig,
       vault_wallet: vaultWallet,
@@ -198,7 +332,7 @@ export async function executeVaultTransfer(amountSol, solPriceUsd = 0) {
     return {
       success: true,
       tx: sig,
-      amount_sol: amountSol,
+      amount_sol: amount,
       amount_usd: parseFloat(amountUsd.toFixed(2)),
       vault_wallet: vaultWallet,
     };
@@ -233,14 +367,19 @@ export function recordVaultTransfer({ amount_sol, amount_usd, tx, vault_wallet }
  */
 export function getVaultStatus() {
   const state = loadVaultState();
+  const cfg = getVaultSweepConfig();
   const due = isVaultDue();
-  const vaultWallet = getVaultWallet();
+  const vaultWallet = cfg.vaultWallet;
 
   return {
-    configured: !!vaultWallet,
+    enabled: cfg.enabled,
+    configured: cfg.enabled && !!vaultWallet,
     vault_wallet: vaultWallet ? `${vaultWallet.slice(0, 8)}...${vaultWallet.slice(-4)}` : null,
     vault_pct: getVaultPct(),
+    sweep_pct: cfg.sweepPct,
     interval_days: getVaultIntervalDays(),
+    sweep_interval_days: cfg.sweepIntervalDays,
+    min_sweep_sol: getMinSweepSol(),
     last_vault_date: state.lastVaultDate,
     last_tx: state.lastVaultTx,
     total_vaulted_sol: state.totalVaultedSol,

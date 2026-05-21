@@ -42,6 +42,58 @@ function nonEmptyString(...values) {
   return null;
 }
 
+function finiteNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function boundedNumber(value, fallback, min, max) {
+  const number = finiteNumber(value, fallback);
+  return Math.min(max, Math.max(min, number));
+}
+
+export function buildVaultConfig(u = {}, env = process.env) {
+  const vault = u.vault || {};
+  const sweep = vault.sweep || {};
+  const walletAddress = nonEmptyString(
+    sweep.vaultWallet,
+    vault.vaultWallet,
+    vault.walletAddress,
+    u.vaultWallet,
+    env.VAULT_WALLET,
+  );
+  const sweepPct = boundedNumber(
+    sweep.sweepPct ?? sweep.pct ?? vault.sweepPct ?? vault.pct ?? u.vaultSweepPct ?? u.sweepPct ?? u.vaultPct,
+    35,
+    0,
+    100,
+  );
+  const sweepIntervalDays = Math.max(1, finiteNumber(
+    sweep.sweepIntervalDays ?? sweep.intervalDays ?? vault.sweepIntervalDays ?? vault.intervalDays ?? u.vaultSweepIntervalDays ?? u.sweepIntervalDays ?? u.vaultIntervalDays,
+    7,
+  ));
+  const minSweepSol = Math.max(0, finiteNumber(
+    sweep.minSweepSol ?? vault.minSweepSol ?? u.vaultMinSweepSol ?? u.minSweepSol,
+    0.001,
+  ));
+  const enabled = Boolean(sweep.enabled ?? vault.enabled ?? u.vaultSweepEnabled ?? u.vaultEnabled ?? true);
+
+  return {
+    enabled,
+    walletAddress,
+    pct: sweepPct,
+    intervalDays: sweepIntervalDays,
+    minSweepSol,
+    sweep: {
+      enabled,
+      sweepPct,
+      sweepIntervalDays,
+      minSweepSol,
+      vaultWallet: walletAddress,
+    },
+  };
+}
+
 export function buildRugMonitorConfig(u = {}) {
   const rm = u.rugMonitor || {};
   const t = (block, defaults) => ({
@@ -117,11 +169,7 @@ export const config = {
   },
 
   // ─── Vault / Tabungan ──────────────────────
-  vault: {
-    walletAddress: u.vaultWallet ?? process.env.VAULT_WALLET ?? null,
-    pct:           u.vaultPct          ?? 35,
-    intervalDays:  u.vaultIntervalDays ?? 7,
-  },
+  vault: buildVaultConfig(u),
 
   // ─── Daily Report ──────────────────────────
   report: {
@@ -143,6 +191,13 @@ export const config = {
     maxWinsPerDay: u.dailyTradeGuard?.maxWinsPerDay ?? u.dailyTradeGuardMaxWins ?? 3,
     maxLossesPerDay: u.dailyTradeGuard?.maxLossesPerDay ?? u.dailyTradeGuardMaxLosses ?? 3,
     learningModeDurationMin: u.dailyTradeGuard?.learningModeDurationMin ?? u.learningModeDurationMin ?? 60,
+  },
+
+  // ─── Trading Plan ─────────────────────────
+  tradingPlan: {
+    enabled:           u.tradingPlan?.enabled           ?? u.tradingPlanEnabled           ?? false,
+    targetTrades:      u.tradingPlan?.targetTrades       ?? u.tradingPlanTarget            ?? 30,
+    resetOnNewSession: u.tradingPlan?.resetOnNewSession  ?? u.tradingPlanResetOnNewSession ?? false,
   },
 
   // ─── Risk Limits ─────────────────────────

@@ -104,6 +104,10 @@ import {
   checkTrendBreakExit, getMomentumScore,
 } from "./momentum-analysis.js";
 import { resolveExecutionMode } from "./runtime-mode.js";
+import {
+  recordTrade as recordTradingPlanTrade, isSessionComplete,
+  getTradingPlanStatus, resetTradingPlan, isTradingPlanEnabled,
+} from "./trading-plan-30.js";
 import { getCapitalAwareSizing } from "./capital-sizing.js";
 import { evaluateCandidateDecision } from "./decision-workflow.js";
 import { recordDecision } from "./decision-log.js";
@@ -452,7 +456,7 @@ async function handleStrategyTelegramCommand(text) {
       `<b>Daily Guard</b> · ${htmlEscape(dailyGuard)}`,
       `<b>Plan</b> · ${planLine}`,
       fmt.divider(),
-      fmt.it("/strategy /strategies /stratset /confirm /dailyguard /auto /agent /pending /yes /no /pnl /status"),
+      fmt.it("/strategy /strategies /stratset /confirm /dailyguard /auto /agent /pending /yes /no /pnl /status /plan /resetplan"),
     ];
     await sendHTML(lines.join("\n"));
     return true;
@@ -602,6 +606,30 @@ async function handleStrategyTelegramCommand(text) {
   if (cmd === "/continue") {
     const s = decideDailyTradeGuard("continue", config.dailyTradeGuard);
     await sendHTML(`▶️ Daily Guard: lanjut trading hari ini. W ${s.wins}/${s.max_wins_per_day} · L ${s.losses}/${s.max_losses_per_day}`);
+    return true;
+  }
+
+  if (cmd === "/resetplan") {
+    const s = resetTradingPlan();
+    await sendHTML([
+      `🔄 <b>Trading plan reset</b>`,
+      `Target: ${s.target} trades · Progress: 0/${s.target}`,
+      isTradingPlanEnabled() ? `Status: aktif` : `Status: ${fmt.it("disabled — aktifkan di user-config.json")}`,
+    ].join("\n"));
+    return true;
+  }
+
+  if (cmd === "/plan") {
+    const s = getTradingPlanStatus();
+    if (!s.enabled) {
+      await sendHTML(`📋 Trading plan <b>disabled</b>. Aktifkan: <code>tradingPlan.enabled: true</code>`);
+      return true;
+    }
+    await sendHTML([
+      `📋 <b>Trading Plan</b>`,
+      `Progress: ${s.trades_completed}/${s.target} trades (${s.progress_pct}%)`,
+      s.session_complete ? `✅ Session selesai! /resetplan untuk mulai baru.` : `Sisa: ${s.remaining} trades`,
+    ].join("\n"));
     return true;
   }
 
@@ -1492,6 +1520,17 @@ export async function runManagementCycle({ silent = false } = {}) {
           }
         }
 
+        // Auto-sweep trigger: check vault due after every trade close
+        if (!tpTriggered) {
+          const vaultCheck = isVaultDue();
+          if (vaultCheck.due) {
+            runVaultCycle({ silent: true }).catch(e => log("vault_error", `post-trade vault: ${e.message}`));
+          }
+        }
+
+        // Trading plan: record trade completion
+        recordTradingPlanTrade({ symbol: exit.symbol, mint: exit.mint, pnl_pct: tradePnl });
+
         // Feed narrative engine — credit/penalize the narrative(s) this trade belongs to
         try {
           recordNarrativeOutcome({
@@ -1608,6 +1647,12 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
 
 export async function runScreeningCycle({ silent = false } = {}) {
   if (_screeningBusy) return null;
+
+  if (isSessionComplete()) {
+    const s = getTradingPlanStatus();
+    log("trading_plan", `Session complete: ${s.trades_completed}/${s.target} trades. Screening blocked. /resetplan to restart.`);
+    return `Trading plan selesai (${s.trades_completed}/${s.target}). /resetplan untuk mulai sesi baru.`;
+  }
 
   const gate = await checkAllGates("screening");
   if (gate.blocked) return gate.reason;
