@@ -331,7 +331,30 @@ export const config = {
     weightCeiling:  u.darwinCeiling     ?? 2.5,
     minSamples:     u.darwinMinSamples  ?? 10,
   },
-// ─── Common Token Mints ────────────────
+  // ─── Strategy Evolution ────────────────
+  strategy: {
+    evolution: {
+      enabled:                    u.strategyEvolutionEnabled    ?? false,
+      minWinRateGate:             u.strategyMinWinRate          ?? 0.80,
+      minBacktestTrades:          u.strategyMinBacktestTrades   ?? 100,
+      minPaperTrades:             u.strategyMinPaperTrades      ?? 30,
+      minLiveTrades:              u.strategyMinLiveTrades       ?? 20,
+      paperTradeTimeoutDays:      u.strategyPaperTimeoutDays    ?? 7,
+      proposalTimeoutHours:       u.strategyProposalTimeout     ?? 24,
+      autoApproveConvictionMin:   u.strategyAutoApprove         ?? 0.95,
+      degradationThreshold:       u.strategyDegradation         ?? 0.75,
+      maxCandidateQueue:          u.strategyMaxQueue            ?? 5,
+      kellyMode3: {
+        requiresApproval:         true,
+        minLiveTrades:            u.kellyMode3MinTrades         ?? 50,
+        minWinRate:               u.kellyMode3MinWinRate        ?? 1.00,
+        minConviction:            u.kellyMode3MinConviction     ?? 0.99,
+        minSemanticMemoryEntries: u.kellyMode3MinMemory         ?? 200,
+      },
+    },
+  },
+
+  // ─── Common Token Mints ────────────────
 tokens: {
   SOL:  "So11111111111111111111111111111111111111112",
   USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",

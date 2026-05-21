@@ -64,7 +64,7 @@ Default flow: gemini (research) → codex (build + tests) → claude (review)
 -->
 
 ## PR-008: Strategy Evolution + Kelly Mode Selector
-Status: pending
+Status: in_progress
 Priority: high
 Safety: needs_review
 Goal: Autonomous strategy select/compose/generate with triple evidence gate (backtest→paper→live ≥80% win rate), Telegram proposal system (auto-approve at 95% conviction, 24h timeout), and progressive Kelly Mode 1/2/3 unlock (Mode 3 requires operator Telegram approval + 100% win rate + 50 trades + 99% conviction).
@@ -73,9 +73,9 @@ Workers:
   build: codex
   review: claude
 Tasks:
-- [ ] strategy-registry.js — catalog + persist strategy records                                (worker: codex)
-- [ ] strategy-gate.js — triple evidence gate: backtest/paper/live all ≥80%                   (worker: codex)
-- [ ] strategy-composer.js — selectBest / compose / generate candidates                        (worker: codex)
+- [x] strategy-registry.js — catalog + persist strategy records                                (worker: codex)
+- [x] strategy-gate.js — triple evidence gate: backtest/paper/live all ≥80%                   (worker: codex)
+- [x] strategy-composer.js — selectBest / compose / generate candidates                        (worker: codex)
 - [ ] strategy-evolution-bus.js — EventEmitter async queue with backpressure (max 5)           (worker: codex)
 - [ ] strategy-evolution-engine.js — orchestrator: bus→gate→proposal→registry + hourly check  (worker: codex)
 - [ ] strategy-proposal.js — Telegram proposal format + auto-approve + operator response       (worker: codex)
@@ -112,6 +112,49 @@ Tasks:
 - [ ] Verifikasi semua security guards terhubung ke agent main loop                            (worker: codex)
 - [ ] Re-run full suite — target 0 FAIL, 0 uncaught errors                                    (worker: codex)
 - [ ] Review & finalize                                                                        (worker: claude)
+Added: 2026-05-21
+
+---
+
+## PR-010: Gap-Filling Specialist Agent
+Status: pending
+Priority: medium
+Safety: safe
+Goal: Buat agent khusus yang mendeteksi dan mengatasi gap ketika screener agent dan management agent tidak mampu memecahkan semua fitur atau task terlalu besar — agent ini bisa decompose task besar, routing ke sub-agent yang tepat, dan memastikan tidak ada fitur yang tertinggal tanpa handler.
+Workers:
+  research: gemini
+  build: codex
+  review: claude
+Tasks:
+- [ ] Analisis gap pattern: task apa yang sering gagal / tidak tertangani oleh screener + management agent (worker: gemini)
+- [ ] gap-detector.js — scan PR_QUEUE untuk task unchecked > N hari, modul tanpa test, fitur tanpa wiring ke agent loop (worker: codex)
+- [ ] task-decomposer.js — terima task besar, pecah jadi atomic sub-tasks, route ke Gemini/Codex/Claude sesuai skill matrix (worker: codex)
+- [ ] gap-agent.js — orchestrator: jalankan detector → decompose → dispatch → verify completion (worker: codex)
+- [ ] Integrasi ke autowork loop: jika PR stuck > 24h tanpa progress, trigger gap-agent otomatis (worker: codex)
+- [ ] Write tests untuk gap-detector dan task-decomposer (worker: codex)
+- [ ] Review & finalize (worker: claude)
+Added: 2026-05-21
+
+---
+
+## PR-011: Vault Profit Sweep + Trading Plan 30
+Status: pending
+Priority: high
+Safety: needs_review
+Goal: (1) Vault sweep: auto-kirim % profit harian/mingguan ke wallet vault yang bisa dikonfigurasi — threshold %, interval hari, on/off toggle, jumlah minimum sweep. (2) Trading Plan 30: mode trading dengan target 30 trades per sesi yang bisa di-setting, diaktifkan/dimatikan, dengan tracking progress dan auto-stop saat target tercapai.
+Workers:
+  research: gemini
+  build: codex
+  review: claude
+Tasks:
+- [ ] vault-profit-sweep.js revisi — tambah configurable: sweepPct, sweepIntervalDays, minSweepSol, vaultWallet, enabled toggle (worker: codex)
+- [ ] Auto-sweep trigger: setelah setiap trade ditutup, cek apakah threshold harian/mingguan terpenuhi → kirim ke vault (worker: codex)
+- [ ] Telegram notif saat sweep terjadi: jumlah SOL dikirim, wallet tujuan, sisa balance (worker: codex)
+- [ ] trading-plan-30.js — mode trading dengan target N trades (default 30) per sesi, configurable, on/off toggle (worker: codex)
+- [ ] Trading plan tracking: progress counter, auto-stop saat target tercapai, reset manual via Telegram /resetplan (worker: codex)
+- [ ] Config block: vault.sweep.* dan tradingPlan.* di user-config.json (worker: codex)
+- [ ] Write tests: sweep threshold, auto-stop at target, vault send gate, toggle on/off (worker: codex)
+- [ ] Review & finalize (worker: claude)
 Added: 2026-05-21
 
 ---
