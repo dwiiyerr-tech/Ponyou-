@@ -89,6 +89,7 @@ import { assessTradeAttribution, recordTradeAttribution } from "./trade-attribut
 import { harvestMarketRugs } from "./tools/rug-harvester.js";
 import { recordNarrativeOutcome } from "./tools/narratives.js";
 import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
+import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
 import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
@@ -1712,9 +1713,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const baseMaxPositions = strategy?.protections?.max_open_trades
       ?? config.risk?.maxPositions
       ?? 3;
+    const heatmapMax = getHeatmapMaxPositions(baseMaxPositions);
+    const effectiveMax = Math.min(baseMaxPositions, heatmapMax);
     const positionLimit = config.pilot.enabled
-      ? getDynamicPositionLimit(baseMaxPositions)
-      : baseMaxPositions;
+      ? getDynamicPositionLimit(effectiveMax)
+      : effectiveMax;
 
     if (openTokens.length >= positionLimit) {
       const profitMode = isInProfitMode();
@@ -1759,7 +1762,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
     // ─── Market intelligence ─────────────────────
     const marketSnap = recordMarketSnapshot(cappedCandidates);
     const marketIntel = getMarketIntelligence();
-    log("market", `Market: ${marketIntel.condition} (confidence: ${marketSnap.confidence})`);
+    const heatmap = computeMarketRegime();
+    log("market", `Market: ${marketIntel.condition} (confidence: ${marketSnap.confidence}) → heatmap ${heatmap.regime} maxPos=${heatmap.max_positions}`);
     enrichMarketResearchWithAgentRouter({ marketIntel, candidates: cappedCandidates })
       .catch(e => log("market_research_error", e.message));
 
@@ -1885,7 +1889,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
             capitalSizing: config.capitalSizing,
             kellyModeOpts: config.kelly?.kellyMode ? {
               deployedSol: totalExposedSol,
-              maxPositions: config.positions?.maxOpen ?? 3,
+              maxPositions: getHeatmapMaxPositions(config.positions?.maxOpen ?? 3),
               winRate: recentWinRate,
               liveTrades: recentTrades.length,
               conviction: 0,
