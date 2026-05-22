@@ -170,5 +170,110 @@ Plan: docs/superpowers/plans/2026-05-22-dashboard.md
 
 ---
 
+## PR-013: Dynamic Exit Slippage — CRITICAL Safety Fix
+Status: pending
+Priority: high
+Safety: needs_review
+Goal: Ganti hardcoded slippage 1.0 di semua exit calls dengan dynamic progressive slippage: attempt 1=1%, attempt 2=5%, attempt 3=10%, attempt 4=20%. Jika semua gagal, kirim Telegram alert "POSITION STUCK — manual intervention needed". Config: maxExitAttempts (default 4), exitSlippageSteps (default [1,5,10,20]).
+Workers:
+  research: gemini
+  build: codex
+  review: claude
+Tasks:
+- [ ] Audit semua exit call sites di index.js — catat line numbers (worker: claude)
+- [ ] exit-slippage.js — module dengan getExitSlippage(attempt), validateSlippageConfig() (worker: codex)
+- [ ] Patch index.js — wrap semua exit calls dengan retry loop + progressive slippage (worker: codex)
+- [ ] Telegram alert jika semua attempt gagal: "⚠️ POSITION STUCK: {symbol} — exit failed after 4 attempts" (worker: codex)
+- [ ] Config block: exitSlippage.* di user-config.json dan config.js (worker: codex)
+- [ ] Write tests: progressive steps, max attempt alert, config defaults (worker: codex)
+- [ ] Review & finalize (worker: claude)
+Added: 2026-05-22
+Audit-source: Gemini + Claude verified (lines 1323, 1332, 1406, 1416 index.js)
+
+---
+
+## PR-014: Integration Gaps — Narrative Feedback + Zombie Wallets + Partial TP Guard
+Status: pending
+Priority: high
+Safety: needs_review
+Goal: Fix 3 integration gaps yang terverifikasi: (1) recordRuggedNarrativesForExit tidak pernah dipanggil di index.js — semua exit paths harus feed ke narrative blocklist. (2) getAllWallets() tidak filter by decay score — zombie wallets makan Geyser subscription slots. (3) Partial TP idempotency guard — cek jika partial TP sudah landing sebelum retry untuk hindari double-sell.
+Workers:
+  research: gemini
+  build: codex
+  review: claude
+Tasks:
+- [ ] Wire recordRuggedNarrativesForExit ke semua exit paths di index.js (tidak hanya "rug" reason) (worker: claude)
+- [ ] getAllWallets() filter: tambah applyScoreDecay check, skip wallet dengan multiplier < 0.5 (worker: codex)
+- [ ] partial-tp-guard.js — idempotency key per posisi+attempt, cek onchain tx sebelum retry (worker: codex)
+- [ ] Write tests: narrative feedback untuk slow-rug exits, decay filter, partial TP dedup (worker: codex)
+- [ ] Review & finalize (worker: claude)
+Added: 2026-05-22
+Audit-source: Gemini + Claude verified
+
+---
+
+## PR-015: State Pruning + Kelly Outlier Cap
+Status: pending
+Priority: medium
+Safety: safe
+Goal: (1) state-pruner.js — arsipkan posisi closed > 7 hari ke closed-positions-archive.json, pruning otomatis tiap startup dan tiap 24 jam. (2) Kelly outlier cap — clamp payoffRatio max 5x, enforce min 10 trades sebelum Kelly aktif, tambah volatility dampener untuk memecoin high-variance.
+Workers:
+  research: gemini
+  build: codex
+  review: claude
+Tasks:
+- [ ] state-pruner.js — pruneClosedPositions(maxAgeDays=7), archivePath, auto-trigger (worker: codex)
+- [ ] Wire state-pruner ke startup dan 24h interval di index.js (worker: codex)
+- [ ] kelly-mode-selector.js patch — clamp payoffRatio ≤ 5, minSampleTrades=10, volatility dampener (worker: codex)
+- [ ] Write tests: pruning threshold, Kelly cap, min sample enforcement (worker: codex)
+- [ ] Review & finalize (worker: claude)
+Added: 2026-05-22
+Audit-source: Gemini + Claude verified
+
+---
+
+## PR-016: Dashboard Security — Auth + IPC File Lock
+Status: pending
+Priority: medium
+Safety: safe
+Goal: (1) Dashboard auth: Bearer token sederhana di header — token di-generate saat startup, disimpan di dashboard-token.txt, dikonfirmasi via cookie/localStorage di browser. (2) IPC file lock: gunakan rename-atomic pattern (tmp write + rename) untuk dashboard-cmd.json agar tidak ada race condition baca/tulis.
+Workers:
+  research: claude
+  build: codex
+  review: claude
+Tasks:
+- [ ] dashboard/auth.js — generateToken(), validateToken(req), middleware Express (worker: codex)
+- [ ] Wire auth middleware ke semua routes kecuali GET /wizard/config saat first-time setup (worker: codex)
+- [ ] dashboard/public/app.js patch — attach token ke semua fetch requests via localStorage (worker: codex)
+- [ ] dashboard/command-writer.js patch — atomic write dengan tmp+rename untuk writeDashboardCmd (worker: codex)
+- [ ] dashboard/ipc.js patch — re-read file setelah rename untuk pastikan data konsisten (worker: codex)
+- [ ] Write tests: token validation, atomic write, auth middleware rejection (worker: codex)
+- [ ] Review & finalize (worker: claude)
+Added: 2026-05-22
+Audit-source: Gemini + Claude verified
+
+---
+
+## PR-017: Market Heatmap — Dynamic maxPositions + Regime-Aware Sizing
+Status: pending
+Priority: medium
+Safety: needs_review
+Goal: Market heatmap dari GMGN API data untuk dynamically adjust maxPositions: DEAD market=1, COLD=2, NORMAL=3, HOT=4, FRENZY=5. Integrasikan dengan capital-sizing.js sehingga Kelly sizing aware terhadap overall market regime, bukan hanya per-token signal.
+Workers:
+  research: gemini
+  build: codex
+  review: claude
+Tasks:
+- [ ] Gemini research: GMGN API endpoints untuk market-wide metrics (volume trend, token count, liquidity) (worker: gemini)
+- [ ] market-heatmap.js — computeMarketRegime(), getMaxPositions(regime), persistence ke market-heatmap-state.json (worker: codex)
+- [ ] capital-sizing.js patch — inject marketRegime dari heatmap ke getMaxDeployablePositions() (worker: codex)
+- [ ] index.js patch — refresh heatmap tiap screening cycle (worker: codex)
+- [ ] Write tests: regime thresholds, maxPositions mapping, stale data fallback (worker: codex)
+- [ ] Review & finalize (worker: claude)
+Added: 2026-05-22
+Audit-source: Gemini recommendation
+
+---
+
 ## Codex Co-Leader Notes
 - 2026-05-21: Codex co-leader loop enabled via ops/codex-coleader-loop.sh. Claude remains final review/decision gate; Codex handles build/test tasks.
