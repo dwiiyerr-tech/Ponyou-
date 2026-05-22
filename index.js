@@ -55,6 +55,7 @@ import { captureEntryMetadata } from "./tools/entry-metadata.js";
 import {
   initWalletManager, getActiveWallet, markWalletError,
   resetWalletErrors, getWalletCapitalSol, isMultiWalletEnabled, getAllWallets, buildCapitalAwareWalletPlan, getWalletByAddress,
+  shutdownWalletManager,
 } from "./tools/wallet-manager.js";
 
 import {
@@ -1810,7 +1811,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
 
       // Fetch global fees for wash trading detection
-      const tokenInfo = await getTokenInfo({ query: token.mint });
+      let tokenInfo;
+      try {
+        tokenInfo = await getTokenInfo({ query: token.mint });
+      } catch (e) {
+        log("filter", `${token.symbol}: SKIP — getTokenInfo failed: ${e.message}`);
+        continue;
+      }
       const globalFees = tokenInfo.results?.[0]?.global_fees_sol || 0;
       const tierInfo = getMcapTier(token.mcap);
       const tierExec = getTierExecutionProfile(token.mcap);
@@ -2558,6 +2565,7 @@ async function shutdown(signal) {
   _geyserStream = null;
   try { _rugMonitor?.shutdown(); } catch (_) {}
   try { shutdownSingletons(); } catch (_) {}
+  try { shutdownWalletManager(); } catch (_) {}
   process.exit(0);
 }
 process.on("unhandledRejection", (reason, promise) => {

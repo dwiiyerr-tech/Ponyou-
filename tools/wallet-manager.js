@@ -219,6 +219,18 @@ export function buildAdaptiveTradeWalletPlan(tokenMint, amountSol, mode = "entry
   });
 }
 
+/**
+ * Stop background recovery timer. Call during process shutdown so the event
+ * loop can drain — without this, the setInterval keeps the process alive.
+ */
+export function shutdownWalletManager() {
+  if (_recoveryInterval) {
+    clearInterval(_recoveryInterval);
+    _recoveryInterval = null;
+    log("wallet_mgr", "Recovery interval cleared (shutdown)");
+  }
+}
+
 export function isMultiWalletEnabled() {
   return !!(config.multiWallet?.enabled && _wallets.size > 1);
 }
