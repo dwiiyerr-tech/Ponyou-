@@ -193,7 +193,7 @@ Audit-source: Gemini + Claude verified (lines 1323, 1332, 1406, 1416 index.js)
 ---
 
 ## PR-014: Integration Gaps — Narrative Feedback + Zombie Wallets + Partial TP Guard
-Status: ready_for_review
+Status: done
 Priority: high
 Safety: needs_review
 Goal: Fix 3 integration gaps yang terverifikasi: (1) recordRuggedNarrativesForExit tidak pernah dipanggil di index.js — semua exit paths harus feed ke narrative blocklist. (2) getAllWallets() tidak filter by decay score — zombie wallets makan Geyser subscription slots. (3) Partial TP idempotency guard — cek jika partial TP sudah landing sebelum retry untuk hindari double-sell.
@@ -213,7 +213,7 @@ Audit-source: Gemini + Claude verified
 ---
 
 ## PR-015: State Pruning + Kelly Outlier Cap
-Status: ready_for_review
+Status: done
 Priority: medium
 Safety: safe
 Goal: (1) state-pruner.js — arsipkan posisi closed > 7 hari ke closed-positions-archive.json, pruning otomatis tiap startup dan tiap 24 jam. (2) Kelly outlier cap — clamp payoffRatio max 5x, enforce min 10 trades sebelum Kelly aktif, tambah volatility dampener untuk memecoin high-variance.
@@ -233,7 +233,7 @@ Audit-source: Gemini + Claude verified
 ---
 
 ## PR-016: Dashboard Security — Auth + IPC File Lock
-Status: ready_for_review
+Status: done
 Priority: medium
 Safety: safe
 Goal: (1) Dashboard auth: Bearer token sederhana di header — token di-generate saat startup, disimpan di dashboard-token.txt, dikonfirmasi via cookie/localStorage di browser. (2) IPC file lock: gunakan rename-atomic pattern (tmp write + rename) untuk dashboard-cmd.json agar tidak ada race condition baca/tulis.
@@ -255,7 +255,7 @@ Audit-source: Gemini + Claude verified
 ---
 
 ## PR-017: Market Heatmap — Dynamic maxPositions + Regime-Aware Sizing
-Status: ready_for_review
+Status: done
 Priority: medium
 Safety: needs_review
 Goal: Market heatmap dari GMGN API data untuk dynamically adjust maxPositions: DEAD market=1, COLD=2, NORMAL=3, HOT=4, FRENZY=5. Integrasikan dengan capital-sizing.js sehingga Kelly sizing aware terhadap overall market regime, bukan hanya per-token signal.
