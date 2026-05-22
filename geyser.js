@@ -308,7 +308,7 @@ export function startGeyserStream({ onEvent, onDisconnect = null, commitment = "
   }
 
   let wallets = [];
-  try { wallets = listSmartWallets().map((w) => w.address); }
+  try { wallets = listSmartWallets({ minDecayMultiplier: 0.5 }).map((w) => w.address); }
   catch (e) { log("geyser_warn", `listSmartWallets failed: ${e.message}`); }
 
   const stream = new GeyserStream({

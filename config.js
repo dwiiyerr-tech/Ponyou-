@@ -200,6 +200,12 @@ export const config = {
     resetOnNewSession: u.tradingPlan?.resetOnNewSession  ?? u.tradingPlanResetOnNewSession ?? false,
   },
 
+  // ─── Exit Slippage ───────────────────────
+  exitSlippage: {
+    steps:       u.exitSlippage?.steps       ?? [1, 5, 10, 20],
+    maxAttempts: u.exitSlippage?.maxAttempts ?? 4,
+  },
+
   // ─── Risk Limits ─────────────────────────
   risk: {
     maxPositions:    u.maxPositions    ?? 3,
