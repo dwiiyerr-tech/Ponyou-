@@ -117,7 +117,7 @@ Added: 2026-05-21
 ---
 
 ## PR-011: Vault Profit Sweep + Trading Plan 30
-Status: ready_for_review
+Status: done
 Priority: high
 Safety: needs_review
 Goal: (1) Vault sweep: auto-kirim % profit harian/mingguan ke wallet vault yang bisa dikonfigurasi — threshold %, interval hari, on/off toggle, jumlah minimum sweep. (2) Trading Plan 30: mode trading dengan target 30 trades per sesi yang bisa di-setting, diaktifkan/dimatikan, dengan tracking progress dan auto-stop saat target tercapai.
@@ -133,8 +133,40 @@ Tasks:
 - [x] Trading plan tracking: progress counter, auto-stop saat target tercapai, reset manual via Telegram /resetplan (worker: claude)
 - [x] Config block: vault.sweep.* dan tradingPlan.* di user-config.json (worker: claude)
 - [x] Write tests: sweep threshold, auto-stop at target, vault send gate, toggle on/off (worker: claude)
-- [ ] Review & finalize (worker: claude)
+- [x] Review & finalize (worker: claude)
 Added: 2026-05-21
+
+---
+
+## PR-012: Web Dashboard — localhost monitoring + control UI
+Status: ready_for_review
+Priority: high
+Safety: safe
+Goal: Express + WebSocket localhost dashboard with 3 tabs (Dashboard, Commands, Settings), 13-step setup wizard, file-based IPC to bot process. Standalone process (node dashboard.js), state read from JSON files, WebSocket pushes live state every 2s.
+Workers:
+  research: claude
+  build: codex
+  review: claude
+Tasks:
+- [x] Design & architecture spec approved                                                            (worker: claude)
+- [x] Task 1: Install deps (express, ws) + scaffold directory structure                             (worker: claude)
+- [x] Task 2: dashboard/state-reader.js + tests                                                     (worker: claude)
+- [x] Task 3: dashboard/command-writer.js + tests                                                   (worker: claude)
+- [x] Task 4: dashboard/config-writer.js (read/write user-config.json, mask private key) + tests    (worker: claude)
+- [x] Task 5: dashboard/ipc.js (write dashboard-cmd.json, poll response 5s timeout) + tests        (worker: claude)
+- [x] Task 6: dashboard/log-buffer.js (ring buffer 200 lines) + tests                              (worker: claude)
+- [x] Task 7: dashboard/routes/api.js (REST /api/*) + tests                                        (worker: claude)
+- [x] Task 8: dashboard/routes/wizard.js (REST /wizard/*) + tests                                  (worker: claude)
+- [x] Task 9: dashboard/server.js (Express + WebSocket + 2s push loop)                             (worker: claude)
+- [x] Task 10: dashboard/public/style.css (dark theme)                                             (worker: claude)
+- [x] Task 11: dashboard/public/app.js (WebSocket client + tab switching + UI logic)               (worker: claude)
+- [x] Task 12: dashboard/public/index.html (3-tab UI)                                              (worker: claude)
+- [x] Task 13: dashboard/public/wizard.html (13-step setup wizard)                                 (worker: claude)
+- [x] Task 14: dashboard.js entrypoint + index.js patch (handleDashboardCommand + IPC poll)        (worker: claude)
+- [x] Task 15: Integration test — smoke test passes, 612/612 full suite                            (worker: claude)
+- [x] Review & finalize                                                                             (worker: claude)
+Added: 2026-05-22
+Plan: docs/superpowers/plans/2026-05-22-dashboard.md
 
 ---
 
