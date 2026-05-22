@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Ponyou Setup Wizard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wizard-wrap">
+  <div style="text-align:center;margin-bottom:1.5rem">
+    <h1 style="font-size:22px">🧙 Ponyou Setup Wizard</h1>
+    <p style="color:var(--muted);font-size:13px">Step <span id="stepNum">1</span> of 13</p>
+  </div>
+  <div class="wizard-progress"><div class="fill" id="wizProgress" style="width:7.7%"></div></div>
+  <div id="wizardSteps"></div>
+  <div class="wizard-nav">
+    <button class="btn" id="btnBack" onclick="wizBack()" disabled>← Back</button>
+    <div>
+      <button class="btn" onclick="wizSkip()" id="btnSkip">Skip</button>
+      <button class="btn primary" id="btnNext" onclick="wizNext()">Next →</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const STEPS = [
+  {
+    title: "1/13 — Wallet & RPC",
+    required: true,
+    fields: [
+      { key: "walletAddress", label: "Wallet Address", type: "text", hint: "Your Solana wallet public key", required: true },
+      { key: "privateKey", label: "Private Key (bs58)", type: "password", hint: "Stored locally only, never sent anywhere", required: true },
+      { key: "rpcUrl", label: "Primary RPC URL", type: "text", hint: "e.g. https://mainnet.helius-rpc.com/?api-key=…" },
+      { key: "backupRpcUrl1", label: "Backup RPC 1 (optional)", type: "text" },
+      { key: "backupRpcUrl2", label: "Backup RPC 2 (optional)", type: "text" },
+    ]
+  },
+  {
+    title: "2/13 — Telegram",
+    required: true,
+    fields: [
+      { key: "telegramBotToken", label: "Bot Token", type: "password", hint: "From @BotFather" },
+      { key: "telegramChatId", label: "Chat ID", type: "text", hint: "Your Telegram user/group chat ID" },
+    ],
+    extra: '<button class="btn" onclick="testTelegram()" style="margin-top:.75rem">📨 Send Test Message</button>'
+  },
+  {
+    title: "3/13 — LLM / AI Model",
+    fields: [
+      { key: "llmProvider", label: "Provider", type: "select", options: ["openrouter","openai","custom"], hint: "LLM provider" },
+      { key: "llmModel", label: "Model", type: "text", hint: "e.g. minimax/minimax-m2.5" },
+      { key: "llmBaseUrl", label: "Base URL (optional)", type: "text", hint: "Leave blank for default" },
+    ]
+  },
+  {
+    title: "4/13 — Strategy & Trading Mode",
+    fields: [
+      { key: "strategy", label: "Strategy Preset", type: "select", options: ["scalp","conservative","aggressive"], hint: "Default entry/exit strategy" },
+      { key: "confirmMode", label: "Confirm Mode", type: "checkbox", hint: "Require Telegram /yes before each buy" },
+      { key: "confirmTtlMin", label: "Confirm TTL (min)", type: "number", hint: "How long to wait for approval (default 5)" },
+    ]
+  },
+  {
+    title: "5/13 — Screening Filters",
+    fields: [
+      { key: "minMcap", label: "Min Market Cap ($)", type: "number", hint: "Default 150000" },
+      { key: "maxMcap", label: "Max Market Cap ($)", type: "number", hint: "Default 10000000" },
+      { key: "minTvl", label: "Min TVL ($)", type: "number", hint: "Default 10000" },
+      { key: "maxTvl", label: "Max TVL ($)", type: "number", hint: "Default 150000" },
+      { key: "minVolume", label: "Min Volume ($)", type: "number", hint: "Default 500" },
+      { key: "minHolders", label: "Min Holders", type: "number", hint: "Default 500" },
+      { key: "maxBundlePct", label: "Max Bundle %", type: "number", hint: "Default 30" },
+      { key: "maxBotHoldersPct", label: "Max Bot Holders %", type: "number", hint: "Default 30" },
+      { key: "maxTop10Pct", label: "Max Top10 Concentration %", type: "number", hint: "Default 60" },
+    ]
+  },
+  {
+    title: "6/13 — Position Management",
+    fields: [
+      { key: "deployAmountSol", label: "Deploy Amount (SOL)", type: "number", hint: "Default 0.5" },
+      { key: "gasReserve", label: "Gas Reserve (SOL)", type: "number", hint: "Default 0.2" },
+      { key: "positionSizePct", label: "Position Size %", type: "number", hint: "Default 0.35" },
+      { key: "stopLossPct", label: "Stop Loss %", type: "number", hint: "e.g. -15 (null = strategy default)" },
+      { key: "takeProfitPct", label: "Take Profit %", type: "number", hint: "e.g. 50 (null = strategy default)" },
+      { key: "autoTakeProfitPct", label: "Auto Take Profit %", type: "number", hint: "Default 50" },
+      { key: "trailingTakeProfit", label: "Trailing Take Profit", type: "checkbox", hint: "Enable trailing TP" },
+      { key: "trailingTriggerPct", label: "Trailing Trigger %", type: "number", hint: "Activate at X% PnL, default 5" },
+      { key: "trailingDropPct", label: "Trailing Drop %", type: "number", hint: "Close when drops X% from peak, default 6" },
+    ]
+  },
+  {
+    title: "7/13 — Pilot / Daily Plan",
+    fields: [
+      { key: "pilotEnabled", label: "Pilot Mode", type: "checkbox", hint: "Enable compound daily plan" },
+      { key: "pilotCapitalUsd", label: "Starting Capital ($)", type: "number", hint: "Default 10" },
+      { key: "dailyTargetPct", label: "Daily Target %", type: "number", hint: "Default 25" },
+      { key: "dailyStopLossPct", label: "Daily Stop Loss %", type: "number", hint: "Default -10" },
+      { key: "planDays", label: "Plan Duration (days)", type: "number", hint: "Default 30" },
+      { key: "maxConsecutiveLosses", label: "Max Consecutive Losses", type: "number", hint: "Triggers learning mode (0=disabled), default 3" },
+    ]
+  },
+  {
+    title: "8/13 — Daily Trade Guard",
+    fields: [
+      { key: "dailyTradeGuardEnabled", label: "Enable Daily Trade Guard", type: "checkbox" },
+      { key: "dailyTradeGuardMaxWins", label: "Max Wins/Day", type: "number", hint: "Default 3" },
+      { key: "dailyTradeGuardMaxLosses", label: "Max Losses/Day", type: "number", hint: "Default 3" },
+      { key: "learningModeDurationMin", label: "Learning Mode Duration (min)", type: "number", hint: "Default 60" },
+    ]
+  },
+  {
+    title: "9/13 — Trading Plan 30",
+    fields: [
+      { key: "tradingPlan.enabled", label: "Enable Trading Plan", type: "checkbox" },
+      { key: "tradingPlan.targetTrades", label: "Target Trades/Session", type: "number", hint: "Default 30" },
+      { key: "tradingPlan.resetOnNewSession", label: "Auto-reset on New Session", type: "checkbox" },
+    ]
+  },
+  {
+    title: "10/13 — Vault / Savings",
+    fields: [
+      { key: "vault.sweep.enabled", label: "Enable Vault Sweep", type: "checkbox" },
+      { key: "vault.sweep.vaultWallet", label: "Vault Wallet Address", type: "text", hint: "SOL destination wallet" },
+      { key: "vault.sweep.sweepPct", label: "Sweep %", type: "number", hint: "Default 35" },
+      { key: "vault.sweep.sweepIntervalDays", label: "Sweep Interval (days)", type: "number", hint: "Default 7" },
+      { key: "vault.sweep.minSweepSol", label: "Min Sweep SOL", type: "number", hint: "Default 0.001" },
+    ]
+  },
+  {
+    title: "11/13 — Kelly & Risk",
+    fields: [
+      { key: "kellyEnabled", label: "Enable Kelly Sizing", type: "checkbox" },
+      { key: "kellyFraction", label: "Kelly Fraction", type: "number", hint: "Default 0.5 (half-Kelly)" },
+      { key: "kellyMinFraction", label: "Min Fraction", type: "number", hint: "Default 0.1" },
+      { key: "kellyMaxFraction", label: "Max Fraction", type: "number", hint: "Default 0.8" },
+      { key: "maxPositions", label: "Max Open Positions", type: "number", hint: "Default 3" },
+      { key: "maxDeployAmount", label: "Max Deploy Amount (%)", type: "number", hint: "Default 50" },
+    ]
+  },
+  {
+    title: "12/13 — Advanced Features",
+    fields: [
+      { key: "jitoEnabled", label: "Enable Jito Priority Lane", type: "checkbox" },
+      { key: "jitoRegion", label: "Jito Region", type: "select", options: ["fra","ny","ams","tyo"] },
+      { key: "fastTrackEnabled", label: "Enable Fast Track Entry", type: "checkbox", hint: "Skip LLM for unambiguous buys" },
+      { key: "multiWalletEnabled", label: "Enable Multi-Wallet", type: "checkbox" },
+      { key: "strategyEvolutionEnabled", label: "Enable Strategy Evolution", type: "checkbox" },
+      { key: "darwinEnabled", label: "Enable Darwin Signal Weighting", type: "checkbox" },
+      { key: "managementIntervalMin", label: "Management Interval (min)", type: "number", hint: "Default 10" },
+      { key: "screeningIntervalMin", label: "Screening Interval (min)", type: "number", hint: "Default 30" },
+    ]
+  },
+  {
+    title: "13/13 — Review & Save",
+    review: true,
+  }
+];
+
+let currentStep = 0;
+let formData = {};
+
+async function loadExistingConfig() {
+  try {
+    const res = await fetch("/wizard/config");
+    formData = await res.json();
+  } catch {}
+  renderStep();
+}
+
+function getNestedVal(obj, key) {
+  return key.split(".").reduce((o, k) => o?.[k], obj);
+}
+
+function setNestedVal(obj, key, val) {
+  const parts = key.split(".");
+  let o = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    o[parts[i]] = o[parts[i]] || {};
+    o = o[parts[i]];
+  }
+  o[parts[parts.length - 1]] = val;
+}
+
+function renderStep() {
+  const s = STEPS[currentStep];
+  document.getElementById("stepNum").textContent = currentStep + 1;
+  document.getElementById("wizProgress").style.width = `${((currentStep + 1) / 13) * 100}%`;
+  document.getElementById("btnBack").disabled = currentStep === 0;
+  document.getElementById("btnSkip").style.display = (s.required || s.review) ? "none" : "inline-block";
+  document.getElementById("btnNext").textContent = s.review ? "💾 Save & Launch" : "Next →";
+
+  const container = document.getElementById("wizardSteps");
+  if (s.review) {
+    const safe = JSON.parse(JSON.stringify(formData));
+    if (safe.privateKey) safe.privateKey = safe.privateKey.slice(0,4) + "…" + safe.privateKey.slice(-4);
+    container.innerHTML = `<div class="wizard-step"><h2>${s.title}</h2>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:1rem">Review your configuration before saving:</p>
+      <pre style="background:var(--bg);padding:1rem;border-radius:6px;font-size:12px;overflow:auto;max-height:340px">${JSON.stringify(safe, null, 2)}</pre>
+    </div>`;
+    return;
+  }
+
+  let html = `<div class="wizard-step"><h2>${s.title}</h2>`;
+  for (const f of (s.fields || [])) {
+    const val = getNestedVal(formData, f.key) ?? "";
+    if (f.type === "checkbox") {
+      html += `<div class="field-row"><label>
+        <input type="checkbox" data-key="${f.key}" ${val ? "checked" : ""}> ${f.label}
+      </label>${f.hint ? `<div class="field-hint">${f.hint}</div>` : ""}</div>`;
+    } else if (f.type === "select") {
+      const opts = (f.options || []).map(o => `<option value="${o}" ${val===o?"selected":""}>${o}</option>`).join("");
+      html += `<div class="field-row"><label>${f.label}${f.required?" *":""}</label>
+        <select data-key="${f.key}">${opts}</select>
+        ${f.hint ? `<div class="field-hint">${f.hint}</div>` : ""}</div>`;
+    } else {
+      html += `<div class="field-row"><label>${f.label}${f.required?" *":""}</label>
+        <input type="${f.type}" data-key="${f.key}" value="${val}" placeholder="${f.hint||""}">
+        ${f.hint ? `<div class="field-hint">${f.hint}</div>` : ""}</div>`;
+    }
+  }
+  if (s.extra) html += s.extra;
+  html += "</div>";
+  container.innerHTML = html;
+}
+
+function collectStep() {
+  const s = STEPS[currentStep];
+  if (s.review) return;
+  document.querySelectorAll("[data-key]").forEach(el => {
+    const key = el.dataset.key;
+    let val;
+    if (el.type === "checkbox") val = el.checked;
+    else if (el.type === "number") val = el.value !== "" ? Number(el.value) : undefined;
+    else val = el.value;
+    if (val !== undefined && val !== "") setNestedVal(formData, key, val);
+  });
+}
+
+function wizNext() {
+  const s = STEPS[currentStep];
+  collectStep();
+  if (s.review) return saveWizard();
+  if (s.required) {
+    for (const f of (s.fields||[])) {
+      if (f.required && !getNestedVal(formData, f.key)) {
+        showToast(`${f.label} is required`, false); return;
+      }
+    }
+  }
+  if (currentStep < 12) { currentStep++; renderStep(); }
+}
+
+function wizBack() {
+  collectStep();
+  if (currentStep > 0) { currentStep--; renderStep(); }
+}
+
+function wizSkip() {
+  if (currentStep < 12) { currentStep++; renderStep(); }
+}
+
+async function saveWizard() {
+  try {
+    const res = await fetch("/wizard/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(formData),
+    });
+    const data = await res.json();
+    if (data.ok) { showToast("✅ Config saved!", true); setTimeout(() => location.href = "/", 1500); }
+    else showToast(data.error || "Save failed", false);
+  } catch (e) { showToast(e.message, false); }
+}
+
+async function testTelegram() {
+  collectStep();
+  const res = await fetch("/wizard/test-telegram");
+  const data = await res.json();
+  showToast(data.ok ? "✅ Test message sent!" : data.error, data.ok);
+}
+
+function showToast(msg, ok = true) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = `toast show ${ok ? "ok" : "error"}`;
+  setTimeout(() => t.className = "toast", 3000);
+}
+
+loadExistingConfig();
+</script>
+</body>
+</html>

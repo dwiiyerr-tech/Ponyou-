@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ponyou Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="header">
+  <span class="status-dot" id="statusDot"></span>
+  <span id="statusText">Connecting…</span>
+  <span class="balance" id="balance">— SOL</span>
+  <span class="pnl" id="pnlToday">—</span>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+    <button class="tab-btn" data-tab="commands">Commands</button>
+    <button class="tab-btn" data-tab="settings">⚙ Settings</button>
+  </div>
+</div>
+
+<!-- TAB: DASHBOARD -->
+<div class="tab-pane active" id="tab-dashboard">
+  <div class="main-grid">
+    <div class="panel">
+      <h3>Open Positions</h3>
+      <table>
+        <thead><tr><th>Token</th><th>PnL%</th><th>Hold</th><th>Entry SOL</th><th>Peak</th></tr></thead>
+        <tbody id="positionsBody"><tr><td colspan="5" style="color:var(--muted)">No open positions</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h3>Bot Controls</h3>
+      <div class="btn-row" style="margin-bottom:1rem">
+        <button class="btn primary" onclick="sendCmd('/auto on')">▶ Auto ON</button>
+        <button class="btn danger" onclick="sendCmd('/auto off')">⏹ Auto OFF</button>
+      </div>
+
+      <div style="margin-bottom:1rem">
+        <label style="font-size:12px;color:var(--muted)">Strategy</label>
+        <div style="display:flex;gap:.5rem;margin-top:.3rem">
+          <select id="stratSelect">
+            <option>scalp</option>
+            <option>conservative</option>
+            <option>aggressive</option>
+          </select>
+          <button class="btn" onclick="setStrategy()">Set</button>
+        </div>
+      </div>
+
+      <h3 style="margin-top:1rem">Feature Toggles</h3>
+      <div id="featureToggles">
+        <div class="toggle-row">
+          <span>Vault sweep</span>
+          <label class="toggle"><input type="checkbox" id="toggle-vault" onchange="toggleFeature('vault',this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span>Trading plan</span>
+          <label class="toggle"><input type="checkbox" id="toggle-tradingPlan" onchange="toggleFeature('tradingPlan',this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span>Daily guard</span>
+          <label class="toggle"><input type="checkbox" id="toggle-dailyGuard" onchange="toggleFeature('dailyGuard',this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span>Confirm mode</span>
+          <label class="toggle"><input type="checkbox" id="toggle-confirm" onchange="sendCmd(this.checked?'/confirm on':'/confirm off')"><span class="slider"></span></label>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem" id="planProgress" hidden>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted)">
+          <span>Trading Plan</span><span id="planProgressText">0/30</span>
+        </div>
+        <div class="progress-bar"><div class="fill" id="planProgressBar" style="width:0%"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="log-panel">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
+      <span style="font-size:12px;color:var(--muted)">LIVE LOG</span>
+      <button class="btn" onclick="clearLog()" style="font-size:11px;padding:.2rem .6rem">Clear</button>
+    </div>
+    <div class="log-list" id="logList"></div>
+  </div>
+</div>
+
+<!-- TAB: COMMANDS -->
+<div class="tab-pane" id="tab-commands">
+  <div class="cmd-grid">
+
+    <div class="cmd-section">
+      <h3>🤖 Bot Control</h3>
+      <div class="btn-row">
+        <button class="btn" onclick="sendCmd('/auto on')">Auto ON</button>
+        <button class="btn" onclick="sendCmd('/auto off')">Auto OFF</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="sendCmd('/confirm on')">Confirm ON</button>
+        <button class="btn" onclick="sendCmd('/confirm off')">Confirm OFF</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="sendCmd('/agent on')">Agent ON</button>
+        <button class="btn" onclick="sendCmd('/agent off')">Agent OFF</button>
+      </div>
+      <div class="btn-row" style="margin-top:.5rem">
+        <button class="btn" onclick="sendCmd('/menu')">Menu</button>
+        <button class="btn" onclick="sendCmd('/status')">Status</button>
+        <button class="btn" onclick="sendCmd('/metrics')">Metrics</button>
+        <button class="btn" onclick="sendCmd('/wallets')">Wallets</button>
+      </div>
+    </div>
+
+    <div class="cmd-section">
+      <h3>📈 Trading</h3>
+      <div class="btn-row">
+        <button class="btn success" onclick="sendCmd('/continue')">▶ Continue</button>
+        <button class="btn danger" onclick="sendCmd('/stoptrade')">⏹ Stop Trade</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="sendCmd('/pnl')">PnL History</button>
+      </div>
+      <h3 style="margin-top:1rem">⏳ Pending Intents</h3>
+      <div id="pendingList" style="font-size:13px;color:var(--muted)">Loading…</div>
+    </div>
+
+    <div class="cmd-section">
+      <h3>🎯 Strategy</h3>
+      <div style="display:flex;gap:.5rem;margin-bottom:.75rem">
+        <select id="stratSelect2">
+          <option>scalp</option>
+          <option>conservative</option>
+          <option>aggressive</option>
+        </select>
+        <button class="btn primary" onclick="setStrategy2()">Set</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="sendCmd('/strategies')">List Strategies</button>
+      </div>
+
+      <h3 style="margin-top:1rem">🛡 Guards & Plans</h3>
+      <div class="btn-row">
+        <button class="btn" onclick="sendCmd('/dailyguard on')">Guard ON</button>
+        <button class="btn" onclick="sendCmd('/dailyguard off')">Guard OFF</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="sendCmd('/plan')">Plan Status</button>
+        <button class="btn" onclick="resetPlan()">Reset Plan</button>
+      </div>
+    </div>
+
+    <div class="cmd-section">
+      <h3>☠ Kill Switch</h3>
+      <div class="input-row">
+        <input type="text" id="killMint" placeholder="Token mint address…">
+      </div>
+      <div class="btn-row" style="margin-top:.5rem">
+        <button class="btn danger" onclick="killToken()">Kill Token</button>
+        <button class="btn" onclick="unkillToken()">Unkill</button>
+        <button class="btn" onclick="sendCmd('/killstate')">Kill State</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- TAB: SETTINGS -->
+<div class="tab-pane" id="tab-settings">
+  <div style="max-width:480px;margin:2rem auto;padding:0 1rem">
+    <div class="panel">
+      <h3>Setup Wizard</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Full 13-step configuration walkthrough</p>
+      <a href="/wizard.html" class="btn primary" style="display:inline-block;text-decoration:none">🧙 Open Setup Wizard</a>
+    </div>
+    <div class="panel" style="margin-top:1rem">
+      <h3>Quick Config</h3>
+      <div id="quickConfig">Loading…</div>
+      <button class="btn primary" onclick="saveQuickConfig()" style="margin-top:1rem">💾 Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

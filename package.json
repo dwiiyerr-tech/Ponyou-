@@ -35,16 +35,19 @@
     "bs58": "^5.0.0",
     "chalk": "^5.6.2",
     "dotenv": "^17.3.1",
+    "express": "^4.22.2",
     "jsonrepair": "^3.13.3",
     "neural-trader": "^2.8.11",
     "node-cron": "^3.0.3",
     "openai": "^4.73.0",
-    "ruflo": "^3.7.0-alpha.69"
+    "ruflo": "^3.7.0-alpha.69",
+    "ws": "^8.20.1"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "devDependencies": {
+    "supertest": "^7.2.2",
     "vitest": "^4.1.6"
   },
   "bin": {
