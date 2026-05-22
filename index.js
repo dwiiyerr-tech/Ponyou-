@@ -32,6 +32,7 @@ import {
   listPendingIntents, getIntent, consumeIntent,
 } from "./intents.js";
 import { trackPosition, recordClose, getTrackedPosition, getState, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl, cleanStaleTestPositions } from "./state.js";
+import { pruneClosedPositions } from "./state-pruner.js";
 import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
 import {
   startTimer, elapsedMs, recordLatency, recordError, recordCounter,
@@ -125,6 +126,8 @@ import {
   getDailyTradeGuardStatus, recordDailyTradeOutcome,
   decideDailyTradeGuard, isDailyTradeGuardEntryBlocked,
 } from "./daily-trade-guard.js";
+import { withProgressiveSlippage, getExitSlippage } from "./exit-slippage.js";
+import { isPartialTPLanded, markPartialTPLanded, clearPartialTPGuard } from "./partial-tp-guard.js";
 
 log("startup", "Ponyou AI Agent starting...");
 const executionMode = resolveExecutionMode();
@@ -226,6 +229,8 @@ if ((startupReadiness.warnings || []).length > 0) {
 
 const staleCleaned = cleanStaleTestPositions();
 if (staleCleaned > 0) log("startup", `Removed ${staleCleaned} stale test positions from state`);
+const { pruned: prunedArchive } = pruneClosedPositions();
+if (prunedArchive > 0) log("startup", `Archived ${prunedArchive} old closed positions`);
 
 // ─── Auto-init trading plan ───────────────────────────────────
 if (!getTradingPlan() && config.pilot.enabled) {
@@ -1315,30 +1320,45 @@ async function checkDeterministicExits(tokens) {
     // Partial TP: sell a fraction once when PnL crosses threshold, keep the rest running.
     const partial = checkPartialTP(currentPnlPct, tracked.partial_tp_done === true);
     if (partial.trigger && token.balance > 0) {
+      const posKey = token.position_key || token.mint;
+      if (isPartialTPLanded(posKey)) {
+        log("strategy", `PARTIAL TP skipped — already landed for ${token.symbol}`);
+        continue;
+      }
       const sellAmount = token.balance * (partial.sell_pct / 100);
       log("strategy", `PARTIAL TP: ${token.symbol} — ${partial.reason}`);
       const partialStartAt = Date.now();
-      const partialRes = await swapToken({
-        token_in: token.mint, token_out: "SOL",
-        amount: sellAmount, slippage: 1.0,
-        wallet: token.wallet_address ? getWalletByAddress(token.wallet_address)?.keypair || null : null,
-      });
+      const { result: partialRes, attempt: partialAttempt, stuck: partialStuck } = await withProgressiveSlippage(
+        (slippage) => swapToken({
+          token_in: token.mint, token_out: "SOL",
+          amount: sellAmount, slippage,
+          wallet: token.wallet_address ? getWalletByAddress(token.wallet_address)?.keypair || null : null,
+        })
+      );
       recordExecutionQuality({
         walletAddress: token.wallet_address || null,
         provider: partialRes?.execution_provider || "auto",
         mode: "sell",
         split: false,
         marketCondition: getMarketIntelligence().condition,
-        slippage: 1.0,
+        slippage: getExitSlippage(partialAttempt),
         success: !!(partialRes.success || partialRes.dry_run),
         latencyMs: Date.now() - partialStartAt,
       });
       if (partialRes.success || partialRes.dry_run) {
+        markPartialTPLanded(posKey);
         markPartialTPDone(token.position_key || token.mint, token.wallet_address || null);
         if (telegramEnabled()) {
           sendHTML(
             `💰 <b>Partial TP</b> · ${htmlEscape(token.symbol || "?")}\n` +
             `Sold ${partial.sell_pct}% @ ${fmt.pct(currentPnlPct)}`
+          ).catch(() => {});
+        }
+      } else if (partialStuck) {
+        log("strategy", `PARTIAL TP STUCK for ${token.symbol}: all ${partialAttempt} exit attempts failed`);
+        if (telegramEnabled()) {
+          sendHTML(
+            `⚠️ <b>POSITION STUCK</b>: ${htmlEscape(token.symbol || "?")} — partial TP exit failed after ${partialAttempt} attempts. Manual intervention needed.`
           ).catch(() => {});
         }
       } else {
@@ -1401,11 +1421,13 @@ export async function runManagementCycle({ silent = false } = {}) {
       log("strategy", `EXIT: ${exit.symbol} — ${exit.reason}`);
       const tokenData = tokens.find(t => (t.position_key || t.mint) === (exit.position_key || exit.mint));
       const exitStartAt = Date.now();
-      const res = await swapToken({
-        token_in: exit.mint, token_out: "SOL",
-        amount: tokenData?.balance, slippage: 1.0,
-        wallet: exit.wallet_address ? getWalletByAddress(exit.wallet_address)?.keypair || null : null,
-      });
+      const { result: res, attempt: exitAttempt, stuck: exitStuck } = await withProgressiveSlippage(
+        (slippage) => swapToken({
+          token_in: exit.mint, token_out: "SOL",
+          amount: tokenData?.balance, slippage,
+          wallet: exit.wallet_address ? getWalletByAddress(exit.wallet_address)?.keypair || null : null,
+        })
+      );
       recordSwapOutcome({ success: !!(res.success || res.dry_run) });
       recordExecutionQuality({
         walletAddress: exit.wallet_address || null,
@@ -1413,16 +1435,27 @@ export async function runManagementCycle({ silent = false } = {}) {
         mode: "sell",
         split: false,
         marketCondition: getMarketIntelligence().condition,
-        slippage: 1.0,
+        slippage: getExitSlippage(exitAttempt),
         success: !!(res.success || res.dry_run),
         latencyMs: Date.now() - exitStartAt,
       });
+      if (exitStuck) {
+        log("strategy", `EXIT STUCK: ${exit.symbol} — all ${exitAttempt} exit attempts failed`);
+        if (telegramEnabled()) {
+          sendHTML(
+            `⚠️ <b>POSITION STUCK</b>: ${htmlEscape(exit.symbol || "?")} — exit failed after ${exitAttempt} attempts. Manual intervention needed.`
+          ).catch(() => {});
+        }
+        continue;
+      }
       if (res.success || res.dry_run) {
         // Await close-flush: a crash before this lands on disk means the next
         // management cycle would re-attempt the exit on a position already
         // sold, hitting Jupiter with zero balance. Cheap insurance.
         await recordClose(exit.position_key || exit.mint, exit.reason, exit.wallet_address || null);
         _rugMonitor?.detachPosition(exit.position_key || exit.mint);
+        clearPartialTPGuard(exit.position_key || exit.mint);
+        recordRuggedNarrativesForExit({ reason: exit.reason, token: tokenData || {} });
         const tradePnl = exit.pnl_pct || 0;
         recordTrade(!exit.is_loss);
         await handleDailyTradeGuardOutcome(!exit.is_loss, {
@@ -1613,6 +1646,7 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
             if (tokenOut === "SOL" || tokenOut === "So11111111111111111111111111111111111111112") {
               await recordClose(tokenIn, "LLM Manager Decision", walletAddress);
               _rugMonitor?.detachPosition(walletAddress ? `${tokenIn}::${walletAddress}` : tokenIn);
+              recordRuggedNarrativesForExit({ reason: "LLM Manager Decision", token: {} });
               recordTrade(true); // assume LLM exits for profit
               await handleDailyTradeGuardOutcome(true, {
                 mint: tokenIn,
@@ -2233,7 +2267,7 @@ function handleGeyserDisconnect(attempt) {
 }
 
 async function seedSmartWallets() {
-  if (listSmartWallets().length > 0) return; // already populated
+  if (listSmartWallets({ minDecayMultiplier: 0.5 }).length > 0) return; // already populated (active wallets only)
   log("smart_wallets", "smart-wallets.json empty — running auto-discovery…");
   try {
     const result = await discoverSmartWallets({ source_tokens: 5, min_winrate: 0.6, min_trades: 5, auto_add: false });
@@ -2248,7 +2282,7 @@ async function seedSmartWallets() {
     if (qualified.length > 0) {
       log("smart_wallets", `Seeded ${qualified.length} smart wallets from discovery pipeline`);
       if (_geyserStream) {
-        const addrs = listSmartWallets().map(w => w.address);
+        const addrs = listSmartWallets({ minDecayMultiplier: 0.5 }).map(w => w.address);
         _geyserStream.refreshSubscriptions(addrs);
         log("smart_wallets", `Geyser subscriptions updated: ${addrs.length} wallets`);
       }
@@ -2449,6 +2483,12 @@ export function startCronJobs() {
     harvestMarketRugs({ source_tokens: 30, max_record: 10 })
       .then(r => log("cron", `Rug harvest: ${r.harvested}/${r.candidates_detected} recorded`))
       .catch(e => log("cron_error", `Rug harvest failed: ${e.message}`));
+  }));
+
+  // Daily prune: archive closed positions older than 7 days (3am UTC)
+  tasks.push(cron.schedule("0 3 * * *", () => {
+    const { pruned } = pruneClosedPositions();
+    if (pruned > 0) log("cron", `Daily prune: archived ${pruned} old closed positions`);
   }));
 
   // Vault (daily check — cron checks if 7 days elapsed)

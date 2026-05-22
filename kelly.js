@@ -23,6 +23,7 @@ export function estimateKellyInputs(trades = [], context = {}) {
   const avgWinPct = average(wins.map(t => Math.abs(t.pnl_pct || 0)));
   const avgLossPct = average(losses.map(t => Math.abs(t.pnl_pct || 0)));
   const payoffRatio = avgLossPct > 0 ? avgWinPct / avgLossPct : 0;
+  const cappedPayoffRatio = Math.min(payoffRatio, 5); // cap outlier moonbags
 
   let p = rawWinRate;
   if (context.marketCondition === "HOT") p += 0.03;
@@ -37,11 +38,15 @@ export function estimateKellyInputs(trades = [], context = {}) {
   else if (context.holderStructureRisk === "MEDIUM") p -= 0.02;
 
   p = clamp(p, 0.05, 0.95);
+  // Volatility dampener: reduce effective p when win/loss spread is extreme (memecoin high variance)
+  const volatilitySpread = avgWinPct + avgLossPct;
+  if (volatilitySpread > 200) p = clamp(p - 0.05, 0.05, 0.95);
+  else if (volatilitySpread > 100) p = clamp(p - 0.02, 0.05, 0.95);
   return {
     sample_size: sampleSize,
     raw_win_rate: Number(rawWinRate.toFixed(3)),
     p: Number(p.toFixed(3)),
-    b: Number(payoffRatio.toFixed(3)),
+    b: Number(cappedPayoffRatio.toFixed(3)),
     avg_win_pct: Number(avgWinPct.toFixed(2)),
     avg_loss_pct: Number(avgLossPct.toFixed(2)),
   };
@@ -55,7 +60,7 @@ export function computeFractionalKellySize({
   fraction = 0.5,
   minFraction = 0.1,
   maxFraction = 0.8,
-  minSampleTrades = 5,
+  minSampleTrades = 10,
 } = {}) {
   const inputs = estimateKellyInputs(trades, context);
   const rawKelly = calculateKellyFraction({ b: inputs.b, p: inputs.p });

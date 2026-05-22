@@ -10,64 +10,36 @@ You can add notes below the divider line.
 
 ## AutoWork Progress
 
-Updated: 2026-05-22T01:57:00Z
+Updated: 2026-05-22T07:45:00Z
 
-Current PR: PR-012
+Current PR: PR-014
 Current status: ready_for_review
 
 ### Agents used
-- Claude: orchestration + full implementation + review (Codex CLI broken in env)
+- Claude: orchestration + implementation + review
 
 ### Completed work
-- dashboard/state-reader.js — reads state.json, vault-state.json, trading-plan-state.json, user-config.json, execution-quality.json
-- dashboard/config-writer.js — maskPrivateKey, readConfig, writeConfig (never persists masked key)
-- dashboard/command-writer.js — writeAutomationCommand, writeDashboardCmd, readDashboardResponse
-- dashboard/log-buffer.js — LogBuffer ring buffer (200 lines) + globalLogBuffer singleton
-- dashboard/ipc.js — sendBotCommand with 5s poll timeout
-- dashboard/routes/api.js — GET /status, GET /config, POST /command, POST /toggle, POST /resetplan, POST /cmd (allowlisted)
-- dashboard/routes/wizard.js — GET /config, POST /save, GET /test-telegram
-- dashboard/server.js — Express + WebSocket, 127.0.0.1 bind, 2s state push, log streaming
-- dashboard.js — entrypoint, --port flag
-- dashboard/public/style.css — dark theme
-- dashboard/public/index.html — 3-tab UI (Dashboard, Commands, Settings)
-- dashboard/public/wizard.html — 13-step setup wizard
-- dashboard/public/app.js — WebSocket client + all UI logic
-- index.js patch — export handleIncomingTelegramMessage + checkDashboardCommands + 3s IPC poll
-- launch.sh — added `dash` and `dash4000` aliases
-- tests/dashboard-state-reader.test.js — 4 tests
-- tests/dashboard-config-writer.test.js — 5 tests
-- tests/dashboard-ipc.test.js — 2 tests
-- tests/dashboard-api-routes.test.js — 4 tests (supertest mocks)
+- recordRuggedNarrativesForExit already wired at index.js:1455 + 1646 (both exit paths)
+- smart-wallets.js: normalizeWalletRecord now preserves last_active field (root cause: decay filter was broken because field was dropped)
+- geyser.js:311: listSmartWallets({ minDecayMultiplier: 0.5 }) — zombies excluded from initial Geyser subscriptions
+- index.js:2267: seedSmartWallets() counts only active wallets (multiplier >= 0.5) to decide if seeding needed
+- partial-tp-guard.js: already implemented + wired (isPartialTPLanded/markPartialTPLanded at index.js:1321/1346)
+- tests/pr014-integration.test.js: 5 tests — narrative feedback + decay filter
+- tests/partial-tp-guard.test.js: 4 tests — idempotency, clear, prune
 
 ### Remaining work
 - none
 
 ### Changed files
-- dashboard.js (new)
-- dashboard/state-reader.js (new)
-- dashboard/config-writer.js (new)
-- dashboard/command-writer.js (new)
-- dashboard/log-buffer.js (new)
-- dashboard/ipc.js (new)
-- dashboard/routes/api.js (new)
-- dashboard/routes/wizard.js (new)
-- dashboard/server.js (new)
-- dashboard/public/style.css (new)
-- dashboard/public/index.html (new)
-- dashboard/public/wizard.html (new)
-- dashboard/public/app.js (new)
-- index.js (patched — export + IPC hook)
-- launch.sh (dash aliases added)
-- package.json + package-lock.json (express, ws, supertest added)
-- tests/dashboard-*.test.js (4 new test files)
+- smart-wallets.js (normalizeWalletRecord + last_active preservation)
+- geyser.js (listSmartWallets with minDecayMultiplier: 0.5)
+- index.js (seedSmartWallets decay-aware check)
 - PR_QUEUE.md (status + checkboxes)
 - PR_PROGRESS.md (this file)
 
 ### Tests run
-- npx vitest run tests/dashboard-*.test.js → PASS 16/16, FAIL 0
-- npx vitest run → PASS 612/612, FAIL 0
-- node --check dashboard.js dashboard/server.js ... → ALL OK
-- timeout 4 node dashboard.js --port 3099 → starts clean
+- npx vitest run tests/pr014-integration.test.js tests/partial-tp-guard.test.js → PASS 9/9, FAIL 0
+- npx vitest run → PASS 632/632, FAIL 0
 
 ### Limit status
 clear
@@ -79,7 +51,7 @@ claude -c -p "/autowork resume from PR_PROGRESS.md and PR_QUEUE.md"
 no
 
 ### Next action
-Human review of PR-012. To use: node dashboard.js (default port 3000) or source launch.sh && dash
+PR-014 ready for review. Next: PR-015 (State Pruning + Kelly Outlier Cap)
 
 ---
 

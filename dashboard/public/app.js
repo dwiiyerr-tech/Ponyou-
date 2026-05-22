@@ -1,5 +1,14 @@
 // dashboard/public/app.js
 
+// ─── Auth helper ──────────────────────────────────────
+function authFetch(url, opts = {}) {
+  const token = localStorage.getItem("dashToken") || "";
+  return fetch(url, {
+    ...opts,
+    headers: { ...(opts.headers || {}), "Authorization": `Bearer ${token}` },
+  });
+}
+
 // ─── Tab switching ────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
   btn.addEventListener("click", () => {
@@ -92,7 +101,7 @@ function clearLog() { logList.innerHTML = ""; }
 
 // ─── API helpers ─────────────────────────────────────
 async function post(url, body) {
-  const res = await fetch(url, {
+  const res = await authFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -149,7 +158,7 @@ async function loadPending() {
 
 // ─── Settings quick config ────────────────────────────
 async function loadQuickConfig() {
-  const cfg = await fetch("/api/config").then(r => r.json());
+  const cfg = await authFetch("/api/config").then(r => r.json());
   const qc = document.getElementById("quickConfig");
   if (!qc) return;
   qc.innerHTML = `
@@ -186,5 +195,12 @@ function escHtml(s) {
   return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// ─── Token initialization ────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  // Store token from URL param on first load (?token=xxx)
+  const urlToken = new URLSearchParams(window.location.search).get("token");
+  if (urlToken) { localStorage.setItem("dashToken", urlToken); history.replaceState({}, "", window.location.pathname); }
+});
+
 // Load initial status
-fetch("/api/status").then(r => r.json()).then(applyState).catch(() => {});
+authFetch("/api/status").then(r => r.json()).then(applyState).catch(() => {});

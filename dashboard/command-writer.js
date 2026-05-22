@@ -9,12 +9,16 @@ export function _setBasePath(p) { BASE_PATH = p; }
 
 export function writeAutomationCommand(cmd) {
   const fp = path.join(BASE_PATH, "automation-command.json");
-  fs.writeFileSync(fp, JSON.stringify({ cmd, ts: new Date().toISOString() }));
+  const tmp = fp + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify({ cmd, ts: new Date().toISOString() }));
+  fs.renameSync(tmp, fp);
 }
 
 export function writeDashboardCmd({ id, cmd, args = [] }) {
   const fp = path.join(BASE_PATH, "dashboard-cmd.json");
-  fs.writeFileSync(fp, JSON.stringify({ id, cmd, args, ts: new Date().toISOString() }));
+  const tmp = fp + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify({ id, cmd, args, ts: new Date().toISOString() }));
+  fs.renameSync(tmp, fp);
 }
 
 export function readDashboardResponse(id) {

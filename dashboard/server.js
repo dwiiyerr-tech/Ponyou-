@@ -1,4 +1,5 @@
 import express from "express";
+import cookieParser from "cookie-parser";
 import { WebSocketServer } from "ws";
 import { createServer } from "http";
 import path from "path";
@@ -8,13 +9,31 @@ import { readBotState } from "./state-reader.js";
 import { globalLogBuffer } from "./log-buffer.js";
 import { createApiRouter } from "./routes/api.js";
 import { createWizardRouter } from "./routes/wizard.js";
+import { generateToken, authMiddleware } from "./auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function log(tag, msg) {
+  console.log(`[${tag}] ${msg}`);
+}
 
 export function createDashboardServer({ port = 3000 } = {}) {
   const app = express();
   app.use(express.json());
+  app.use(cookieParser());
   app.use(express.static(path.join(__dirname, "public")));
+
+  const dashToken = generateToken();
+  log("dashboard", `Auth token: ${dashToken.slice(0, 8)}... (see dashboard-token.txt)`);
+
+  // Auth middleware — exempt public HTML pages and first-time wizard config
+  app.use((req, res, next) => {
+    const publicPaths = ["/", "/wizard", "/wizard.html", "/index.html"];
+    const publicApiPaths = [{ method: "GET", path: "/wizard/config" }];
+    if (publicPaths.includes(req.path)) return next();
+    if (publicApiPaths.some(p => p.method === req.method && p.path === req.path)) return next();
+    authMiddleware(req, res, next);
+  });
 
   // First-time redirect: no walletAddress → wizard
   app.get("/", (req, res, next) => {

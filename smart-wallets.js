@@ -23,6 +23,7 @@ function normalizeWalletRecord(record = {}, address) {
     address,
     label: record.label || "",
     added_at: record.added_at || new Date().toISOString(),
+    last_active: record.last_active || record.stats?.last_active || record.stats?.last_trade_at || null,
     source_tokens: Array.isArray(record.source_tokens) ? record.source_tokens : [],
     stats: record.stats && typeof record.stats === "object" ? record.stats : null,
     selection,
@@ -58,9 +59,10 @@ export function removeSmartWallet({ address } = {}) {
   return { removed: existed, address };
 }
 
-export function listSmartWallets() {
+export function listSmartWallets({ minDecayMultiplier = 0 } = {}) {
   return Object.entries(load())
     .map(([address, record]) => normalizeWalletRecord(record, address))
     .map(wallet => applyScoreDecay(wallet))
+    .filter(w => (w.score_decay_multiplier ?? 1) >= minDecayMultiplier)
     .sort((a, b) => (b.selection?.score || 0) - (a.selection?.score || 0));
 }
