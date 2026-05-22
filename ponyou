@@ -5,15 +5,97 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 ROOT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 cd "${ROOT_DIR}"
 
-cmd="${1:-agent}"
+cmd="${1:-wizard}"
 sub="${2:-}"
+
+AGENT_SVC="ponyou-agent"
+WORK_SVC="ponyou-autowork"
+
+_svc_status() {
+  local svc="$1"
+  local state
+  state=$(systemctl is-active "$svc" 2>/dev/null || echo "unknown")
+  case "$state" in
+    active)   printf "\e[32m● %s: running\e[0m\n" "$svc" ;;
+    inactive) printf "\e[31m○ %s: stopped\e[0m\n" "$svc" ;;
+    *)        printf "\e[33m? %s: %s\e[0m\n" "$svc" "$state" ;;
+  esac
+}
+
+_header() {
+  clear
+  printf "\e[1;36m╔══════════════════════════════╗\n"
+  printf "║      PONYOU CONTROL          ║\n"
+  printf "╚══════════════════════════════╝\e[0m\n"
+  _svc_status "$AGENT_SVC"
+  _svc_status "$WORK_SVC"
+  printf "\n"
+}
+
+wizard() {
+  _header
+  PS3=$'\nPilih opsi: '
+  local options=(
+    "Status bot"
+    "Start bot (demo)"
+    "Start bot (live)"
+    "Stop bot"
+    "Restart bot"
+    "Live log bot"
+    "──────────────"
+    "Start autowork"
+    "Stop autowork"
+    "──────────────"
+    "Buka dashboard"
+    "Quick status"
+    "Readiness check"
+    "──────────────"
+    "Keluar"
+  )
+  select opt in "${options[@]}"; do
+    case "$opt" in
+      "Status bot")
+        systemctl status "$AGENT_SVC" --no-pager | head -20 ;;
+      "Start bot (demo)")
+        sudo systemctl start "$AGENT_SVC" && echo "Bot (demo) started." ;;
+      "Start bot (live)")
+        read -rp "⚠ Live mode pakai uang nyata. Yakin? (y/N): " c
+        [[ "$c" =~ ^[Yy]$ ]] && exec npm start || echo "Dibatalkan." ;;
+      "Stop bot")
+        read -rp "Yakin stop? (y/N): " c
+        [[ "$c" =~ ^[Yy]$ ]] && sudo systemctl stop "$AGENT_SVC" && echo "Stopped." || echo "Dibatalkan." ;;
+      "Restart bot")
+        sudo systemctl restart "$AGENT_SVC" && echo "Restarted." ;;
+      "Live log bot")
+        echo "Ctrl+C untuk keluar dari log."
+        journalctl -u "$AGENT_SVC" -f --no-pager ;;
+      "Start autowork")
+        sudo systemctl start "$WORK_SVC" && echo "Autowork started." ;;
+      "Stop autowork")
+        sudo systemctl stop "$WORK_SVC" && echo "Autowork stopped." ;;
+      "Buka dashboard")
+        node "${ROOT_DIR}/dashboard.js" --port 3000 &
+        sleep 1; echo "Dashboard: http://localhost:3000" ;;
+      "Quick status")
+        show_status ;;
+      "Readiness check")
+        npm run readiness ;;
+      "──────────────") ;;
+      "Keluar")
+        echo "Bye."; exit 0 ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+    printf "\n"
+    _header
+  done
+}
 
 print_help() {
   cat <<'HELP'
 Ponyou agent command surface
 
 Usage:
-  ponyou             Start live agent
+  ponyou             Buka wizard interaktif
   ponyou agent       Start live agent
   ponyou demo        Start demo agent
   ponyou status      Quick status snapshot
@@ -53,6 +135,9 @@ NODE
 }
 
 case "${cmd}" in
+  wizard|"")
+    wizard
+    ;;
   agent|start|live)
     exec npm start
     ;;
