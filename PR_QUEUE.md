@@ -171,7 +171,7 @@ Plan: docs/superpowers/plans/2026-05-22-dashboard.md
 ---
 
 ## PR-013: Dynamic Exit Slippage — CRITICAL Safety Fix
-Status: pending
+Status: ready_for_review
 Priority: high
 Safety: needs_review
 Goal: Ganti hardcoded slippage 1.0 di semua exit calls dengan dynamic progressive slippage: attempt 1=1%, attempt 2=5%, attempt 3=10%, attempt 4=20%. Jika semua gagal, kirim Telegram alert "POSITION STUCK — manual intervention needed". Config: maxExitAttempts (default 4), exitSlippageSteps (default [1,5,10,20]).
@@ -180,20 +180,20 @@ Workers:
   build: codex
   review: claude
 Tasks:
-- [ ] Audit semua exit call sites di index.js — catat line numbers (worker: claude)
-- [ ] exit-slippage.js — module dengan getExitSlippage(attempt), validateSlippageConfig() (worker: codex)
-- [ ] Patch index.js — wrap semua exit calls dengan retry loop + progressive slippage (worker: codex)
-- [ ] Telegram alert jika semua attempt gagal: "⚠️ POSITION STUCK: {symbol} — exit failed after 4 attempts" (worker: codex)
-- [ ] Config block: exitSlippage.* di user-config.json dan config.js (worker: codex)
-- [ ] Write tests: progressive steps, max attempt alert, config defaults (worker: codex)
-- [ ] Review & finalize (worker: claude)
+- [x] Audit semua exit call sites di index.js — catat line numbers (worker: claude)
+- [x] exit-slippage.js — module dengan getExitSlippage(attempt), validateSlippageConfig() (worker: claude)
+- [x] Patch index.js — wrap semua exit calls dengan retry loop + progressive slippage (worker: claude)
+- [x] Telegram alert jika semua attempt gagal: "⚠️ POSITION STUCK: {symbol} — exit failed after 4 attempts" (worker: claude)
+- [x] Config block: exitSlippage.* di user-config.json dan config.js (worker: claude)
+- [x] Write tests: progressive steps, max attempt alert, config defaults (worker: claude)
+- [x] Review & finalize (worker: claude)
 Added: 2026-05-22
 Audit-source: Gemini + Claude verified (lines 1323, 1332, 1406, 1416 index.js)
 
 ---
 
 ## PR-014: Integration Gaps — Narrative Feedback + Zombie Wallets + Partial TP Guard
-Status: pending
+Status: in_progress
 Priority: high
 Safety: needs_review
 Goal: Fix 3 integration gaps yang terverifikasi: (1) recordRuggedNarrativesForExit tidak pernah dipanggil di index.js — semua exit paths harus feed ke narrative blocklist. (2) getAllWallets() tidak filter by decay score — zombie wallets makan Geyser subscription slots. (3) Partial TP idempotency guard — cek jika partial TP sudah landing sebelum retry untuk hindari double-sell.
