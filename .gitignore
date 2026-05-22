@@ -35,6 +35,48 @@ dashboard-token.txt
 agentdb.rvf
 agentdb.rvf.lock
 
+# Runtime state — added in PR-021 (gitignore runtime leak cleanup)
+automation-state.json
+automation-command.json
+supervisor-state.json
+supervisor-command.json
+execution-quality.json
+trade-attribution.json
+trade-cooldowns.json
+conviction-memory.json
+regime-memory.json
+smart-wallet-history.json
+intents.json
+learning-mode-state.json
+learning-mode-analysis.json
+learning-observations.json
+trading-plan-30-state.json
+vault-state.json
+strategy-overrides.json
+strategy-registry.json
+exec-quality.json
+day-phase-cache.json
+daily-trade-guard-state.json
+darwin-weights.json
+perf-memory.json
+holder-memory.json
+token-blacklist.json
+dev-blocklist.json
+
+# Runtime PID / lockfiles
+*.pid
+.claude/scheduled_tasks.lock
+
+# Collaboration runtime — agent memory state
+shared-agent-memory.jsonl
+codex-coleader.log
+codex-coleader-last.md
+infra/agent-collab/orchestrator-state.json
+infra/agent-collab/semantic-memory.jsonl
+infra/agent-collab/experiments.json
+infra/agent-collab/workflow-artifacts.json
+infra/agent-collab/experiment-runs.jsonl
+
 logs/
 
 # Ruflo / claude-flow runtime dirs
