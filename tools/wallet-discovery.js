@@ -13,6 +13,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "../atomic-write.js";
 import { log } from "../logger.js";
 import { discoverTokens } from "./dexscreener.js";
 import { listSmartWallets, addSmartWallet } from "../smart-wallets.js";
@@ -55,7 +56,7 @@ function loadDiscovered() {
 }
 
 function saveDiscovered(data) {
-  fs.writeFileSync(DISCOVERED_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(DISCOVERED_FILE, data);
 }
 
 async function getTopOwners(connection, mint, limit = 15) {

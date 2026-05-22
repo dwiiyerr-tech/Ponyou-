@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { atomicWriteJson } from "./atomic-write.js";
 
 const STATE_PATH = path.resolve("partial-tp-guard-state.json");
 
@@ -12,9 +13,7 @@ function load() {
 }
 
 function save(state) {
-  const tmp = STATE_PATH + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, STATE_PATH);
+  atomicWriteJson(STATE_PATH, state);
 }
 
 /**

@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
+import { atomicWriteJson } from "./atomic-write.js";
 
 export const STRATEGY_STATUSES = Object.freeze({
   CANDIDATE: "candidate",
@@ -170,6 +171,6 @@ export class StrategyRegistry {
   #persist() {
     if (!this.#persistPath) return;
     fs.mkdirSync(path.dirname(this.#persistPath), { recursive: true });
-    fs.writeFileSync(this.#persistPath, JSON.stringify([...this.#catalog.values()], null, 2));
+    atomicWriteJson(this.#persistPath, [...this.#catalog.values()]);
   }
 }

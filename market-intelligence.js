@@ -46,7 +46,7 @@ function loadIntel() {
 
 function saveIntel(intel) {
   intel.lastUpdated = new Date().toISOString();
-  fs.writeFileSync(INTEL_FILE, JSON.stringify(intel, null, 2));
+  atomicWriteJson(INTEL_FILE, intel);
 }
 
 export function recordMarketResearchEnrichment(enrichment) {

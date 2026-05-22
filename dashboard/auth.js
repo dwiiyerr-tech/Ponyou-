@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { randomBytes } from "crypto";
+import { atomicWriteText } from "../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TOKEN_FILE = path.join(__dirname, "..", "dashboard-token.txt");
@@ -10,7 +11,7 @@ let _token = null;
 
 export function generateToken() {
   _token = randomBytes(32).toString("hex");
-  fs.writeFileSync(TOKEN_FILE, _token, "utf8");
+  atomicWriteText(TOKEN_FILE, _token);
   return _token;
 }
 

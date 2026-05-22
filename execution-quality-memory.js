@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXEC_FILE = path.join(__dirname, "execution-quality.json");
@@ -21,7 +22,7 @@ function loadStore() {
 }
 
 function saveStore(data) {
-  fs.writeFileSync(EXEC_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(EXEC_FILE, data);
 }
 
 function buildExecutionKey({

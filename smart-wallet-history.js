@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HISTORY_FILE = path.join(__dirname, "smart-wallet-history.json");
@@ -17,7 +18,7 @@ function loadHistoryFile() {
 }
 
 function saveHistoryFile(data) {
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(HISTORY_FILE, data);
 }
 
 function average(values = []) {

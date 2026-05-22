@@ -7,6 +7,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUG_FILE = path.join(__dirname, "rug-memory.json");
@@ -28,7 +29,7 @@ function loadMem() {
 }
 
 function saveMem(mem) {
-  fs.writeFileSync(RUG_FILE, JSON.stringify(mem, null, 2));
+  atomicWriteJson(RUG_FILE, mem);
 }
 
 export function addToBlacklist({ mint, reason = "" } = {}) {

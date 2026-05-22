@@ -5,6 +5,7 @@
 
 import fs from "fs";
 import path from "path";
+import { atomicWriteText, atomicWriteJson } from "./atomic-write.js";
 
 const ENV_FILE = ".env";
 const CONFIG_FILE = "user-config.json";
@@ -258,7 +259,7 @@ export function writeEnv(env) {
   // Normalize trailing newline
   let text = out.join("\n");
   if (!text.endsWith("\n")) text += "\n";
-  fs.writeFileSync(ENV_FILE, text);
+  atomicWriteText(ENV_FILE, text);
 }
 
 /**
@@ -278,7 +279,7 @@ export function readConfig() {
  * Write user-config.json
  */
 export function writeConfig(config) {
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  atomicWriteJson(CONFIG_FILE, config);
 }
 
 /**

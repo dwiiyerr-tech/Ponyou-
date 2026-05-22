@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(__dirname, "daily-trade-guard-state.json");
@@ -48,7 +49,7 @@ function saveState(state, nowMs = Date.now()) {
     ...state,
     updatedAt: new Date(nowMs).toISOString(),
   };
-  fs.writeFileSync(STATE_FILE, JSON.stringify(next, null, 2));
+  atomicWriteJson(STATE_FILE, next);
   return next;
 }
 

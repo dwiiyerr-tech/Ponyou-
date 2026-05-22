@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -19,7 +20,7 @@ function readJson(file, fallback = null) {
 }
 
 function writeJson(file, value) {
-  fs.writeFileSync(file, JSON.stringify(value, null, 2));
+  atomicWriteJson(file, value);
 }
 
 export function readUserConfig() {

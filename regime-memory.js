@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REGIME_FILE = path.join(__dirname, "regime-memory.json");
@@ -21,7 +22,7 @@ function loadStore() {
 }
 
 function saveStore(data) {
-  fs.writeFileSync(REGIME_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(REGIME_FILE, data);
 }
 
 function decaySlot(slot = {}, nowMs = Date.now()) {

@@ -9,6 +9,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 import { log } from "./logger.js";
 import { addLesson, recordRug } from "./lessons.js";
 import { buildStructuredOutputBlock } from "./structured-output.js";
@@ -31,7 +32,7 @@ function loadObservations() {
 }
 
 function saveObservations(data) {
-  fs.writeFileSync(OBSERVATION_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(OBSERVATION_FILE, data);
 }
 
 /**

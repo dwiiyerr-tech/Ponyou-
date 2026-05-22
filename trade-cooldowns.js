@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FILE = path.join(__dirname, "trade-cooldowns.json");
@@ -16,7 +17,7 @@ function loadData() {
 }
 
 function saveData(data) {
-  fs.writeFileSync(FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(FILE, data);
 }
 
 export function setTokenCooldown(mint, hours, reason = "cooldown") {

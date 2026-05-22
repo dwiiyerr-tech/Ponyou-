@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BASE_PATH = path.join(__dirname, "..");
@@ -31,5 +32,5 @@ export function writeConfig(data) {
     if (fs.existsSync(cfgPath())) existing = JSON.parse(fs.readFileSync(cfgPath(), "utf8"));
   } catch {}
   const merged = { ...existing, ...safe };
-  fs.writeFileSync(cfgPath(), JSON.stringify(merged, null, 2));
+  atomicWriteJson(cfgPath(), merged);
 }

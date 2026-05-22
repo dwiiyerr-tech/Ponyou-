@@ -12,6 +12,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
+import { atomicWriteJsonAsync } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(__dirname, "state.json");
@@ -90,12 +91,9 @@ async function save(state) {
   // a failed write leaves us with cache that doesn't match disk.
   _writeQueue = _writeQueue.then(async () => {
     state.lastUpdated = new Date().toISOString();
-    const serialized = JSON.stringify(state, null, 2);
     try {
       // Atomic write: temp file + rename, so partial writes can't corrupt state.
-      const tmp = STATE_FILE + ".tmp";
-      await fs.promises.writeFile(tmp, serialized);
-      await fs.promises.rename(tmp, STATE_FILE);
+      await atomicWriteJsonAsync(STATE_FILE, state);
       _stateCache = state;
     } catch (err) {
       log("state_error", `Failed to write state.json: ${err.message}`);

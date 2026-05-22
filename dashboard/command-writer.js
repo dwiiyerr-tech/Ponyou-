@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BASE_PATH = path.join(__dirname, "..");
@@ -9,16 +10,12 @@ export function _setBasePath(p) { BASE_PATH = p; }
 
 export function writeAutomationCommand(cmd) {
   const fp = path.join(BASE_PATH, "automation-command.json");
-  const tmp = fp + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify({ cmd, ts: new Date().toISOString() }));
-  fs.renameSync(tmp, fp);
+  atomicWriteJson(fp, { cmd, ts: new Date().toISOString() });
 }
 
 export function writeDashboardCmd({ id, cmd, args = [] }) {
   const fp = path.join(BASE_PATH, "dashboard-cmd.json");
-  const tmp = fp + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify({ id, cmd, args, ts: new Date().toISOString() }));
-  fs.renameSync(tmp, fp);
+  atomicWriteJson(fp, { id, cmd, args, ts: new Date().toISOString() });
 }
 
 export function readDashboardResponse(id) {

@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { getExperimentSummary } from "./experiment-tracker.js";
 import { getRecentSemanticMemory, searchSemanticMemory } from "./semantic-memory.js";
+import { atomicWriteJson } from "../../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ORCH_FILE = path.join(__dirname, "orchestrator-state.json");
@@ -22,7 +23,7 @@ function loadState() {
   } catch { return { next_id: 1, tasks: [] }; }
 }
 
-function saveState(data) { fs.writeFileSync(ORCH_FILE, JSON.stringify(data, null, 2)); }
+function saveState(data) { atomicWriteJson(ORCH_FILE, data); }
 function appendSharedMemory(entry) { fs.appendFileSync(SHARED_MEMORY_FILE, `${JSON.stringify(entry)}\n`, "utf8"); }
 function findTask(state, id) { return state.tasks.find((task) => task.id === Number(id)); }
 

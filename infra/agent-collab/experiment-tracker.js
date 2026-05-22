@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "../../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXPERIMENTS_FILE = path.join(__dirname, "experiments.json");
@@ -36,7 +37,7 @@ function loadExperiments() {
 }
 
 function saveExperiments(data) {
-  fs.writeFileSync(EXPERIMENTS_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(EXPERIMENTS_FILE, data);
 }
 
 function loadRuns() {
