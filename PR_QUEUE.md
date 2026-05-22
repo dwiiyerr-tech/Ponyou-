@@ -64,7 +64,7 @@ Default flow: gemini (research) → codex (build + tests) → claude (review)
 -->
 
 ## PR-008: Strategy Evolution + Kelly Mode Selector
-Status: ready_for_review
+Status: done
 Priority: high
 Safety: needs_review
 Goal: Autonomous strategy select/compose/generate with triple evidence gate (backtest→paper→live ≥80% win rate), Telegram proposal system (auto-approve at 95% conviction, 24h timeout), and progressive Kelly Mode 1/2/3 unlock (Mode 3 requires operator Telegram approval + 100% win rate + 50 trades + 99% conviction).
@@ -91,7 +91,7 @@ Plan: docs/superpowers/plans/2026-05-21-strategy-evolution.md
 ---
 
 ## PR-009: Full Integration Audit — Test All Features, Fix All Errors
-Status: ready_for_review
+Status: done
 Priority: high
 Safety: safe
 Goal: Jalankan seluruh test suite Ponyou, temukan semua error dan bug, pastikan semua fitur (orchestration layer, data pipeline, strategi, skill registry, security guards, capital sizing, Kelly, RPC, collaboration MCP) saling terhubung dan berjalan benar end-to-end.
@@ -139,7 +139,7 @@ Added: 2026-05-21
 ---
 
 ## PR-012: Web Dashboard — localhost monitoring + control UI
-Status: ready_for_review
+Status: done
 Priority: high
 Safety: safe
 Goal: Express + WebSocket localhost dashboard with 3 tabs (Dashboard, Commands, Settings), 13-step setup wizard, file-based IPC to bot process. Standalone process (node dashboard.js), state read from JSON files, WebSocket pushes live state every 2s.
@@ -171,7 +171,7 @@ Plan: docs/superpowers/plans/2026-05-22-dashboard.md
 ---
 
 ## PR-013: Dynamic Exit Slippage — CRITICAL Safety Fix
-Status: ready_for_review
+Status: done
 Priority: high
 Safety: needs_review
 Goal: Ganti hardcoded slippage 1.0 di semua exit calls dengan dynamic progressive slippage: attempt 1=1%, attempt 2=5%, attempt 3=10%, attempt 4=20%. Jika semua gagal, kirim Telegram alert "POSITION STUCK — manual intervention needed". Config: maxExitAttempts (default 4), exitSlippageSteps (default [1,5,10,20]).
