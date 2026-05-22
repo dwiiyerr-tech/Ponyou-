@@ -10,36 +10,35 @@ You can add notes below the divider line.
 
 ## AutoWork Progress
 
-Updated: 2026-05-22T07:45:00Z
+Updated: 2026-05-23T17:30:00Z
 
-Current PR: PR-014
-Current status: ready_for_review
+Current PR: none
+Current status: ready_for_review (3 PRs awaiting human review)
 
 ### Agents used
-- Claude: orchestration + implementation + review
+- Claude: orchestration + final implementation + review
+- Codex (coleader): bulk atomic-write migrations across ~40 modules + ops wizard
 
-### Completed work
-- recordRuggedNarrativesForExit already wired at index.js:1455 + 1646 (both exit paths)
-- smart-wallets.js: normalizeWalletRecord now preserves last_active field (root cause: decay filter was broken because field was dropped)
-- geyser.js:311: listSmartWallets({ minDecayMultiplier: 0.5 }) — zombies excluded from initial Geyser subscriptions
-- index.js:2267: seedSmartWallets() counts only active wallets (multiplier >= 0.5) to decide if seeding needed
-- partial-tp-guard.js: already implemented + wired (isPartialTPLanded/markPartialTPLanded at index.js:1321/1346)
-- tests/pr014-integration.test.js: 5 tests — narrative feedback + decay filter
-- tests/partial-tp-guard.test.js: 4 tests — idempotency, clear, prune
-
-### Remaining work
-- none
-
-### Changed files
-- smart-wallets.js (normalizeWalletRecord + last_active preservation)
-- geyser.js (listSmartWallets with minDecayMultiplier: 0.5)
-- index.js (seedSmartWallets decay-aware check)
-- PR_QUEUE.md (status + checkboxes)
-- PR_PROGRESS.md (this file)
+### Completed work (this session)
+- Audit: identified gaps across PR-001..PR-019 commit history
+  - PR-002..PR-006: bundled under commit 85745e0, files present
+  - PR-010: intentional revert (gap-filling agent removed per user)
+  - PR-018: number was skipped — now retroactively filled with ops wizard work
+  - PR-019: atomic-write helper rollout (initially scoped 5 files, expanded to ~40 after audit)
+  - PR-021: gitignore cleanup for runtime state leak
+- PR-018 (committed): ops control wizard + ops/ponyou-cli.sh — interactive systemd service mgmt
+- PR-019 (committed): codebase-wide atomic-write migration
+  - atomic-write.js extended with async variants
+  - ~40 modules migrated from raw fs.writeFileSync → atomicWriteJson/atomicWriteText
+  - 5 remaining inline tmp+rename sites cleaned up (dashboard/command-writer, state-pruner,
+    partial-tp-guard, state.js, metrics.js)
+  - tests/atomic-write.test.js: 8 new tests including CI regression scan
+- PR-021 (committed): .gitignore covers automation-state, execution-quality, trade-attribution,
+  codex-coleader.log, codex-coleader-last.md, shared-agent-memory.jsonl, infra/agent-collab/*,
+  *.pid, .claude/scheduled_tasks.lock; 8 files untracked via git rm --cached
 
 ### Tests run
-- npx vitest run tests/pr014-integration.test.js tests/partial-tp-guard.test.js → PASS 9/9, FAIL 0
-- npx vitest run → PASS 632/632, FAIL 0
+- npx vitest run → PASS 665/665, FAIL 0
 
 ### Limit status
 clear
@@ -48,10 +47,10 @@ clear
 claude -c -p "/autowork resume from PR_PROGRESS.md and PR_QUEUE.md"
 
 ### Human approval needed
-no
+yes — review and merge PR-018, PR-019, PR-021
 
 ### Next action
-PR-014 ready for review. Next: PR-015 (State Pruning + Kelly Outlier Cap)
+Human review of 3 commits. Once approved, mark PR-018 + PR-019 + PR-021 Status: done in PR_QUEUE.md.
 
 ---
 

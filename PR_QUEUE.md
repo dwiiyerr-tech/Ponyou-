@@ -43,7 +43,7 @@ TEMPLATE — copy and fill in for new PRs
 ========================================
 
 ## PR-XXX: <short title>
-Status: pending
+Status: template
 Priority: <high | medium | low>
 Safety: <safe | needs_review>
 Goal: <one-line description of what this PR achieves>
@@ -222,11 +222,11 @@ Workers:
   build: codex
   review: claude
 Tasks:
-- [ ] state-pruner.js — pruneClosedPositions(maxAgeDays=7), archivePath, auto-trigger (worker: codex)
-- [ ] Wire state-pruner ke startup dan 24h interval di index.js (worker: codex)
-- [ ] kelly-mode-selector.js patch — clamp payoffRatio ≤ 5, minSampleTrades=10, volatility dampener (worker: codex)
-- [ ] Write tests: pruning threshold, Kelly cap, min sample enforcement (worker: codex)
-- [ ] Review & finalize (worker: claude)
+- [x] state-pruner.js — pruneClosedPositions(maxAgeDays=7), archivePath, auto-trigger (worker: codex)
+- [x] Wire state-pruner ke startup dan 24h interval di index.js (worker: codex)
+- [x] kelly-mode-selector.js patch — clamp payoffRatio ≤ 5, minSampleTrades=10, volatility dampener (worker: codex)
+- [x] Write tests: pruning threshold, Kelly cap, min sample enforcement (worker: codex)
+- [x] Review & finalize (worker: claude)
 Added: 2026-05-22
 Audit-source: Gemini + Claude verified
 
@@ -242,13 +242,13 @@ Workers:
   build: codex
   review: claude
 Tasks:
-- [ ] dashboard/auth.js — generateToken(), validateToken(req), middleware Express (worker: codex)
-- [ ] Wire auth middleware ke semua routes kecuali GET /wizard/config saat first-time setup (worker: codex)
-- [ ] dashboard/public/app.js patch — attach token ke semua fetch requests via localStorage (worker: codex)
-- [ ] dashboard/command-writer.js patch — atomic write dengan tmp+rename untuk writeDashboardCmd (worker: codex)
-- [ ] dashboard/ipc.js patch — re-read file setelah rename untuk pastikan data konsisten (worker: codex)
-- [ ] Write tests: token validation, atomic write, auth middleware rejection (worker: codex)
-- [ ] Review & finalize (worker: claude)
+- [x] dashboard/auth.js — generateToken(), validateToken(req), middleware Express (worker: codex)
+- [x] Wire auth middleware ke semua routes kecuali GET /wizard/config saat first-time setup (worker: codex)
+- [x] dashboard/public/app.js patch — attach token ke semua fetch requests via localStorage (worker: codex)
+- [x] dashboard/command-writer.js patch — atomic write dengan tmp+rename untuk writeDashboardCmd (worker: codex)
+- [x] dashboard/ipc.js patch — re-read file setelah rename untuk pastikan data konsisten (worker: codex)
+- [x] Write tests: token validation, atomic write, auth middleware rejection (worker: codex)
+- [x] Review & finalize (worker: claude)
 Added: 2026-05-22
 Audit-source: Gemini + Claude verified
 
@@ -272,6 +272,71 @@ Tasks:
 - [x] Review & finalize (worker: claude)
 Added: 2026-05-22
 Audit-source: Gemini recommendation
+
+---
+
+## PR-018: Ops Control Wizard — Interactive Service Management
+Status: ready_for_review
+Priority: medium
+Safety: safe
+Goal: `ponyou` shell command sekarang punya interactive wizard (default action) untuk start/stop/restart/status systemd service (ponyou-agent, ponyou-autowork), dashboard launcher, readiness check, dan log tail — semua dalam satu menu. Plus `ops/ponyou-cli.sh` standalone CLI alternative untuk env yang belum punya `ponyou` di PATH. Live trading switch tetap pakai konfirmasi double-prompt.
+Workers:
+  research: claude
+  build: claude
+  review: claude
+Tasks:
+- [x] `ponyou` script: tambah wizard() function, _header(), _svc_status() (worker: claude)
+- [x] Default cmd ubah dari "agent" ke "wizard" supaya `ponyou` (no arg) = open menu (worker: claude)
+- [x] Live mode confirmation prompt (y/N) sebelum exec npm start (worker: claude)
+- [x] Stop confirmation prompt (y/N) sebelum stop service (worker: claude)
+- [x] ops/ponyou-cli.sh: standalone CLI mirror dari wizard (worker: claude)
+- [x] Review & finalize (worker: claude)
+Added: 2026-05-23
+Audit-source: Claude retroactive (work already done by codex-coleader, never tracked)
+
+---
+
+## PR-019: Atomic Write Helper Rollout — Codebase-Wide
+Status: ready_for_review
+Priority: medium
+Safety: safe
+Goal: `atomic-write.js` helper (PR-014) hanya dipakai di beberapa file inti. Audit codebase menunjukkan ~40 site lain (lessons, kill-switch, market-intelligence, llm-manager, daily-report, intents, conviction-memory, regime-memory, smart-wallets, vault, dll) masih pakai `fs.writeFileSync` langsung atau inline tmp+rename. Migrate semuanya ke `atomicWriteJson` / `atomicWriteText` / async variants supaya pattern konsisten. Tambah test guard untuk fail CI kalau ada raw writeFile* baru masuk.
+Workers:
+  research: claude
+  build: claude (codex-coleader contributed migrations across ~40 files)
+  review: claude
+Tasks:
+- [x] Extend atomic-write.js: tambah atomicWriteJsonAsync + atomicWriteTextAsync (Promise-based) (worker: claude)
+- [x] Migrate sync sites: dashboard/command-writer.js, state-pruner.js, partial-tp-guard.js (worker: claude)
+- [x] Migrate async sites: state.js, metrics.js (worker: claude)
+- [x] Migrate domain modules (codex-coleader): lessons.js, kill-switch.js, market-intelligence.js, llm-manager.js, daily-report.js, intents.js, conviction-memory.js, regime-memory.js, smart-wallets.js, smart-wallet-history.js, vault.js, trading-plan.js, trading-plan-30.js, trade-attribution.js, trade-cooldowns.js, token-blacklist.js, dev-blocklist.js, daily-trade-guard.js, execution-quality-memory.js, learning-mode.js, learning-continuous.js, market-heatmap.js, automation-control.js, strategies.js, strategy-registry.js, intents.js, dashboard/auth.js, dashboard/config-writer.js (worker: codex)
+- [x] Migrate tooling: tools/{backtest-cli,executor,narratives,rug-patterns,ticker-registry,wallet-discovery}.js (worker: codex)
+- [x] Migrate infra/agent-collab: agent-orchestrator.js, experiment-tracker.js, semantic-memory.js, workflow-bridge.js, collaboration-mcp-server.js (worker: codex)
+- [x] Migrate index.js (main loop atomic writes for dashboard response) (worker: codex)
+- [x] tests/dashboard-auth.test.js: add renameSync mock (atomic-write integration) (worker: codex)
+- [x] Write tests: helper crash-safety, async variants, codebase regression scan (worker: claude)
+- [x] Review & finalize (worker: claude)
+Added: 2026-05-23
+Audit-source: Claude codebase audit (~40 sites detected); codex-coleader migrated bulk; Claude added async helpers + tests + final 5-site sync
+
+---
+
+## PR-021: Runtime State Leak — Gitignore Cleanup
+Status: done
+Priority: low
+Safety: safe
+Goal: Multiple runtime state files (codex-coleader.log, shared-agent-memory.jsonl, infra/agent-collab/*.json[l], automation-state.json, execution-quality.json, trade-attribution.json, codex-coleader-last.md) were tracked in git, generating large noise diffs every time daemons ran. Untrack via `git rm --cached` and add to .gitignore. No code behavior change.
+Workers:
+  research: claude
+  build: claude
+  review: claude
+Tasks:
+- [x] .gitignore: add *.pid, runtime state JSONs, collab memory JSONLs (worker: claude)
+- [x] git rm --cached for 8 leaked runtime files (worker: claude)
+- [x] Verify daemons regenerate files cleanly post-commit (worker: claude)
+- [x] Review & finalize (worker: claude)
+Added: 2026-05-23
+Audit-source: Claude session audit (40k-line diff from codex-coleader.log)
 
 ---
 
