@@ -1645,8 +1645,10 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
             const tokenIn = result.token_in || result.would_swap?.token_in;
             const walletAddress = result.wallet_address || result.would_swap?.wallet_address || null;
             if (tokenOut === "SOL" || tokenOut === "So11111111111111111111111111111111111111112") {
+              const llmPosKey = walletAddress ? `${tokenIn}::${walletAddress}` : tokenIn;
               await recordClose(tokenIn, "LLM Manager Decision", walletAddress);
-              _rugMonitor?.detachPosition(walletAddress ? `${tokenIn}::${walletAddress}` : tokenIn);
+              _rugMonitor?.detachPosition(llmPosKey);
+              clearPartialTPGuard(llmPosKey);
               recordRuggedNarrativesForExit({ reason: "LLM Manager Decision", token: {} });
               recordTrade(true); // assume LLM exits for profit
               await handleDailyTradeGuardOutcome(true, {
