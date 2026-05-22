@@ -13,6 +13,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 import { log } from "./logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,7 +48,7 @@ function loadPlan() {
 
 function savePlan(plan) {
   plan.lastUpdated = new Date().toISOString();
-  fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2));
+  atomicWriteJson(PLAN_FILE, plan);
 }
 
 // ─── Initialization ───────────────────────────────────────────

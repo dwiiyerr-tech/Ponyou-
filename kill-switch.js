@@ -16,6 +16,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { recordCounter } from "./metrics.js";
+import { atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FLAG_FILE = path.join(__dirname, "kill-switch.flag");
@@ -46,7 +47,7 @@ function _saveState(state = {}) {
     consecutiveErrors: Number.isFinite(state.consecutiveErrors) ? state.consecutiveErrors : 0,
     savedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(STATE_FILE, JSON.stringify(payload, null, 2));
+  atomicWriteJson(STATE_FILE, payload);
 }
 
 function _currentTripAt() {
@@ -79,11 +80,11 @@ function _restoreState() {
   if (saved.tripAt && Number.isFinite(saved.sessionBaseline) && saved.sessionBaseline > 0) {
     try {
       if (!fs.existsSync(FLAG_FILE)) {
-        fs.writeFileSync(FLAG_FILE, JSON.stringify({
+        atomicWriteJson(FLAG_FILE, {
           tripped_at: saved.tripAt,
           reason: "restored",
           detail: "Restored from kill-switch state file",
-        }, null, 2));
+        });
       }
     } catch (e) {
       log("kill_switch_error", `Failed to restore flag: ${e.message}`);
@@ -157,7 +158,7 @@ export function trip({ reason = "manual", detail = "" } = {}) {
     detail,
   };
   try {
-    fs.writeFileSync(FLAG_FILE, JSON.stringify(payload, null, 2));
+    atomicWriteJson(FLAG_FILE, payload);
     _persistState(trippedAt);
     log("kill_switch", `🛑 Kill switch tripped: ${reason} — ${detail}`);
     recordCounter("kill_switch_trip");

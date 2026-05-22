@@ -7,6 +7,7 @@ import {
   getOrchestrationTask,
 } from "./agent-orchestrator.js";
 import { addSemanticMemory } from "./semantic-memory.js";
+import { atomicWriteJson } from "../../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ARTIFACTS_FILE = path.join(__dirname, "workflow-artifacts.json");
@@ -29,7 +30,7 @@ function loadArtifacts() {
 }
 
 function saveArtifacts(data) {
-  fs.writeFileSync(ARTIFACTS_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(ARTIFACTS_FILE, data);
 }
 
 function normalizeStringArray(value) {

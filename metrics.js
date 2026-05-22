@@ -18,6 +18,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJsonAsync } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const METRICS_FILE = path.join(__dirname, "metrics.json");
@@ -148,9 +149,7 @@ function maybePersist() {
 
 export async function flushMetrics() {
   const snapshot = getStats();
-  const tmp = METRICS_FILE + ".tmp";
-  await fs.promises.writeFile(tmp, JSON.stringify(snapshot, null, 2));
-  await fs.promises.rename(tmp, METRICS_FILE);
+  await atomicWriteJsonAsync(METRICS_FILE, snapshot);
   _lastPersistAt = Date.now();
   return snapshot;
 }

@@ -9,6 +9,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 import { matchPatterns, learnPatterns } from "./tools/rug-patterns.js";
 import { getHolderMemoryRules } from "./holder-memory.js";
 
@@ -26,7 +27,7 @@ function loadLessons() {
 }
 
 function saveLessons(data) {
-  fs.writeFileSync(LESSONS_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(LESSONS_FILE, data);
 }
 
 let _lessonCounter = null;
@@ -192,7 +193,7 @@ function loadPerf() {
 }
 
 function savePerf(data) {
-  fs.writeFileSync(PERF_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(PERF_FILE, data);
 }
 
 export function recordTradeOutcome({
@@ -283,7 +284,7 @@ function loadRugMemory() {
 }
 
 function saveRugMemory(data) {
-  fs.writeFileSync(RUG_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(RUG_FILE, data);
 }
 
 /**
@@ -528,7 +529,7 @@ function loadDarwinWeights() {
 
 function saveDarwinWeights(data) {
   data.last_updated = new Date().toISOString();
-  fs.writeFileSync(DARWIN_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(DARWIN_FILE, data);
 }
 
 /**

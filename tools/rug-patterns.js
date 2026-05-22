@@ -13,6 +13,7 @@
  */
 
 import fs from "fs";
+import { atomicWriteJson } from "../atomic-write.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "../logger.js";
@@ -60,7 +61,7 @@ function loadJson(file, fallback) {
 }
 
 function saveJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  atomicWriteJson(file, data);
 }
 
 function featureListFromSignals(signals = {}) {

@@ -13,6 +13,7 @@
 
 import fs from "fs";
 import path from "path";
+import { atomicWriteJson } from "../atomic-write.js";
 import { fileURLToPath } from "url";
 import { log } from "../logger.js";
 
@@ -141,7 +142,7 @@ function loadHeat() {
 }
 
 function saveHeat(data) {
-  fs.writeFileSync(HEAT_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(HEAT_FILE, data);
 }
 
 /**

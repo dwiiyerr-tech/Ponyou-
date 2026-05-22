@@ -4,15 +4,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockWriteFileSync = vi.fn();
 const mockReadFileSync = vi.fn(() => { throw new Error("no file"); });
 const mockRandomBytes = vi.fn(() => Buffer.alloc(32, 0xab));
+const mockRenameSync = vi.fn();
 
 vi.mock("fs", () => ({
   default: {
     writeFileSync: (...a) => mockWriteFileSync(...a),
     readFileSync: (...a) => mockReadFileSync(...a),
+    renameSync: (...a) => mockRenameSync(...a),
     existsSync: vi.fn(() => false),
   },
   writeFileSync: (...a) => mockWriteFileSync(...a),
   readFileSync: (...a) => mockReadFileSync(...a),
+  renameSync: (...a) => mockRenameSync(...a),
   existsSync: vi.fn(() => false),
 }));
 

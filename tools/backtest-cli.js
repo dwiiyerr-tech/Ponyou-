@@ -29,6 +29,7 @@
 
 import fs from "fs";
 import { backtest } from "../backtest.js";
+import { atomicWriteJson } from "../atomic-write.js";
 
 function parseArgs(argv) {
   const positional = [];
@@ -110,7 +111,7 @@ function main() {
   console.log("");
 
   if (flags.out) {
-    fs.writeFileSync(flags.out, JSON.stringify(result, null, 2));
+    atomicWriteJson(flags.out, result);
     console.log(`Per-trade JSON written to ${flags.out}`);
   }
 }

@@ -12,6 +12,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 import { log } from "./logger.js";
 import { addLesson } from "./lessons.js";
 import { buildStructuredOutputBlock, tryParseStructuredOutput, validateStructuredOutput, extractLessonsFromStructuredOutput } from "./structured-output.js";
@@ -40,7 +41,7 @@ function loadLearningState() {
 
 function saveLearningState(state) {
   state.lastUpdated = new Date().toISOString();
-  fs.writeFileSync(LEARNING_STATE_FILE, JSON.stringify(state, null, 2));
+  atomicWriteJson(LEARNING_STATE_FILE, state);
 }
 
 function loadAnalyses() {
@@ -50,7 +51,7 @@ function loadAnalyses() {
 }
 
 function saveAnalyses(data) {
-  fs.writeFileSync(ANALYSIS_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(ANALYSIS_FILE, data);
 }
 
 // ─── Core API ──────────────────────────────────────────────────

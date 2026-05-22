@@ -33,6 +33,7 @@ import {
 } from "./intents.js";
 import { trackPosition, recordClose, getTrackedPosition, getState, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl, cleanStaleTestPositions } from "./state.js";
 import { pruneClosedPositions } from "./state-pruner.js";
+import { atomicWriteJson } from "./atomic-write.js";
 import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
 import {
   startTimer, elapsedMs, recordLatency, recordError, recordCounter,
@@ -2534,7 +2535,7 @@ export async function checkDashboardCommands() {
     fs.unlinkSync(fp);
     const text = [cmd.cmd, ...(cmd.args || [])].join(" ").trim();
     await handleIncomingTelegramMessage({ text });
-    fs.writeFileSync(rfp, JSON.stringify({ id: cmd.id, response: "(command executed)", ts: new Date().toISOString() }));
+    atomicWriteJson(rfp, { id: cmd.id, response: "(command executed)", ts: new Date().toISOString() });
   } catch (e) {
     log("dashboard_ipc", `IPC error: ${e.message}`);
   }

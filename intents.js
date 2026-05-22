@@ -13,6 +13,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 import { log } from "./logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -26,7 +27,7 @@ function loadAll() {
 }
 
 function saveAll(intents) {
-  fs.writeFileSync(FILE, JSON.stringify(intents, null, 2));
+  atomicWriteJson(FILE, intents);
 }
 
 function nextId(intents) {

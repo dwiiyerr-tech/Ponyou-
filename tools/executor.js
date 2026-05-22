@@ -40,6 +40,7 @@ import { rankWalletExecutionCandidates, recordExecutionQuality } from "../execut
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "../atomic-write.js";
 import { execSync, spawn } from "child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -430,7 +431,7 @@ const toolMap = {
     }
 
     Object.assign(userConfig, applied);
-    fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(userConfig, null, 2));
+    atomicWriteJson(USER_CONFIG_PATH, userConfig);
 
     const intervalChanged = applied.managementIntervalMin != null || applied.screeningIntervalMin != null;
     if (intervalChanged && _cronRestarter) _cronRestarter();

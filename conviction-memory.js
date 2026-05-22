@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 import { classifyNarrative } from "./tools/narratives.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -26,7 +27,7 @@ function loadStore() {
 }
 
 function saveStore(data) {
-  fs.writeFileSync(CONVICTION_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(CONVICTION_FILE, data);
 }
 
 function getOrCreateCoin(store, mint, symbol = null) {

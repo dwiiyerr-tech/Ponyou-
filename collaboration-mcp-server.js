@@ -42,6 +42,7 @@ import {
   finalizeTaskWithPolicy,
   validateTaskPolicy,
 } from "./infra/agent-collab/policy-gate.js";
+import { atomicWriteText } from "./atomic-write.js";
 
 const STORE_PATH = process.env.COLLAB_STORE_PATH
   || path.join(process.cwd(), "shared-agent-memory.jsonl");
@@ -55,7 +56,7 @@ function ensureStore() {
   const dir = path.dirname(STORE_PATH);
   fs.mkdirSync(dir, { recursive: true });
   if (!fs.existsSync(STORE_PATH)) {
-    fs.writeFileSync(STORE_PATH, "", "utf8");
+    atomicWriteText(STORE_PATH, "");
   }
 }
 

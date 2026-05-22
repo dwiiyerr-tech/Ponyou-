@@ -21,6 +21,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 import { Connection, PublicKey, SystemProgram, Transaction, Keypair, LAMPORTS_PER_SOL, sendAndConfirmTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { log } from "./logger.js";
@@ -56,7 +57,7 @@ function loadVaultState() {
 
 function saveVaultState(state) {
   state.lastUpdated = new Date().toISOString();
-  fs.writeFileSync(VAULT_STATE_FILE, JSON.stringify(state, null, 2));
+  atomicWriteJson(VAULT_STATE_FILE, state);
 }
 
 // ─── Config helpers ────────────────────────────────────────────

@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { getExperimentSummary } from "./experiment-tracker.js";
+import { atomicWriteText } from "../../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MEMORY_FILE = path.join(__dirname, "semantic-memory.jsonl");
@@ -14,7 +15,7 @@ function nowIso() { return new Date().toISOString(); }
 function safeArray(value) { return Array.isArray(value) ? value.filter(Boolean).map(String) : []; }
 function safeObject(value) { return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
 function normalizeText(value, max = 4000) { return String(value || "").trim().slice(0, max); }
-function ensureStore() { if (!fs.existsSync(MEMORY_FILE)) fs.writeFileSync(MEMORY_FILE, "", "utf8"); }
+function ensureStore() { if (!fs.existsSync(MEMORY_FILE)) atomicWriteText(MEMORY_FILE, ""); }
 
 function readEntries() {
   ensureStore();

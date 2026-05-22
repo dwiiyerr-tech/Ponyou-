@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 import { applyScoreDecay } from "./wallet-score-decay.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -12,7 +13,7 @@ function load() {
 }
 
 function save(wallets) {
-  fs.writeFileSync(WALLETS_FILE, JSON.stringify(wallets, null, 2));
+  atomicWriteJson(WALLETS_FILE, wallets);
 }
 
 function normalizeWalletRecord(record = {}, address) {

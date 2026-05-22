@@ -15,6 +15,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 import { log } from "./logger.js";
 import { getPlanSummary } from "./trading-plan.js";
 import { getMarketIntelligence, getMarketTrend } from "./market-intelligence.js";
@@ -35,7 +36,7 @@ function loadLastReport() {
 }
 
 function saveLastReport(data) {
-  fs.writeFileSync(LAST_REPORT_FILE, JSON.stringify(data, null, 2));
+  atomicWriteJson(LAST_REPORT_FILE, data);
 }
 
 /**
@@ -209,7 +210,7 @@ export function formatReportTelegram(report) {
 export function saveReport(report) {
   if (!fs.existsSync(REPORT_DIR)) fs.mkdirSync(REPORT_DIR, { recursive: true });
   const filePath = path.join(REPORT_DIR, `report-${report.date}.json`);
-  fs.writeFileSync(filePath, JSON.stringify(report, null, 2));
+  atomicWriteJson(filePath, report);
 
   saveLastReport({
     date: report.date,

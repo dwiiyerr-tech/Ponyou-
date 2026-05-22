@@ -15,6 +15,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { getState } from "./state.js";
+import { atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ARCHIVE_FILE = path.join(__dirname, "closed-positions-archive.json");
@@ -61,9 +62,7 @@ export function pruneClosedPositions(maxAgeDays = 7) {
     }
   }
   const merged = existing.concat(toArchive);
-  const archiveTmp = ARCHIVE_FILE + ".tmp";
-  fs.writeFileSync(archiveTmp, JSON.stringify(merged, null, 2));
-  fs.renameSync(archiveTmp, ARCHIVE_FILE);
+  atomicWriteJson(ARCHIVE_FILE, merged);
 
   // Step 2: remove from live state and persist
   for (const key of toDelete) {
@@ -73,9 +72,7 @@ export function pruneClosedPositions(maxAgeDays = 7) {
   // but avoids the async queue — pruner is called at startup before any concurrent writes).
   const STATE_FILE = path.join(__dirname, "state.json");
   state.lastUpdated = archivedAt;
-  const stateTmp = STATE_FILE + ".tmp";
-  fs.writeFileSync(stateTmp, JSON.stringify(state, null, 2));
-  fs.renameSync(stateTmp, STATE_FILE);
+  atomicWriteJson(STATE_FILE, state);
 
   return { pruned: toArchive.length, archived: toArchive.length };
 }
