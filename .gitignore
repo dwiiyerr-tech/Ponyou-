@@ -25,6 +25,15 @@ metrics.json
 kill-switch.flag
 pending-intents.json
 active-strategy.json
+trading-plan-state.json
+market-heatmap-state.json
+partial-tp-guard-state.json
+closed-positions-archive.json
+dashboard-cmd.json
+dashboard-response.json
+dashboard-token.txt
+agentdb.rvf
+agentdb.rvf.lock
 
 logs/
 
