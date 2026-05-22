@@ -61,7 +61,9 @@ export function pruneClosedPositions(maxAgeDays = 7) {
     }
   }
   const merged = existing.concat(toArchive);
-  fs.writeFileSync(ARCHIVE_FILE, JSON.stringify(merged, null, 2));
+  const archiveTmp = ARCHIVE_FILE + ".tmp";
+  fs.writeFileSync(archiveTmp, JSON.stringify(merged, null, 2));
+  fs.renameSync(archiveTmp, ARCHIVE_FILE);
 
   // Step 2: remove from live state and persist
   for (const key of toDelete) {
@@ -71,7 +73,9 @@ export function pruneClosedPositions(maxAgeDays = 7) {
   // but avoids the async queue — pruner is called at startup before any concurrent writes).
   const STATE_FILE = path.join(__dirname, "state.json");
   state.lastUpdated = archivedAt;
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  const stateTmp = STATE_FILE + ".tmp";
+  fs.writeFileSync(stateTmp, JSON.stringify(state, null, 2));
+  fs.renameSync(stateTmp, STATE_FILE);
 
   return { pruned: toArchive.length, archived: toArchive.length };
 }

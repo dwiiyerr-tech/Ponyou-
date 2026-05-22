@@ -12,7 +12,9 @@ function load() {
 }
 
 function save(state) {
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+  const tmp = STATE_PATH + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+  fs.renameSync(tmp, STATE_PATH);
 }
 
 /**
