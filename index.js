@@ -2466,7 +2466,32 @@ export function startCronJobs() {
   startTurboButtons();
   // Auto-seed smart wallets after Geyser is started so refreshSubscriptions() can wire them in
   seedSmartWallets().catch(e => log("smart_wallets", `seed failed: ${e.message}`));
+  // Dashboard IPC — check for commands from dashboard process every 3s
+  setInterval(() => checkDashboardCommands().catch(e => log("dashboard_ipc", e.message)), 3000);
   log("cron", `Jobs started: mgmt=${config.schedule.managementIntervalMin}m screen=${config.schedule.screeningIntervalMin}m vault=6h report=${reportH}:${String(reportM).padStart(2,"0")}UTC`);
+}
+
+// ─── Dashboard IPC ────────────────────────────────────────────────
+export async function checkDashboardCommands() {
+  const { default: fs } = await import("fs");
+  const { default: path } = await import("path");
+  const { fileURLToPath } = await import("url");
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const fp = path.join(__dirname, "dashboard-cmd.json");
+  const rfp = path.join(__dirname, "dashboard-response.json");
+  try {
+    if (!fs.existsSync(fp)) return;
+    const cmd = JSON.parse(fs.readFileSync(fp, "utf8"));
+    let lastId = null;
+    try { lastId = JSON.parse(fs.readFileSync(rfp, "utf8")).id; } catch {}
+    if (cmd.id === lastId) return;
+    fs.unlinkSync(fp);
+    const text = [cmd.cmd, ...(cmd.args || [])].join(" ").trim();
+    await handleIncomingTelegramMessage({ text });
+    fs.writeFileSync(rfp, JSON.stringify({ id: cmd.id, response: "(command executed)", ts: new Date().toISOString() }));
+  } catch (e) {
+    log("dashboard_ipc", `IPC error: ${e.message}`);
+  }
 }
 
 export function stopCronJobs() {
@@ -2658,7 +2683,7 @@ async function runBusy(fn) {
   }
 }
 
-async function handleIncomingTelegramMessage(msg) {
+export async function handleIncomingTelegramMessage(msg) {
   const text = msg?.text?.trim();
   if (!text) return;
 

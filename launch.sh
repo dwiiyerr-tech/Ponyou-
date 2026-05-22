@@ -59,3 +59,8 @@ Aturan inti:
 - MCP collaboration adalah source of truth untuk hasil kerja.
 EOF
 fi
+
+
+# Dashboard
+alias dash="node /home/ubuntu/ponyou/dashboard.js"
+alias dash4000="node /home/ubuntu/ponyou/dashboard.js --port 4000"
