@@ -102,6 +102,19 @@ async function save(state) {
   return _writeQueue;
 }
 
+/**
+ * Drain the in-flight write queue. Call before process.exit() so pending
+ * state.json writes are not abandoned mid-flush. Errors are already logged
+ * inside save(); we swallow here to keep shutdown best-effort.
+ */
+export async function flushState() {
+  try {
+    await _writeQueue;
+  } catch (_) {
+    // errors already logged in save()
+  }
+}
+
 // ─── Position Registry ─────────────────────────────────────────
 
 /**

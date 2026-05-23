@@ -92,7 +92,7 @@ async function fetchHeliusTxns(address, apiKey, limit = 50) {
   // heliusAcquire throws immediately if circuit breaker is open (too many 429s)
   await heliusAcquire();
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) throw new Error(`Helius ${res.status}`);
     return res.json();
   } finally {

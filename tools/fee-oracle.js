@@ -14,6 +14,7 @@ export async function getHeliusPriorityFee(rpcUrl, serializedTxBase58) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: "1", method: "getPriorityFeeEstimate", params }),
+      signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return null;
     const data = await res.json();

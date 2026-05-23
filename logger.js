@@ -20,6 +20,20 @@ function htmlEscape(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// Strip CRLF, ANSI escapes, and other control chars to prevent log injection
+// from external API responses or attacker-controlled error messages.
+// Truncate to bound log line size.
+const ANSI_RE = /\[[0-9;]*[A-Za-z]/g;
+const CTRL_RE = /[\x00-\x08\x0B-\x1F\x7F]/g;
+function sanitizeLogText(s, max = 2000) {
+  let out = String(s == null ? "" : s);
+  out = out.replace(ANSI_RE, "");
+  out = out.replace(/\r\n|\r|\n/g, " ");
+  out = out.replace(CTRL_RE, "");
+  if (out.length > max) out = out.slice(0, max) + "…";
+  return out;
+}
+
 /**
  * General log function.
  */
@@ -30,15 +44,17 @@ export function log(category, message) {
 
   if (LEVELS[level] < currentLevel) return;
 
+  const safeCategory = sanitizeLogText(category, 64);
+  const safeMessage = sanitizeLogText(message, 2000);
   const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] [${category.toUpperCase()}] ${message}`;
+  const line = `[${timestamp}] [${safeCategory.toUpperCase()}] ${safeMessage}`;
 
   // Console output
   console.log(line);
 
   // Send error to telegram (HTML so the tags actually render)
   if (level === "error" && telegramEnabled()) {
-    sendHTML(`⚠️ <b>${htmlEscape(category)}</b>\n<code>${htmlEscape(message)}</code>`).catch(() => {});
+    sendHTML(`⚠️ <b>${htmlEscape(safeCategory)}</b>\n<code>${htmlEscape(safeMessage)}</code>`).catch(() => {});
   }
 
   // File output (daily rotation, async to avoid blocking)

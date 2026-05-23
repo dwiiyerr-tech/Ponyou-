@@ -36,6 +36,7 @@ async function fetchDS(url, retries = 2) {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
           "Accept": "application/json",
         },
+        signal: AbortSignal.timeout(8000),
       });
       if (res.status === 429) {
         await new Promise(r => setTimeout(r, 3000 * (i + 1)));
@@ -444,7 +445,7 @@ async function gtFetch(url, retries = 3) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     await gtAcquireSlot();
     try {
-      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      const res = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8000) });
       if (res.status === 429) {
         if (attempt < retries) {
           await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
@@ -566,7 +567,7 @@ const SMART_MONEY_TF_SECONDS = {
 
 async function fetchHeliusTxns(address, apiKey, limit = 50) {
   const url = `${HELIUS_BASE}/addresses/${address}/transactions?api-key=${apiKey}&limit=${limit}&type=SWAP`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`Helius ${res.status}`);
   return res.json();
 }

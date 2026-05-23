@@ -38,7 +38,7 @@ async function fetchBirdeye(path, params = {}, retries = 1) {
   for (let i = 0; i <= retries; i++) {
     if (i > 0) await new Promise(r => setTimeout(r, 1000 * i));
     try {
-      const res = await fetch(url, { headers: birdeyeHeaders() });
+      const res = await fetch(url, { headers: birdeyeHeaders(), signal: AbortSignal.timeout(8000) });
       if (res.status === 429) {
         await new Promise(r => setTimeout(r, 2500 * (i + 1)));
         continue;

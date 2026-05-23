@@ -53,7 +53,7 @@ export function createDashboardServer({ port = 3000 } = {}) {
   const wss = new WebSocketServer({ server });
 
   // Broadcast state every 2s
-  setInterval(async () => {
+  const broadcastTimer = setInterval(async () => {
     if (wss.clients.size === 0) return;
     try {
       const state = await readBotState();
@@ -81,5 +81,13 @@ export function createDashboardServer({ port = 3000 } = {}) {
     server,
     wss,
     start: () => new Promise(r => server.listen(port, "127.0.0.1", r)),
+    shutdown: () => {
+      clearInterval(broadcastTimer);
+      for (const client of wss.clients) {
+        try { client.terminate(); } catch {}
+      }
+      wss.close();
+      return new Promise(r => server.close(() => r()));
+    },
   };
 }

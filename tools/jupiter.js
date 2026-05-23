@@ -38,7 +38,7 @@ async function swapViaJito({ inputMint, outputMint, amountRaw, slippageBps, wall
   }
 
   const quoteUrl = `${JUPITER_V6}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}`;
-  const quoteRes = await fetch(quoteUrl);
+  const quoteRes = await fetch(quoteUrl, { signal: AbortSignal.timeout(10000) });
   if (!quoteRes.ok) throw new Error(`Jupiter v6 quote ${quoteRes.status}: ${await quoteRes.text()}`);
   const quote = await quoteRes.json();
   if (quote.error) throw new Error(`Jupiter v6 quote: ${quote.error}`);
@@ -56,6 +56,7 @@ async function swapViaJito({ inputMint, outputMint, amountRaw, slippageBps, wall
           computeUnitPriceMicroLamports: priorityFee,
           prioritizationFeeLamports: 0,
         }),
+        signal: AbortSignal.timeout(10000),
       });
       if (!swapRes.ok) throw new Error(`Jupiter v6 swap ${swapRes.status}: ${await swapRes.text()}`);
       const swapData = await swapRes.json();
@@ -98,7 +99,7 @@ async function swapViaJito({ inputMint, outputMint, amountRaw, slippageBps, wall
 // Legacy Jito path — used when executionEdge.enabled = false or singletons not ready
 async function legacyJitoFlow({ inputMint, outputMint, amountRaw, slippageBps, wallet }) {
   const quoteUrl = `${JUPITER_V6}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}`;
-  const quoteRes = await fetch(quoteUrl);
+  const quoteRes = await fetch(quoteUrl, { signal: AbortSignal.timeout(10000) });
   if (!quoteRes.ok) throw new Error(`Jupiter v6 quote ${quoteRes.status}: ${await quoteRes.text()}`);
   const quote = await quoteRes.json();
   if (quote.error) throw new Error(`Jupiter v6 quote: ${quote.error}`);
@@ -107,6 +108,7 @@ async function legacyJitoFlow({ inputMint, outputMint, amountRaw, slippageBps, w
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ quoteResponse: quote, userPublicKey: wallet.publicKey.toString(), wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true, prioritizationFeeLamports: 0 }),
+    signal: AbortSignal.timeout(10000),
   });
   if (!swapRes.ok) throw new Error(`Jupiter v6 swap ${swapRes.status}: ${await swapRes.text()}`);
   const swapData = await swapRes.json();
@@ -204,7 +206,7 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
     const headers = { "Content-Type": "application/json" };
     if (config.jupiter?.apiKey) headers["Authorization"] = `Bearer ${config.jupiter.apiKey}`;
 
-    const orderRes = await fetch(orderUrl.toString(), { headers });
+    const orderRes = await fetch(orderUrl.toString(), { headers, signal: AbortSignal.timeout(10000) });
     if (!orderRes.ok) {
       const body = await orderRes.text();
       throw new Error(`Jupiter order error: ${orderRes.status} — ${body}`);
@@ -226,6 +228,7 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
         signedTransaction: signedTx,
         requestId: order.requestId,
       }),
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!execRes.ok) {
@@ -266,7 +269,7 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
  */
 export async function getJupiterPrice(mint) {
   try {
-    const res  = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`);
+    const res  = await fetch(`https://api.jup.ag/price/v2?ids=${mint}`, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     return data.data?.[mint]?.price ?? null;
@@ -284,7 +287,7 @@ export async function checkJupiterQuote({ mint, amountSol = 0.01 }) {
   try {
     const amountLamports = Math.floor(amountSol * 1e9);
     const url = `https://quote-api.jup.ag/v6/quote?inputMint=${SOL_MINT}&outputMint=${mint}&amount=${amountLamports}&slippageBps=500`;
-    const res  = await fetch(url);
+    const res  = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return { tradeable: false, error: `HTTP ${res.status}` };
     const data = await res.json();
     if (data.error) return { tradeable: false, error: data.error };

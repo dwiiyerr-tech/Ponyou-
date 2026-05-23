@@ -34,7 +34,7 @@ export async function getWalletBalances(walletAddress = null) {
 
   try {
     const url = `https://api.helius.xyz/v1/wallet/${walletAddress}/balances?api-key=${HELIUS_KEY}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     
     if (!res.ok) {
       throw new Error(`Helius API error: ${res.status} ${res.statusText}`);

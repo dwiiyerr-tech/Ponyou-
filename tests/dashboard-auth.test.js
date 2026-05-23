@@ -19,10 +19,14 @@ vi.mock("fs", () => ({
   existsSync: vi.fn(() => false),
 }));
 
-vi.mock("crypto", () => ({
-  default: { randomBytes: (...a) => mockRandomBytes(...a) },
-  randomBytes: (...a) => mockRandomBytes(...a),
-}));
+vi.mock("crypto", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    default: { ...actual, randomBytes: (...a) => mockRandomBytes(...a) },
+    randomBytes: (...a) => mockRandomBytes(...a),
+  };
+});
 
 const { generateToken, getToken, validateToken, authMiddleware } = await import("../dashboard/auth.js");
 

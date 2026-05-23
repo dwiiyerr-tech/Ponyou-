@@ -182,7 +182,7 @@ async function fetchHeliusTxns(address, apiKey, limit = 30, type = null) {
 
   await heliusAcquire();
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (res.status === 429) {
       helius429Hit();
       throw new Error("Helius 429");
@@ -198,7 +198,7 @@ async function fetchHeliusTxns(address, apiKey, limit = 30, type = null) {
 export async function fetchShyftHolders(mint, apiKey, limit = 20) {
   try {
     const url = `${SHYFT_BASE}/token/holders?network=mainnet-beta&token_address=${mint}&size=${limit}`;
-    const res = await fetch(url, { headers: { "x-api-key": apiKey } });
+    const res = await fetch(url, { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(8000) });
     if (!res.ok) throw new Error(`Shyft holders ${res.status}`);
 
     const body = await res.json();
@@ -239,7 +239,7 @@ export async function getFreshFundedCountShyft(mint, apiKey) {
     for (const holder of holders) {
       try {
         const url = `${SHYFT_BASE}/transaction/history?network=mainnet-beta&account=${holder.owner}&tx_num=10`;
-        const res = await fetch(url, { headers: { "x-api-key": apiKey } });
+        const res = await fetch(url, { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(8000) });
         if (!res.ok) throw new Error(`Shyft tx history ${res.status}`);
 
         const body = await res.json();
