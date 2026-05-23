@@ -79,6 +79,10 @@ infra/agent-collab/experiment-runs.jsonl
 
 logs/
 
+# Python bytecode cache (tools/tui)
+__pycache__/
+*.pyc
+
 # Ruflo / claude-flow runtime dirs
 .swarm/
 .claude-flow/

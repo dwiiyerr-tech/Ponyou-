@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { randomBytes } from "crypto";
+import { randomBytes, timingSafeEqual } from "crypto";
 import { atomicWriteText } from "../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -21,11 +21,19 @@ export function getToken() {
   return _token;
 }
 
+function safeEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
 export function validateToken(req) {
   const auth = req.headers["authorization"] || "";
   const cookie = req.cookies?.dashtoken || "";
   const token = getToken();
-  return auth === `Bearer ${token}` || cookie === token;
+  return safeEqual(auth, `Bearer ${token}`) || safeEqual(cookie, token);
 }
 
 export function authMiddleware(req, res, next) {

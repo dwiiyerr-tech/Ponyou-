@@ -65,6 +65,7 @@ export class GeyserStream {
     this._subscriptionId = null;
     this._closed = false;
     this._nextRpcId = 1;
+    this._reconnectTimer = null;
   }
 
   connect() {
@@ -98,6 +99,10 @@ export class GeyserStream {
   close() {
     this._closed = true;
     this.shouldReconnect = false;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     if (this._ws) {
       try { this._ws.close(); } catch { /* no-op */ }
     }
@@ -208,7 +213,10 @@ export class GeyserStream {
     ];
     this._reconnectAttempt++;
     log("geyser", `Reconnecting in ${delay}ms (attempt ${this._reconnectAttempt})`);
-    setTimeout(() => this.connect(), delay);
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      this.connect();
+    }, delay);
   }
 }
 

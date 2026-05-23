@@ -731,7 +731,7 @@ export async function testProvider(providerId) {
   if (provider.local) {
     try {
       const baseUrl = env.LLM_BASE_URL || provider.baseUrl;
-      const response = await fetch(`${baseUrl}/models`);
+      const response = await fetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(15000) });
       return {
         success: response.ok,
         message: response.ok

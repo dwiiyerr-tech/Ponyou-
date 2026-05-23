@@ -44,13 +44,15 @@ export function createApiRouter() {
     if (!FEATURES[feature]) return res.status(400).json({ error: "Unknown feature" });
     const current = readConfig();
     const parts = FEATURES[feature].split(".");
-    let obj = current;
-    for (let i = 0; i < parts.length - 1; i++) {
+    const rootKey = parts[0];
+    const root = (current[rootKey] && typeof current[rootKey] === "object") ? current[rootKey] : {};
+    let obj = root;
+    for (let i = 1; i < parts.length - 1; i++) {
       obj[parts[i]] = obj[parts[i]] || {};
       obj = obj[parts[i]];
     }
     obj[parts[parts.length - 1]] = Boolean(enabled);
-    writeConfig(current);
+    writeConfig({ [rootKey]: root });
     res.json({ ok: true, feature, enabled: Boolean(enabled) });
   });
 
@@ -61,8 +63,19 @@ export function createApiRouter() {
 
   router.post("/cmd", async (req, res) => {
     const { cmd, args = [] } = req.body || {};
-    if (!cmd || !ALLOWED_SLASH_CMDS.has(cmd.split(" ")[0])) {
+    if (typeof cmd !== "string" || cmd.length > 64) {
+      return res.status(400).json({ error: "Invalid cmd" });
+    }
+    if (!ALLOWED_SLASH_CMDS.has(cmd.split(" ")[0])) {
       return res.status(400).json({ error: "Unknown or disallowed command" });
+    }
+    if (!Array.isArray(args) || args.length > 16) {
+      return res.status(400).json({ error: "Invalid args" });
+    }
+    for (const a of args) {
+      if (typeof a !== "string" || a.length > 256) {
+        return res.status(400).json({ error: "Invalid arg entry" });
+      }
     }
     const result = await sendBotCommand({ cmd, args });
     res.json(result);

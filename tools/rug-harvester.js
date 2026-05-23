@@ -21,7 +21,7 @@ const DS_BASE = "https://api.dexscreener.com";
 
 async function fetchPair(mint) {
   try {
-    const res = await fetch(`${DS_BASE}/latest/dex/tokens/${mint}`);
+    const res = await fetch(`${DS_BASE}/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return null;
     const data = await res.json();
     const pairs = (data.pairs || []).filter(p => p.chainId === "solana");

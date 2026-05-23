@@ -11,7 +11,7 @@ import { swapToken as executeJupiterSwap } from "./jupiter.js";
 import { getWalletBalances } from "./wallet.js";
 import { scanRefundableTokenAccounts, closeRefundableTokenAccounts } from "../rent-refund.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons, recordRug, scoreRugRisk, getRugMemorySummary } from "../lessons.js";
-import { setPositionInstruction, getTrackedPosition } from "../state.js";
+import { setPositionInstruction, getTrackedPosition, flushState } from "../state.js";
 import { getPlanSummary, initTradingPlan, pauseSession, advanceDay, checkSessionGate, isInProfitMode, getDynamicPositionLimit } from "../trading-plan.js";
 import { getMarketIntelligence, getMarketTrend } from "../market-intelligence.js";
 import { getLearningModeStatus, getLearningStatusSummary, getLearningHistory, activateLearningMode } from "../learning-mode.js";
@@ -285,7 +285,8 @@ const toolMap = {
       if (result.includes("Already up to date")) {
         return { success: true, updated: false, message: "Already up to date — no restart needed." };
       }
-      setTimeout(() => {
+      setTimeout(async () => {
+        try { await flushState(); } catch (_) {}
         const child = spawn(process.execPath, process.argv.slice(1), {
           detached: true,
           stdio: "inherit",

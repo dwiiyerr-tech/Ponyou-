@@ -162,6 +162,7 @@ async function jitoRpc({ region, method, params, authToken = null }) {
     method: "POST",
     headers,
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(10000),
   });
   const text = await res.text();
   if (!res.ok) {

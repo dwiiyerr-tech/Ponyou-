@@ -18,21 +18,42 @@ export class StrategyEvolutionEngine {
   start() {
     if (this.#running) return;
     this.#running = true;
-    this.#bus.on("candidate", c => this.#handleCandidate(c));
+    this.#bus.on("candidate", c => {
+      this.#handleCandidate(c).catch(e => {
+        this.#bus.emit("evolution_error", {
+          stage: "handleCandidate",
+          name: c?.name,
+          error: e?.message || String(e),
+        });
+      });
+    });
   }
 
   stop() { this.#running = false; }
 
   async #handleCandidate(candidate) {
-    const id = this.#registry.register({
-      name: candidate.name,
-      type: candidate.type,
-      rules: candidate.rules ?? {},
-      regime: candidate.regime ?? null,
-      source: candidate.source ?? "evolution",
-    });
+    let id;
+    try {
+      id = this.#registry.register({
+        name: candidate.name,
+        type: candidate.type,
+        rules: candidate.rules ?? {},
+        regime: candidate.regime ?? null,
+        source: candidate.source ?? "evolution",
+      });
+    } catch (e) {
+      this.#bus.emit("evolution_error", { stage: "register", name: candidate?.name, error: e?.message || String(e) });
+      return;
+    }
 
-    const gateResult = await this.#gate.evaluate(id);
+    let gateResult;
+    try {
+      gateResult = await this.#gate.evaluate(id);
+    } catch (e) {
+      try { this.#registry.reject(id, `gate threw: ${e?.message || e}`); } catch {}
+      this.#bus.emit("evolution_error", { stage: "gate", id, error: e?.message || String(e) });
+      return;
+    }
     if (!gateResult.passed) {
       this.#registry.reject(id, gateResult.rejectReason);
       this.#bus.emit("gate_result", { id, passed: false, layer: gateResult.failedLayer });
@@ -41,12 +62,19 @@ export class StrategyEvolutionEngine {
 
     this.#bus.emit("gate_result", { id, passed: true, scores: gateResult.scores });
 
-    const propResult = await this.#proposal.submit({
-      ...candidate,
-      id,
-      scores: gateResult.scores,
-      evidence: gateResult.evidence,
-    });
+    let propResult;
+    try {
+      propResult = await this.#proposal.submit({
+        ...candidate,
+        id,
+        scores: gateResult.scores,
+        evidence: gateResult.evidence,
+      });
+    } catch (e) {
+      try { this.#registry.reject(id, `proposal threw: ${e?.message || e}`); } catch {}
+      this.#bus.emit("evolution_error", { stage: "proposal", id, error: e?.message || String(e) });
+      return;
+    }
 
     if (propResult.status === "approved") {
       this.#registry.activate(id, gateResult.scores);

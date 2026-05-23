@@ -31,7 +31,7 @@ import {
 import {
   listPendingIntents, getIntent, consumeIntent,
 } from "./intents.js";
-import { trackPosition, recordClose, getTrackedPosition, getState, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl, cleanStaleTestPositions } from "./state.js";
+import { trackPosition, recordClose, getTrackedPosition, getState, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl, cleanStaleTestPositions, flushState } from "./state.js";
 import { pruneClosedPositions } from "./state-pruner.js";
 import { atomicWriteJson } from "./atomic-write.js";
 import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
@@ -336,6 +336,9 @@ let _lastSolPrice = null;
 // cronStarted is hoisted here so startCronJobs / stopCronJobs (defined below
 // and exported) can safely reference it from another module's evaluation order.
 let cronStarted = false;
+let _dashboardIpcTimer = null;
+let _ttyPromptTimer = null;
+let _automationCommandTimer = null;
 
 function stripThink(t) {
   return t ? t.replace(/<think>[\s\S]*?<\/think>/gi, "").trim() : t;
@@ -2521,7 +2524,7 @@ export function startCronJobs() {
   // Auto-seed smart wallets after Geyser is started so refreshSubscriptions() can wire them in
   seedSmartWallets().catch(e => log("smart_wallets", `seed failed: ${e.message}`));
   // Dashboard IPC — check for commands from dashboard process every 3s
-  setInterval(() => checkDashboardCommands().catch(e => log("dashboard_ipc", e.message)), 3000);
+  _dashboardIpcTimer = setInterval(() => checkDashboardCommands().catch(e => log("dashboard_ipc", e.message)), 3000);
   log("cron", `Jobs started: mgmt=${config.schedule.managementIntervalMin}m screen=${config.schedule.screeningIntervalMin}m vault=6h report=${reportH}:${String(reportM).padStart(2,"0")}UTC`);
 }
 
@@ -2536,6 +2539,15 @@ export async function checkDashboardCommands() {
   try {
     if (!fs.existsSync(fp)) return;
     const cmd = JSON.parse(fs.readFileSync(fp, "utf8"));
+    if (!cmd || typeof cmd !== "object" || Array.isArray(cmd)) { fs.unlinkSync(fp); return; }
+    if (typeof cmd.cmd !== "string" || cmd.cmd.length === 0 || cmd.cmd.length > 64) { fs.unlinkSync(fp); return; }
+    if (cmd.args !== undefined) {
+      if (!Array.isArray(cmd.args) || cmd.args.length > 16) { fs.unlinkSync(fp); return; }
+      for (const a of cmd.args) {
+        if (typeof a !== "string" || a.length > 256) { fs.unlinkSync(fp); return; }
+      }
+    }
+    if (cmd.id === undefined || cmd.id === null) { fs.unlinkSync(fp); return; }
     let lastId = null;
     try { lastId = JSON.parse(fs.readFileSync(rfp, "utf8")).id; } catch {}
     if (cmd.id === lastId) return;
@@ -2560,17 +2572,22 @@ export function stopCronJobs() {
 async function shutdown(signal) {
   log("shutdown", signal);
   stopPolling();
+  if (_dashboardIpcTimer) { clearInterval(_dashboardIpcTimer); _dashboardIpcTimer = null; }
+  if (_ttyPromptTimer) { clearInterval(_ttyPromptTimer); _ttyPromptTimer = null; }
+  if (_automationCommandTimer) { clearInterval(_automationCommandTimer); _automationCommandTimer = null; }
   _cronTasks.forEach(t => t.stop());
   if (_geyserStream?.close) _geyserStream.close();
   _geyserStream = null;
   try { _rugMonitor?.shutdown(); } catch (_) {}
   try { shutdownSingletons(); } catch (_) {}
   try { shutdownWalletManager(); } catch (_) {}
+  try { await flushState(); } catch (_) {}
   process.exit(0);
 }
 process.on("unhandledRejection", (reason, promise) => {
   log("fatal", `Unhandled rejection: ${reason?.message || reason}`);
   console.error("[unhandledRejection]", reason);
+  flushState().catch(() => {});
 });
 
 process.on("uncaughtException", (err) => {
@@ -2593,7 +2610,7 @@ let _ttyInterface = null;
 if (isTTY) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: buildPrompt() });
   _ttyInterface = rl;
-  setInterval(() => { if (!busy) { rl.setPrompt(buildPrompt()); rl.prompt(true); } }, 10_000);
+  _ttyPromptTimer = setInterval(() => { if (!busy) { rl.setPrompt(buildPrompt()); rl.prompt(true); } }, 10_000);
 
   const plan = getPlanSummary();
   const market = getMarketIntelligence();
@@ -2817,6 +2834,6 @@ function ensureTelegramAutomationSurface() {
 
 syncAutomationBootState();
 ensureTelegramAutomationSurface();
-setInterval(processAutomationCommand, 2000);
+_automationCommandTimer = setInterval(processAutomationCommand, 2000);
 
 registerCronRestarter(() => { if (cronStarted) startCronJobs(); });

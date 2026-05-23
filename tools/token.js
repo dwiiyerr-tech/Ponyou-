@@ -5,7 +5,7 @@ const DATAPI_BASE = "https://datapi.jup.ag/v1";
  * Useful for understanding if a token has a real community/theme vs nothing.
  */
 export async function getTokenNarrative({ mint }) {
-  const res = await fetch(`${DATAPI_BASE}/chaininsight/narrative/${mint}`);
+  const res = await fetch(`${DATAPI_BASE}/chaininsight/narrative/${mint}`, { signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`Narrative API error: ${res.status}`);
   const data = await res.json();
   return {
@@ -21,7 +21,7 @@ export async function getTokenNarrative({ mint }) {
  */
 export async function getTokenInfo({ query }) {
   const url = `${DATAPI_BASE}/assets/search?query=${encodeURIComponent(query)}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`Token search API error: ${res.status}`);
   const data = await res.json();
   const tokens = Array.isArray(data) ? data : [data];
@@ -57,8 +57,8 @@ export async function getTokenInfo({ query }) {
  */
 export async function getTokenHolders({ mint, limit = 20 }) {
   const [holdersRes, tokenRes] = await Promise.all([
-    fetch(`${DATAPI_BASE}/holders/${mint}?limit=100`),
-    fetch(`${DATAPI_BASE}/assets/search?query=${mint}`),
+    fetch(`${DATAPI_BASE}/holders/${mint}?limit=100`, { signal: AbortSignal.timeout(8000) }),
+    fetch(`${DATAPI_BASE}/assets/search?query=${mint}`, { signal: AbortSignal.timeout(8000) }),
   ]);
   if (!holdersRes.ok) throw new Error(`Holders API error: ${holdersRes.status}`);
   const data = await holdersRes.json();

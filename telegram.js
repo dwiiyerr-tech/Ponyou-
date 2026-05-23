@@ -18,6 +18,7 @@ const API_BASE = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 
 let _pollingActive = false;
 let _lastOffset = 0;
+let _pollTimer = null;
 
 export function isEnabled() {
   return !!(TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID);
@@ -71,6 +72,7 @@ async function postTelegram(endpoint, body) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
     });
     return await res.json();
   } catch (e) {
@@ -137,7 +139,7 @@ export function startPolling(onMessage) {
   const poll = async () => {
     if (!_pollingActive) return;
     try {
-      const res = await fetch(`${API_BASE}/getUpdates?offset=${_lastOffset + 1}&timeout=30`);
+      const res = await fetch(`${API_BASE}/getUpdates?offset=${_lastOffset + 1}&timeout=30`, { signal: AbortSignal.timeout(35000) });
       const data = await res.json();
       if (data?.ok && data.result?.length > 0) {
         for (const update of data.result) {
@@ -150,13 +152,16 @@ export function startPolling(onMessage) {
     } catch (e) {
       console.error(`[Telegram] Polling error: ${e.message}`);
     }
-    setTimeout(poll, 1000);
+    if (_pollingActive) {
+      _pollTimer = setTimeout(poll, 1000);
+    }
   };
   poll();
 }
 
 export function stopPolling() {
   _pollingActive = false;
+  if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
 }
 
 // ─── Live message: edits in place to show progress ───────────────
