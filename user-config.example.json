@@ -80,6 +80,13 @@
   "darwinCeiling": 2.5,
   "darwinMinSamples": 10,
 
+  "_comment_multi_wallet": "Aktifkan via dashboard wizard Step 12. Private key disimpan di .env sebagai WALLET_KEY_1..10 (jangan di file ini). Total capital_pct harus 100.",
+  "multiWalletEnabled": false,
+  "wallets": [
+    { "label": "main",  "env_ref": "WALLET_KEY_1", "capital_pct": 60 },
+    { "label": "scout", "env_ref": "WALLET_KEY_2", "capital_pct": 40 }
+  ],
+
   "chartIndicators": {
     "enabled": false,
     "entryPreset": "supertrend_break",

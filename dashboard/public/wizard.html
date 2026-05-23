@@ -146,6 +146,7 @@ const STEPS = [
       { key: "jitoRegion", label: "Jito Region", type: "select", options: ["fra","ny","ams","tyo"] },
       { key: "fastTrackEnabled", label: "Enable Fast Track Entry", type: "checkbox", hint: "Skip LLM for unambiguous buys" },
       { key: "multiWalletEnabled", label: "Enable Multi-Wallet", type: "checkbox" },
+      { key: "wallets", label: "Wallet Slots (2-10, total capital_pct = 100%)", type: "wallet-list", condKey: "multiWalletEnabled" },
       { key: "strategyEvolutionEnabled", label: "Enable Strategy Evolution", type: "checkbox" },
       { key: "darwinEnabled", label: "Enable Darwin Signal Weighting", type: "checkbox" },
       { key: "managementIntervalMin", label: "Management Interval (min)", type: "number", hint: "Default 10" },
@@ -166,6 +167,21 @@ async function loadExistingConfig() {
     const res = await fetch("/wizard/config");
     formData = await res.json();
   } catch {}
+  try {
+    const res = await fetch("/wizard/wallet-status");
+    if (res.ok) {
+      const status = await res.json();
+      formData._walletKeyStatus = {};
+      for (const s of (status.slots || [])) formData._walletKeyStatus[s.env_ref] = s.has_key;
+    }
+  } catch {}
+  if (!Array.isArray(formData.wallets) || formData.wallets.length < 2) {
+    formData.wallets = [
+      { label: "main",  env_ref: "WALLET_KEY_1", capital_pct: 60 },
+      { label: "scout", env_ref: "WALLET_KEY_2", capital_pct: 40 },
+    ];
+  }
+  formData._walletKeys = formData._walletKeys || {};
   renderStep();
 }
 
@@ -195,6 +211,14 @@ function renderStep() {
   if (s.review) {
     const safe = JSON.parse(JSON.stringify(formData));
     if (safe.privateKey) safe.privateKey = safe.privateKey.slice(0,4) + "…" + safe.privateKey.slice(-4);
+    if (safe._walletKeys && typeof safe._walletKeys === "object") {
+      const masked = {};
+      for (const [k, v] of Object.entries(safe._walletKeys)) {
+        masked[k] = typeof v === "string" && v.length > 8 ? `${v.slice(0,4)}…${v.slice(-4)}` : "(set)";
+      }
+      safe._walletKeys = masked;
+    }
+    delete safe._walletKeyStatus;
     container.innerHTML = `<div class="wizard-step"><h2>${s.title}</h2>
       <p style="color:var(--muted);font-size:13px;margin-bottom:1rem">Review your configuration before saving:</p>
       <pre style="background:var(--bg);padding:1rem;border-radius:6px;font-size:12px;overflow:auto;max-height:340px">${JSON.stringify(safe, null, 2)}</pre>
@@ -214,6 +238,9 @@ function renderStep() {
       html += `<div class="field-row"><label>${f.label}${f.required?" *":""}</label>
         <select data-key="${f.key}">${opts}</select>
         ${f.hint ? `<div class="field-hint">${f.hint}</div>` : ""}</div>`;
+    } else if (f.type === "wallet-list") {
+      const enabled = f.condKey ? !!getNestedVal(formData, f.condKey) : true;
+      html += renderWalletList(f, enabled);
     } else {
       html += `<div class="field-row"><label>${f.label}${f.required?" *":""}</label>
         <input type="${f.type}" data-key="${f.key}" value="${val}" placeholder="${f.hint||""}">
@@ -223,6 +250,96 @@ function renderStep() {
   if (s.extra) html += s.extra;
   html += "</div>";
   container.innerHTML = html;
+}
+
+function renderWalletList(field, enabled) {
+  if (!enabled) {
+    return `<div class="field-row"><label>${field.label}</label>
+      <div class="field-hint" style="padding:.75rem;background:var(--bg);border-radius:6px">
+        ☑️ Enable Multi-Wallet di atas untuk mengisi slot wallet (2-10).
+      </div></div>`;
+  }
+  const rows = (formData.wallets || []).slice(0, 10);
+  const status = formData._walletKeyStatus || {};
+  let html = `<div class="field-row"><label>${field.label}</label>
+    <div id="walletList" style="display:flex;flex-direction:column;gap:.5rem">`;
+  rows.forEach((w, i) => { html += renderWalletRow(w, i, status); });
+  html += `</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:.5rem">
+      <button class="btn" type="button" onclick="addWalletRow()">+ Add Wallet</button>
+      <div id="walletTotal" style="font-size:13px;color:var(--muted)"></div>
+    </div>
+    <div class="field-hint" style="margin-top:.25rem">Private key disimpan di .env sebagai WALLET_KEY_1..10. user-config.json hanya simpan label + env_ref + capital_pct.</div>
+  </div>`;
+  setTimeout(updateWalletTotal, 0);
+  return html;
+}
+
+function renderWalletRow(w, i, status) {
+  const envRef = `WALLET_KEY_${i + 1}`;
+  const hasKey = !!status[envRef];
+  const ph = hasKey ? "•••• already set (leave blank to keep)" : "bs58 private key";
+  const canRemove = (formData.wallets || []).length > 2;
+  return `<div class="wallet-row" data-row="${i}" style="display:grid;grid-template-columns:1fr 110px 80px 1fr auto;gap:.4rem;align-items:center;background:var(--bg);padding:.4rem;border-radius:6px">
+    <input type="text" data-row-field="label" placeholder="label" value="${(w.label||"").replace(/"/g,"&quot;")}">
+    <input type="text" value="${envRef}" readonly style="opacity:.6">
+    <input type="number" data-row-field="capital_pct" placeholder="pct" value="${w.capital_pct||""}" min="0" max="100" step="0.01" onchange="updateWalletTotal()">
+    <input type="password" data-row-field="key" placeholder="${ph}" data-has-key="${hasKey?'1':'0'}">
+    <button class="btn" type="button" onclick="removeWalletRow(${i})" ${canRemove?"":"disabled"}>−</button>
+  </div>`;
+}
+
+function readWalletRows() {
+  const rows = document.querySelectorAll(".wallet-row");
+  const wallets = [];
+  const keys = {};
+  rows.forEach((row, i) => {
+    const label = row.querySelector('[data-row-field="label"]').value.trim();
+    const pct = parseFloat(row.querySelector('[data-row-field="capital_pct"]').value);
+    const keyInput = row.querySelector('[data-row-field="key"]');
+    const envRef = `WALLET_KEY_${i + 1}`;
+    if (!label) return;
+    wallets.push({ label, env_ref: envRef, capital_pct: isFinite(pct) ? pct : 0 });
+    const keyVal = keyInput.value.trim();
+    if (keyVal) keys[envRef] = keyVal;
+  });
+  return { wallets, keys };
+}
+
+function addWalletRow() {
+  const { wallets, keys } = readWalletRows();
+  if (wallets.length >= 10) { showToast("Max 10 wallets", false); return; }
+  formData.wallets = wallets.concat([{ label: `wallet-${wallets.length + 1}`, env_ref: `WALLET_KEY_${wallets.length + 1}`, capital_pct: 0 }]);
+  formData._walletKeys = { ...formData._walletKeys, ...keys };
+  renderStep();
+}
+
+function removeWalletRow(idx) {
+  const { wallets, keys } = readWalletRows();
+  if (wallets.length <= 2) { showToast("Min 2 wallets", false); return; }
+  wallets.splice(idx, 1);
+  // Re-index env_ref so slots stay positional (1..N).
+  const reindexed = wallets.map((w, i) => ({ ...w, env_ref: `WALLET_KEY_${i + 1}` }));
+  formData.wallets = reindexed;
+  // Drop keys beyond new length; keep keys for slots that remain.
+  const newKeys = {};
+  for (let i = 0; i < reindexed.length; i++) {
+    const envRef = `WALLET_KEY_${i + 1}`;
+    if (keys[envRef]) newKeys[envRef] = keys[envRef];
+  }
+  formData._walletKeys = newKeys;
+  renderStep();
+}
+
+function updateWalletTotal() {
+  const total = Array.from(document.querySelectorAll('[data-row-field="capital_pct"]'))
+    .map(el => parseFloat(el.value) || 0)
+    .reduce((a, b) => a + b, 0);
+  const el = document.getElementById("walletTotal");
+  if (!el) return;
+  const ok = Math.abs(total - 100) < 0.01;
+  el.textContent = `Total: ${total.toFixed(2)}% ${ok ? "✓" : "(harus 100%)"}`;
+  el.style.color = ok ? "var(--ok, #4ade80)" : "var(--warn, #fbbf24)";
 }
 
 function collectStep() {
@@ -236,6 +353,11 @@ function collectStep() {
     else val = el.value;
     if (val !== undefined && val !== "") setNestedVal(formData, key, val);
   });
+  if (document.querySelector(".wallet-row")) {
+    const { wallets, keys } = readWalletRows();
+    formData.wallets = wallets;
+    formData._walletKeys = { ...(formData._walletKeys || {}), ...keys };
+  }
 }
 
 function wizNext() {
