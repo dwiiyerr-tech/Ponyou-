@@ -95,6 +95,27 @@ function sanitizeRpcUrls(arr) {
   return arr.filter(isSafeHttpUrl).slice(0, 16);
 }
 
+const WALLET_LABEL_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
+const WALLET_ENV_REF_PATTERN = /^WALLET_KEY_(?:10|[1-9])$/;
+
+function sanitizeWallets(arr) {
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (const w of arr) {
+    if (out.length >= 10) break;
+    if (!w || typeof w !== "object" || Array.isArray(w)) continue;
+    const label = typeof w.label === "string" ? w.label.trim() : "";
+    const envRef = typeof w.env_ref === "string" ? w.env_ref.trim() : "";
+    const pct = Number(w.capital_pct);
+    if (!WALLET_LABEL_PATTERN.test(label)) continue;
+    if (!WALLET_ENV_REF_PATTERN.test(envRef)) continue;
+    if (!Number.isFinite(pct) || pct <= 0 || pct > 100) continue;
+    // Strip key — wizard never persists plaintext to user-config.json.
+    out.push({ label, env_ref: envRef, capital_pct: pct });
+  }
+  return out;
+}
+
 function sanitizeConfig(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return {};
   const out = {};
@@ -108,6 +129,7 @@ function sanitizeConfig(data) {
     }
     if (k === "rpcUrls") { out[k] = sanitizeRpcUrls(v); continue; }
     if (k === "customProviders") { out[k] = sanitizeCustomProviders(v); continue; }
+    if (k === "wallets") { out[k] = sanitizeWallets(v); continue; }
     out[k] = v;
   }
   return out;

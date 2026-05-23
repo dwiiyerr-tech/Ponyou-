@@ -54,9 +54,14 @@ export function initWalletManager() {
   // Multi-wallet mode
   let totalPct = 0;
   for (const w of mw.wallets) {
-    if (!w.key) continue;
+    const envRef = w.env_ref || w.envRef || null;
+    const raw = envRef ? process.env[envRef] : w.key;
+    if (!raw) {
+      log("wallet_mgr", `Wallet ${w.label || "?"}: ${envRef ? `env ${envRef} unset` : "missing key"} → skipped`);
+      continue;
+    }
     try {
-      const keypair = Keypair.fromSecretKey(bs58.decode(w.key));
+      const keypair = Keypair.fromSecretKey(bs58.decode(raw));
       const address = keypair.publicKey.toString();
       const pct = Number(w.capital_pct) || 0;
       totalPct += pct;
@@ -69,7 +74,8 @@ export function initWalletManager() {
         cold_until:  0,
       });
       if (!_activeAddress) _activeAddress = address;
-      log("wallet_mgr", `Wallet loaded: ${w.label || address.slice(0, 8)} (${pct}%)`);
+      const source = envRef ? `via ${envRef}` : "via inline key";
+      log("wallet_mgr", `Wallet loaded: ${w.label || address.slice(0, 8)} ${source} (${pct}%)`);
     } catch (e) {
       log("wallet_mgr", `Wallet key invalid (${w.label || "?"}): ${e.message}`);
     }

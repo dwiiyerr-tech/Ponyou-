@@ -128,3 +128,51 @@ describe("URL scheme validation (SSRF guard)", () => {
     expect(raw.somethingRandom).toBeUndefined();
   });
 });
+
+describe("sanitizeWallets (multi-wallet schema)", () => {
+  it("accepts valid wallets array and strips inline key", () => {
+    writeConfig({
+      walletAddress: "x",
+      wallets: [
+        { label: "main",  env_ref: "WALLET_KEY_1", capital_pct: 60, key: "should-be-stripped" },
+        { label: "scout", env_ref: "WALLET_KEY_2", capital_pct: 40 },
+      ],
+    });
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, "user-config.json"), "utf8"));
+    expect(raw.wallets).toHaveLength(2);
+    expect(raw.wallets[0]).toEqual({ label: "main", env_ref: "WALLET_KEY_1", capital_pct: 60 });
+    expect(raw.wallets[0].key).toBeUndefined();
+  });
+
+  it("caps wallets at 10 entries", () => {
+    const many = Array.from({ length: 15 }, (_, i) => ({
+      label: `w${i}`,
+      env_ref: `WALLET_KEY_${(i % 10) + 1}`,
+      capital_pct: 10,
+    }));
+    writeConfig({ walletAddress: "x", wallets: many });
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, "user-config.json"), "utf8"));
+    expect(raw.wallets).toHaveLength(10);
+  });
+
+  it("rejects rows with invalid env_ref / label / capital_pct", () => {
+    writeConfig({
+      walletAddress: "x",
+      wallets: [
+        { label: "ok",        env_ref: "WALLET_KEY_1", capital_pct: 50 },
+        { label: "bad-env",   env_ref: "FOO_BAR",      capital_pct: 25 },
+        { label: "bad pct",   env_ref: "WALLET_KEY_3", capital_pct: 0 },
+        { label: "over",      env_ref: "WALLET_KEY_4", capital_pct: 200 },
+        { label: "@@@",       env_ref: "WALLET_KEY_5", capital_pct: 10 },
+      ],
+    });
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, "user-config.json"), "utf8"));
+    expect(raw.wallets.map(w => w.label)).toEqual(["ok"]);
+  });
+
+  it("returns empty array when wallets is not an array", () => {
+    writeConfig({ walletAddress: "x", wallets: "not-an-array" });
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, "user-config.json"), "utf8"));
+    expect(raw.wallets).toEqual([]);
+  });
+});
