@@ -8,7 +8,7 @@ import { log } from "../logger.js";
 import { listSmartWallets } from "../smart-wallets.js";
 import { recordSmartWalletSnapshot, summarizeSmartWalletHistory } from "../smart-wallet-history.js";
 import { analyzeHolderStructure } from "../holder-memory.js";
-import { detectBundledLaunch, gatherRugSignals } from "./rug-signals.js";
+import { detectBundledLaunch, gatherRugSignals, heliusAcquire, heliusRelease, heliusCircuitOpen } from "./rug-signals.js";
 import { classifyNarrative, summarizeNarrative } from "./narratives.js";
 import { discoverBirdeyeTokens, enrichTokensWithBirdeye, isBirdeyeEnabled } from "./birdeye.js";
 
@@ -566,10 +566,16 @@ const SMART_MONEY_TF_SECONDS = {
 };
 
 async function fetchHeliusTxns(address, apiKey, limit = 50) {
+  if (heliusCircuitOpen()) throw new Error("Helius circuit open — smart money degraded");
+  await heliusAcquire();
   const url = `${HELIUS_BASE}/addresses/${address}/transactions?api-key=${apiKey}&limit=${limit}&type=SWAP`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-  if (!res.ok) throw new Error(`Helius ${res.status}`);
-  return res.json();
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`Helius ${res.status}`);
+    return res.json();
+  } finally {
+    heliusRelease();
+  }
 }
 
 function numberOrZero(value) {
