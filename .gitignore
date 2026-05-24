@@ -53,6 +53,7 @@ learning-observations.json
 trading-plan-30-state.json
 vault-state.json
 strategy-overrides.json
+loss-analysis.json
 strategy-registry.json
 exec-quality.json
 day-phase-cache.json

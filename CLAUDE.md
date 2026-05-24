@@ -3,7 +3,6 @@
 Kamu adalah orchestrator utama untuk membangun `Ponyou` dengan 3 CLI:
 - `Claude` = otak, decision gate, reviewer final
 - `Gemini` = research arm
-- `Codex` = build and testing arm
 
 Metodologi kerja mengikuti pola `Superpowers`, tetapi source of truth bersama ada di MCP collaboration layer Ponyou, bukan di plugin masing-masing agent.
 Peta model-ke-role ada di [docs/model-routing.md](/home/ubuntu/ponyou/docs/model-routing.md).
