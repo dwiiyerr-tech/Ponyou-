@@ -96,6 +96,7 @@ import { recordNarrativeOutcome, detectNarrativeVelocity, trackCrossBatchVelocit
 import { aggregateSignal } from "./signal-aggregator.js";
 import { registerDefaultFeatures, runAllFeatures, listFeatures, getHealthSummary, enableFeature, disableFeature, autoResetBreakers } from "./feature-registry.js";
 import { analyzeCabalPlay, CabalAgentAction } from "./tools/cabal-play-analyzer.js";
+import { runAllMaintenance } from "./data-maintenance.js";
 import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
@@ -147,6 +148,10 @@ log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " (demo/dry
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
 
 const MAX_CANDIDATES_PER_CYCLE = 20;
+
+// ─── Data Maintenance ─────────────────────────
+const maintenanceResult = runAllMaintenance();
+log("startup", `Data maintenance: ${maintenanceResult.migrated} files, ${maintenanceResult.conviction_pruned} conviction pruned, ${maintenanceResult.lessons_removed} lessons removed, ${maintenanceResult.rug_blacklist_capped} blacklist capped`);
 
 // ─── Feature Registry ──────────────────────────
 registerDefaultFeatures();
@@ -2731,9 +2736,20 @@ export function startCronJobs() {
   }));
 
   // Daily prune: archive closed positions older than 7 days (3am UTC)
-  tasks.push(cron.schedule("0 3 * * *", () => {
+  tasks.push(cron.schedule("0 3 * * *", async () => {
     const { pruned } = pruneClosedPositions();
     if (pruned > 0) log("cron", `Daily prune: archived ${pruned} old closed positions`);
+    // Wallet pruning — prevent discovered-wallets.json bloat
+    try {
+      const { pruneDiscoveredWallets } = await import("./wallet-score-decay.js");
+      const { readFileSync, writeFileSync } = await import("fs");
+      const wallets = JSON.parse(readFileSync("discovered-wallets.json", "utf8"));
+      const result = pruneDiscoveredWallets(wallets, { maxAgeDays: 30, maxWallets: 200 });
+      if (result.removed > 0) {
+        writeFileSync("discovered-wallets.json", JSON.stringify(result.pruned, null, 2));
+        log("cron", `Wallet prune: removed ${result.removed} stale wallets, kept ${result.kept}`);
+      }
+    } catch (e) { /* file may not exist, OK */ }
   }));
 
   // Vault (daily check — cron checks if 7 days elapsed)
