@@ -2373,6 +2373,10 @@ function handleGeyserDisconnect(attempt) {
 
 async function seedSmartWallets() {
   if (listSmartWallets({ minDecayMultiplier: 0.5 }).length > 0) return; // already populated (active wallets only)
+  if (process.env.SCREENING_MODE === "dexscreener") {
+    log("smart_wallets", "DexScreener-only mode — skipping Helius wallet discovery");
+    return;
+  }
   log("smart_wallets", "smart-wallets.json empty — running auto-discovery…");
   try {
     const result = await discoverSmartWallets({ source_tokens: 5, min_winrate: 0.6, min_trades: 5, auto_add: false });
