@@ -17,13 +17,14 @@ export const strategy = PRESETS.scalping;
  * Resolve effective stop-loss (decimal, negative).
  * Hybrid: user-config override wins; otherwise active strategy default.
  * @param {number|null} userStopLossPct - From config.management.stopLossPct (percent, e.g. -15)
+ * @param {{regime?: string}} [context] - Optional regime hint for runtime selector
  * @returns {number} stop-loss in decimal (e.g. -0.15)
  */
-export function getEffectiveStopLoss(userStopLossPct = null) {
+export function getEffectiveStopLoss(userStopLossPct = null, context = {}) {
   if (userStopLossPct != null && Number.isFinite(userStopLossPct) && userStopLossPct < 0) {
     return userStopLossPct / 100;
   }
-  return getStrategy().stoploss;
+  return getStrategy(null, context).stoploss;
 }
 
 /**
@@ -31,9 +32,10 @@ export function getEffectiveStopLoss(userStopLossPct = null) {
  * Hybrid: if user explicitly sets takeProfitPct, exit when reached at any time.
  * Returns null if not overridden — caller should fall back to ROI table.
  * @param {number|null} userTakeProfitPct - From config.management.takeProfitPct (percent, e.g. 25)
+ * @param {{regime?: string}} [context]
  * @returns {number|null} take-profit decimal (e.g. 0.25) or null
  */
-export function getEffectiveImmediateTakeProfit(userTakeProfitPct = null) {
+export function getEffectiveImmediateTakeProfit(userTakeProfitPct = null, context = {}) {
   if (userTakeProfitPct != null && Number.isFinite(userTakeProfitPct) && userTakeProfitPct > 0) {
     return userTakeProfitPct / 100;
   }
@@ -47,7 +49,9 @@ export function getEffectiveImmediateTakeProfit(userTakeProfitPct = null) {
  * @param {string} marketCondition - Market state (EXTREME, HOT, NORMAL, etc)
  */
 export function checkROI(ageMinutes, currentPnlPct, marketCondition = "NORMAL") {
-  const active = getStrategy();
+  // marketCondition doubles as the regime hint for the runtime selector —
+  // evolved strategies are keyed on the same set of regime labels.
+  const active = getStrategy(null, { regime: marketCondition });
   const roi = active.roi_presets?.[marketCondition] || active.minimal_roi;
   const pnlDecimal = currentPnlPct / 100;
 
@@ -56,7 +60,7 @@ export function checkROI(ageMinutes, currentPnlPct, marketCondition = "NORMAL") 
     if (ageMinutes >= time && pnlDecimal >= roi[time]) {
       return {
         exit: true,
-        reason: `ROI (${active.id}/${marketCondition}): ${ageMinutes.toFixed(1)}m >= ${time}m and PnL ${currentPnlPct.toFixed(2)}% >= ${roi[time] * 100}%`,
+        reason: `ROI (${active.id}${active._evolved_id ? "+evolved:"+active._evolved_id.slice(0, 6) : ""}/${marketCondition}): ${ageMinutes.toFixed(1)}m >= ${time}m and PnL ${currentPnlPct.toFixed(2)}% >= ${roi[time] * 100}%`,
       };
     }
   }
@@ -65,9 +69,10 @@ export function checkROI(ageMinutes, currentPnlPct, marketCondition = "NORMAL") 
 
 /**
  * Check Trailing Stop condition.
+ * @param {{regime?: string}} [context]
  */
-export function checkTrailingStop(currentPnlPct, peakPnlPct) {
-  const ts = getStrategy().trailing_stop;
+export function checkTrailingStop(currentPnlPct, peakPnlPct, context = {}) {
+  const ts = getStrategy(null, context).trailing_stop;
   if (!ts?.enabled) return { exit: false };
 
   const currentPnl = currentPnlPct / 100;
@@ -88,11 +93,12 @@ export function checkTrailingStop(currentPnlPct, peakPnlPct) {
  *
  * @param {number} currentPnlPct - current PnL %
  * @param {boolean} alreadyDone - true if partial TP was already executed for this position
+ * @param {{regime?: string}} [context]
  * @returns {{trigger: boolean, sell_pct?: number, reason?: string}}
  */
-export function checkPartialTP(currentPnlPct, alreadyDone = false) {
+export function checkPartialTP(currentPnlPct, alreadyDone = false, context = {}) {
   if (alreadyDone) return { trigger: false };
-  const pt = getStrategy().partial_tp;
+  const pt = getStrategy(null, context).partial_tp;
   if (!pt?.enabled || !pt.at_pct || !pt.sell_pct) return { trigger: false };
   if (currentPnlPct >= pt.at_pct) {
     return {
@@ -106,10 +112,14 @@ export function checkPartialTP(currentPnlPct, alreadyDone = false) {
 
 /**
  * Run the 4-filter protocol on a candidate token.
- * Reads filter thresholds from the *active* strategy preset.
+ * Reads filter thresholds from the *active* strategy preset, with
+ * regime-aware runtime selector taking over when an evolved strategy
+ * targets the same regime (tokenData.market_condition).
  */
 export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
-  const f = getStrategy().filters;
+  const regime = tokenData?.market_condition || null;
+  const active = getStrategy(null, { regime });
+  const f = active.filters;
   const flags = [];
   const gasLevel = gasFee?.level ?? "unknown";
   const holders = securityDetails?.holders ?? [];
@@ -187,7 +197,9 @@ export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
     flags,
     action: passed ? "GAS IT" : "SKIP",
     score: Math.max(0, 5 - flags.length),
-    strategy_id: getStrategy().id,
+    strategy_id: active.id,
+    evolved_id: active._evolved_id || null,
+    runtime_source: active._runtime_source || "preset",
   };
 }
 

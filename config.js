@@ -413,6 +413,37 @@ export const config = {
         minSemanticMemoryEntries: u.kellyMode3MinMemory         ?? 200,
       },
     },
+    // Fundamental-signal producer: bridges memory layer → composer → bus.
+    // Opt-in (default off). Two flags so even when evolution is on, producer
+    // stays silent until explicitly enabled. dryRun=true logs candidates
+    // instead of enqueueing them.
+    fundamentalProducer: {
+      enabled:                u.fundamentalProducerEnabled  ?? false,
+      dryRun:                 u.fundamentalProducerDryRun   ?? true,
+      intervalMin:            u.fundamentalProducerInterval ?? 30,    // cron-style scan window
+      minDataAgeDays:         u.fundamentalMinDataAgeDays   ?? 30,    // maturity gate: agent must have ≥N days of data
+      minConviction:          u.fundamentalMinConviction    ?? 68,    // coin/narrative score 0-100
+      minConfidence:          u.fundamentalMinConfidence    ?? 40,    // observation maturity
+      minSmartWalletStability:u.fundamentalMinSwStability   ?? 55,    // 0-100
+      minHolderQualityScore:  u.fundamentalMinHolderQuality ?? 40,    // inverse hidden-control
+      minRegimeScore:         u.fundamentalMinRegimeScore   ?? 50,    // 0-100
+      maxPerHour:             u.fundamentalMaxPerHour       ?? 3,     // throttle
+      dedupWindowMin:         u.fundamentalDedupWindowMin   ?? 30,    // skip identical fingerprint
+      llmCooldownHours:       u.fundamentalLlmCooldownHrs   ?? 24,    // composer.generate() rate cap
+      llmFallbackMinActive:   u.fundamentalLlmMinActive     ?? 2,     // generate() only if registry <N
+    },
+    // Runtime selector — once evolved strategies exist in the registry,
+    // this lets the agent PICK from them at trade time instead of always
+    // using the static PRESET. mode="shadow" only logs the diff; flip to
+    // "live" to actually apply. minLiveScoreForOverride is the WR floor
+    // (default 0.85 = 85%) BEFORE evolved rules can take over a regime.
+    runtimeSelector: {
+      enabled:                  u.strategySelectorEnabled       ?? false,
+      mode:                     u.strategySelectorMode          ?? "shadow", // "shadow" | "live"
+      minLiveScoreForOverride:  u.strategySelectorMinLiveScore  ?? 0.85,
+      minLiveTradesForOverride: u.strategySelectorMinLiveTrades ?? 20,
+      cacheTtlMs:               u.strategySelectorCacheTtlMs    ?? 60_000,
+    },
   },
 
   // ─── Common Token Mints ────────────────
