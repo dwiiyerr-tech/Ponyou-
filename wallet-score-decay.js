@@ -54,3 +54,52 @@ export function applyScoreDecay(wallet, nowMs = Date.now()) {
   }
   return out;
 }
+
+/**
+ * Prune stale wallets from discovered-wallets.json.
+ * - Removes wallets not active in >30 days
+ * - Caps at MAX_WALLETS (keeps highest-score wallets)
+ * - Persists decayed scores back to disk
+ *
+ * @param {Object} walletsData - loaded discovered-wallets.json content
+ * @param {Object} [opts]
+ * @param {number} [opts.maxAgeDays=30] - remove wallets older than this
+ * @param {number} [opts.maxWallets=200] - hard cap
+ * @param {number} [opts.nowMs=Date.now()]
+ * @returns {{ pruned: Object, removed: number, kept: number }}
+ */
+export function pruneDiscoveredWallets(walletsData = {}, opts = {}) {
+  const maxAgeDays = opts.maxAgeDays ?? 30;
+  const maxWallets = opts.maxWallets ?? 200;
+  const nowMs = opts.nowMs ?? Date.now();
+  const cutoff = nowMs - maxAgeDays * DAY_MS;
+
+  const entries = Object.entries(walletsData || {});
+  const kept = [];
+  let removed = 0;
+
+  for (const [addr, wallet] of entries) {
+    const activeAt = lastActiveMs(wallet);
+    if (activeAt && activeAt < cutoff) {
+      removed++;
+      continue;
+    }
+    // Persist decayed score
+    const decayed = applyScoreDecay(wallet, nowMs);
+    kept.push([addr, decayed]);
+  }
+
+  // Sort by score descending, cap at maxWallets
+  kept.sort((a, b) => (b[1].score || 0) - (a[1].score || 0));
+  if (kept.length > maxWallets) {
+    removed += kept.length - maxWallets;
+    kept.length = maxWallets;
+  }
+
+  const pruned = {};
+  for (const [addr, wallet] of kept) {
+    pruned[addr] = wallet;
+  }
+
+  return { pruned, removed, kept: kept.length };
+}
