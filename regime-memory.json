@@ -13,62 +13,6 @@
       "cumulative_signal_score": 64,
       "cumulative_outcome_delta": 10,
       "last_seen_at": "2026-01-01T00:00:00.000Z"
-    },
-    "COLD|NEW_PAIR|OTHER|skip": {
-      "key": "COLD|NEW_PAIR|OTHER|skip",
-      "market_condition": "COLD",
-      "tier": "NEW_PAIR",
-      "narrative": "OTHER",
-      "verdict": "skip",
-      "observation_count": 1,
-      "trade_count": 0,
-      "win_count": 0,
-      "loss_count": 0,
-      "cumulative_signal_score": 0,
-      "cumulative_outcome_delta": 0,
-      "last_seen_at": "2026-05-24T12:26:08.043Z"
-    },
-    "COLD|MICRO_CAP|OTHER|skip": {
-      "key": "COLD|MICRO_CAP|OTHER|skip",
-      "market_condition": "COLD",
-      "tier": "MICRO_CAP",
-      "narrative": "OTHER",
-      "verdict": "skip",
-      "observation_count": 2,
-      "trade_count": 0,
-      "win_count": 0,
-      "loss_count": 0,
-      "cumulative_signal_score": 0,
-      "cumulative_outcome_delta": 0,
-      "last_seen_at": "2026-05-24T12:26:08.044Z"
-    },
-    "COLD|MID_CAP|ANIMAL|skip": {
-      "key": "COLD|MID_CAP|ANIMAL|skip",
-      "market_condition": "COLD",
-      "tier": "MID_CAP",
-      "narrative": "ANIMAL",
-      "verdict": "skip",
-      "observation_count": 1,
-      "trade_count": 0,
-      "win_count": 0,
-      "loss_count": 0,
-      "cumulative_signal_score": 0,
-      "cumulative_outcome_delta": 0,
-      "last_seen_at": "2026-05-24T12:26:08.044Z"
-    },
-    "COLD|NEW_PAIR|NUMBERS|skip": {
-      "key": "COLD|NEW_PAIR|NUMBERS|skip",
-      "market_condition": "COLD",
-      "tier": "NEW_PAIR",
-      "narrative": "NUMBERS",
-      "verdict": "skip",
-      "observation_count": 1,
-      "trade_count": 0,
-      "win_count": 0,
-      "loss_count": 0,
-      "cumulative_signal_score": 0,
-      "cumulative_outcome_delta": 0,
-      "last_seen_at": "2026-05-24T12:26:08.045Z"
     }
   }
 }

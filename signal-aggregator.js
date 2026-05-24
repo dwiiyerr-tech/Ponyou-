@@ -93,13 +93,14 @@ export function aggregateSignal({
   components.technicals_regime = techScore;
 
   // ─── Weighted composite ────────────────────────────────────────
+  // Weights aligned with feature-registry.js (sum = 1.00)
   const signalScore = clamp(
-    components.conviction * 0.35 +
-    components.velocity * 0.25 +
-    components.cross_batch * 0.10 +
-    components.narrative_boost * 0.15 +
-    components.kelly * 0.10 +
-    components.technicals_regime * 0.05,
+    components.conviction * 0.30 +
+    components.velocity * 0.20 +
+    components.cross_batch * 0.12 +
+    components.narrative_boost * 0.12 +
+    components.kelly * 0.15 +
+    components.technicals_regime * 0.11,
     0,
     100
   );
