@@ -113,6 +113,12 @@ export function deriveSignalScore(token = {}) {
   if (token.market_condition === "COLD") score -= 4;
   if (token.market_condition === "DEAD") score -= 12;
 
+  // Feature aggregate feedback: strong signal consensus → positive adjustment
+  const fa = Number(token.feature_aggregate || token.signal?.signal_score || 0);
+  if (fa >= 60) score += 10;
+  else if (fa >= 40) score += 4;
+  else if (fa < 25) score -= 8;
+
   return clamp(Number(score.toFixed(2)), 0, 100);
 }
 

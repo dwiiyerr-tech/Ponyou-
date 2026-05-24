@@ -2091,10 +2091,43 @@ export async function runScreeningCycle({ silent = false } = {}) {
       };
       const sizedAmount = kelly.deploy_amount_sol || preKellyAmount;
       const conviction = getCoinConviction(token.mint, token, { narrativeVelocity, crossBatchVelocity });
-      // agentRouter.invoke() available for research delegation — see agent-router.js
       const narrativeTags = Array.isArray(token.narrative_tags)
         ? token.narrative_tags
         : [];
+
+      // ─── Unified Signal Scoring (BEFORE decision) ──
+      const featureResult = runAllFeatures({
+        token: { ...enhancedToken, ...filterResult, rug_score: rugRisk.score },
+        conviction,
+        velocity: narrativeVelocity,
+        crossBatch: crossBatchVelocity,
+        kelly,
+        technicals,
+        regime: { stance: "unknown" },
+        workflow: { verdict: "probe" },
+        narrativeTags,
+        marketCondition: marketIntel.condition,
+        cabal,
+      });
+
+      const signal = aggregateSignal({
+        conviction,
+        velocity: narrativeVelocity,
+        crossBatch: crossBatchVelocity,
+        regime: {},
+        kelly,
+        technicals,
+        marketCondition: marketIntel.condition,
+        narrativeTags,
+      });
+
+      // Feature aggregate boosts conviction floor for trending/strong signals
+      const boostedConviction = {
+        ...conviction,
+        conviction_score: Math.min(100, conviction.conviction_score + Math.max(0, (featureResult.aggregate - 30) * 0.3)),
+        feature_aggregate: featureResult.aggregate,
+      };
+
       const workflow = config.decisionWorkflow?.enabled
         ? evaluateCandidateDecision({
             token: {
@@ -2106,7 +2139,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
               momentum_entry_pass: momentumEntry.pass,
               volatility_adjusted_size: sizedAmount,
             },
-            conviction,
+            conviction: boostedConviction,
             marketCondition: marketIntel.condition,
             config: config.decisionWorkflow,
             narrativeVelocity,
@@ -2158,32 +2191,6 @@ export async function runScreeningCycle({ silent = false } = {}) {
         const sizeMultiplier = Math.max(floor, Math.min(cap, regime.size_multiplier || 1));
         recommendedAmount = Number((preRegimeAmount * sizeMultiplier).toFixed(4));
       }
-
-      const signal = aggregateSignal({
-        conviction,
-        velocity: narrativeVelocity,
-        crossBatch: crossBatchVelocity,
-        regime,
-        kelly,
-        technicals,
-        marketCondition: marketIntel.condition,
-        narrativeTags,
-      });
-
-      // Feature registry aggregate (all registered signals in one score)
-      const featureResult = runAllFeatures({
-        token: { ...enhancedToken, ...filterResult, rug_score: rugRisk.score },
-        conviction,
-        velocity: narrativeVelocity,
-        crossBatch: crossBatchVelocity,
-        kelly,
-        technicals,
-        regime,
-        workflow,
-        narrativeTags,
-        marketCondition: marketIntel.condition,
-        cabal,
-      });
 
       scoredCandidates.push({
         ...enhancedToken, ...filterResult,
@@ -2255,9 +2262,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
     let passingCandidates = scoredCandidates
       .filter(c => c.passed)
       .sort((a, b) =>
+        (b.feature_aggregate || 0) - (a.feature_aggregate || 0) ||
         (b.conviction?.conviction_score || 0) - (a.conviction?.conviction_score || 0) ||
-        (a.workflow?.caution_score || 0) - (b.workflow?.caution_score || 0) ||
-        (b.kelly?.effective_fraction || 0) - (a.kelly?.effective_fraction || 0)
+        (a.workflow?.caution_score || 0) - (b.workflow?.caution_score || 0)
       );
     const planSummary = getPlanSummary();
 
@@ -2334,6 +2341,7 @@ WORKFLOW KEPUTUSAN HATI-HATI:
 4. Jangan override \`Kelly\` negatif. Jika \`kelly.should_skip=true\`, jangan buy.
 5. Prioritaskan coin dengan conviction yang dibangun dari observasi berulang, bukan FOMO snapshot.
 6. OVERRIDE MOMENTUM: Jika narrative velocity terdeteksi (≥3 token dari narasi sama, buy pressure >55%, volume tinggi), conviction trending_boost mengkompensasi cold-start. Token dengan trending_boost >15 dan workflow.verdict=probe boleh di-entry dengan size kecil meskipun conviction masih "unknown". Narasi trending mendahulukan momentum over history.
+7. FEATURE AGGREGATE: Setiap candidate punya \`feature_aggregate\` (0-100) dan \`feature_scores\` (per-sinyal). feature_aggregate ≥60 = strong consensus, ≥40 = decent, <25 = weak. Gunakan sebagai TIEBREAKER utama antara candidates dengan verdict setara. Candidate dengan feature_aggregate tertinggi adalah prioritas pertama.
 
 Pilih yang TERBAIK dan lakukan swap_token hanya jika edge jelas.
 ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
