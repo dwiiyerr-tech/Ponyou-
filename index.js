@@ -94,7 +94,7 @@ import { assessTradeAttribution, recordTradeAttribution } from "./trade-attribut
 import { harvestMarketRugs } from "./tools/rug-harvester.js";
 import { recordNarrativeOutcome, detectNarrativeVelocity, trackCrossBatchVelocity, getCrossBatchVelocity } from "./tools/narratives.js";
 import { aggregateSignal } from "./signal-aggregator.js";
-import { registerDefaultFeatures, runAllFeatures, listFeatures } from "./feature-registry.js";
+import { registerDefaultFeatures, runAllFeatures, listFeatures, getHealthSummary, enableFeature, disableFeature, autoResetBreakers } from "./feature-registry.js";
 import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
@@ -545,9 +545,48 @@ async function handleStrategyTelegramCommand(text) {
       `<b>Daily Guard</b> · ${htmlEscape(dailyGuard)}`,
       `<b>Plan</b> · ${planLine}`,
       fmt.divider(),
-      fmt.it("/strategy /strategies /stratset /confirm /dailyguard /auto /agent /pending /yes /no /pnl /status /plan /resetplan"),
+      fmt.it("/strategy /strategies /stratset /health /feature /confirm /dailyguard /auto /agent /pending /yes /no /pnl /status /plan /resetplan"),
     ];
     await sendHTML(lines.join("\n"));
+    return true;
+  }
+
+  if (cmd === "/health") {
+    const health = getHealthSummary();
+    const lines = [`🩺 <b>Feature Health</b>`, fmt.divider()];
+    lines.push(`<b>${health.healthy}/${health.total_features}</b> healthy · ${health.tripped} tripped · ${health.disabled} disabled`);
+    lines.push(``);
+    for (const f of health.features) {
+      const icon = f.breaker_tripped ? "🔴" : f.enabled ? "🟢" : "⚫";
+      const latency = f.latency_p50_ms > 0 ? `${f.latency_p50_ms}ms` : "-";
+      lines.push(`${icon} <b>${f.feature}</b> (w:${f.weight}) err:${f.error_rate_pct}% p50:${latency} score:${f.last_score}`);
+      if (f.breaker_tripped) lines.push(`   ⚠️ BREAKER TRIPPED (${f.breaker_trips} trips)`);
+    }
+    lines.push(``, fmt.it("/feature <name> on|off — toggle feature"));
+    await sendHTML(lines.join("\n"));
+    return true;
+  }
+
+  if (cmd === "/feature") {
+    const args = (body || "").trim().split(/\s+/);
+    const name = args[0];
+    const action = args[1];
+    if (!name || !action) {
+      const features = listFeatures().map(f =>
+        `${f.enabled ? "🟢" : "⚫"} ${f.name} (w:${f.weight})`
+      ).join("\n");
+      await sendHTML(`<b>Feature Toggle</b>\n${features}\n\nUsage: <code>/feature conviction off</code>`);
+      return true;
+    }
+    if (action === "on" || action === "enable") {
+      enableFeature(name);
+      await sendHTML(`✅ Feature <b>${htmlEscape(name)}</b> enabled`);
+    } else if (action === "off" || action === "disable") {
+      disableFeature(name);
+      await sendHTML(`⏸️ Feature <b>${htmlEscape(name)}</b> disabled`);
+    } else {
+      await sendHTML(`Usage: <code>/feature ${htmlEscape(name)} on|off</code>`);
+    }
     return true;
   }
 
@@ -1872,6 +1911,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
     if (narrativeFiltered.length < cappedCandidates.length) {
       log("screening", `Narrative contagion: removed ${cappedCandidates.length - narrativeFiltered.length}/${cappedCandidates.length} candidates`);
     }
+
+    // ─── Feature Health Maintenance ──────────────
+    autoResetBreakers({ maxAgeMs: 10 * 60 * 1000 });
 
     // ─── Narrative Velocity Detection ─────────────
     const narrativeVelocity = detectNarrativeVelocity(cappedCandidates);
