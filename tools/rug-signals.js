@@ -128,7 +128,7 @@ export function heliusCircuitOpen() {
   return Date.now() < _heliusCBOpenUntil;
 }
 
-function helius429Hit() {
+export function helius429Hit() {
   _helius429Streak++;
   if (_helius429Streak >= HELIUS_CB_THRESHOLD && !heliusCircuitOpen()) {
     _heliusCBOpenUntil = Date.now() + HELIUS_CB_COOLDOWN_MS;
@@ -136,7 +136,7 @@ function helius429Hit() {
   }
 }
 
-function heliusSuccess() {
+export function heliusSuccess() {
   if (_helius429Streak > 0) _helius429Streak = 0;
   if (heliusCircuitOpen()) {
     _heliusCBOpenUntil = 0;
