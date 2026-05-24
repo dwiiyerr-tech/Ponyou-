@@ -7,8 +7,8 @@ import path from "path";
 // handled by tmp+rename; this only closes the same-process interleave gap.
 //
 // External-process writers (other PIDs) are out of scope — verified that the
-// production deploy uses a single Node process (ops/autowork.service Type=simple,
-// no cron forks against this repo).
+// production deploy uses a single Node process (ops/run-24x7.sh launches one
+// `node index.js` under the systemd ponyou-agent service).
 const _locks = new Map();
 export async function withFileLock(filePath, fn) {
   const key = path.resolve(filePath);

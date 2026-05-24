@@ -24,9 +24,7 @@
     "collab:submit": "node infra/agent-collab/collab-submit.js",
     "backtest": "node tools/backtest-cli.js",
     "agent:24x7": "bash ./ops/run-24x7.sh live",
-    "agent:24x7:demo": "bash ./ops/run-24x7.sh demo",
-    "codex:coleader": "bash ./ops/codex-coleader-loop.sh --interval 300",
-    "codex:coleader:once": "bash ./ops/codex-coleader-loop.sh --once"
+    "agent:24x7:demo": "bash ./ops/run-24x7.sh demo"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

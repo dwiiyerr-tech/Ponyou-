@@ -3,7 +3,6 @@
 set -euo pipefail
 
 AGENT_SVC="ponyou-agent"
-WORK_SVC="ponyou-autowork"
 LOG_FILE="/home/ubuntu/ponyou/logs/supervisor/agent-demo.log"
 DASH_PORT=3000
 
@@ -24,7 +23,6 @@ _header() {
   echo -e "║      PONYOU CONTROL          ║"
   echo -e "╚══════════════════════════════╝\e[0m"
   _status_line "$AGENT_SVC"
-  _status_line "$WORK_SVC"
   echo ""
 }
 
@@ -37,9 +35,6 @@ options=(
   "Stop bot"
   "Restart bot"
   "Live log bot"
-  "─────────────"
-  "Start autowork"
-  "Stop autowork"
   "─────────────"
   "Buka dashboard"
   "─────────────"
@@ -64,12 +59,6 @@ select opt in "${options[@]}"; do
     "Live log bot")
       echo "Ctrl+C untuk keluar dari log."
       journalctl -u "$AGENT_SVC" -f --no-pager
-      ;;
-    "Start autowork")
-      sudo systemctl start "$WORK_SVC" && echo "Autowork started." || echo "Gagal start."
-      ;;
-    "Stop autowork")
-      sudo systemctl stop "$WORK_SVC" && echo "Autowork stopped." || echo "Gagal stop."
       ;;
     "Buka dashboard")
       if systemctl is-active "$AGENT_SVC" &>/dev/null; then
