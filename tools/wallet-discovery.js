@@ -17,7 +17,7 @@ import { atomicWriteJson } from "../atomic-write.js";
 import { log } from "../logger.js";
 import { discoverTokens } from "./dexscreener.js";
 import { listSmartWallets, addSmartWallet } from "../smart-wallets.js";
-import { heliusAcquire, heliusRelease, heliusCircuitOpen } from "./rug-signals.js";
+import { heliusAcquire, heliusRelease, heliusCircuitOpen, helius429Hit, heliusSuccess } from "./rug-signals.js";
 import { getAdaptiveSmartWalletContext, evaluateSmartWalletCandidate, selectSmartWalletCandidates } from "../smart-wallet-strategy.js";
 import { applyScoreDecay } from "../wallet-score-decay.js";
 
@@ -93,7 +93,12 @@ async function fetchHeliusTxns(address, apiKey, limit = 50) {
   await heliusAcquire();
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (res.status === 429) {
+      helius429Hit();
+      throw new Error("Helius 429");
+    }
     if (!res.ok) throw new Error(`Helius ${res.status}`);
+    heliusSuccess();
     return res.json();
   } finally {
     heliusRelease();
