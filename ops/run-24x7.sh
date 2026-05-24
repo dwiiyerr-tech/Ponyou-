@@ -6,14 +6,18 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${ROOT_DIR}/logs/supervisor"
 AGENT_LOG="${LOG_DIR}/agent-${MODE}.log"
 SUPERVISOR_LOG="${LOG_DIR}/supervisor-${MODE}.log"
+DASH_LOG="${LOG_DIR}/dashboard-${MODE}.log"
 RESTART_DELAY="${RESTART_DELAY_SEC:-5}"
 MAX_RESTARTS="${MAX_RESTARTS:-0}"
 SUPERVISOR_STATE_FILE="${ROOT_DIR}/supervisor-state.json"
 SUPERVISOR_COMMAND_FILE="${ROOT_DIR}/supervisor-command.json"
+DASHBOARD_ENABLED="${DASHBOARD_ENABLED:-1}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-3000}"
 COUNT=0
 LAST_COMMAND_ID=""
 DESIRED_RUNNING=1
 AGENT_PID=""
+DASH_PID=""
 
 mkdir -p "${LOG_DIR}"
 
@@ -76,6 +80,43 @@ stop_agent() {
   write_supervisor_state 0 "" "stop"
 }
 
+start_dashboard() {
+  # Set DASHBOARD_ENABLED=0 to opt out. Auto-restarts inside the supervisor
+  # loop alongside the agent (handled by ensure_dashboard).
+  if [ "${DASHBOARD_ENABLED}" != "1" ]; then return; fi
+  if [ -n "${DASH_PID}" ] && kill -0 "${DASH_PID}" 2>/dev/null; then return; fi
+  log "Starting dashboard on port ${DASHBOARD_PORT}"
+  (
+    cd "${ROOT_DIR}"
+    exec node dashboard.js --port "${DASHBOARD_PORT}"
+  ) >>"${DASH_LOG}" 2>&1 &
+  DASH_PID=$!
+  log "Dashboard pid=${DASH_PID} log=${DASH_LOG}"
+}
+
+stop_dashboard() {
+  if [ -n "${DASH_PID}" ] && kill -0 "${DASH_PID}" 2>/dev/null; then
+    log "Stopping dashboard pid=${DASH_PID}"
+    kill -TERM "${DASH_PID}" 2>/dev/null || true
+    wait "${DASH_PID}" 2>/dev/null || true
+  fi
+  DASH_PID=""
+}
+
+ensure_dashboard() {
+  # Cheap idempotent check — called inside the main loop.
+  if [ "${DASHBOARD_ENABLED}" != "1" ]; then return; fi
+  if [ -z "${DASH_PID}" ] || ! kill -0 "${DASH_PID}" 2>/dev/null; then
+    start_dashboard
+  fi
+}
+
+cleanup_children() {
+  stop_agent
+  stop_dashboard
+}
+trap cleanup_children EXIT INT TERM
+
 process_supervisor_command() {
   if [ ! -f "${SUPERVISOR_COMMAND_FILE}" ]; then
     return
@@ -124,10 +165,17 @@ wait_for_agent_or_command() {
 log "Supervisor booted | mode=${MODE} | root=${ROOT_DIR}"
 log "Agent log: ${AGENT_LOG}"
 log "Supervisor log: ${SUPERVISOR_LOG}"
+if [ "${DASHBOARD_ENABLED}" = "1" ]; then
+  log "Dashboard: enabled (port=${DASHBOARD_PORT}, log=${DASH_LOG})"
+else
+  log "Dashboard: disabled (DASHBOARD_ENABLED=${DASHBOARD_ENABLED})"
+fi
 write_supervisor_state 0 "" "boot"
+start_dashboard
 
 while true; do
   process_supervisor_command
+  ensure_dashboard
 
   if [ "${DESIRED_RUNNING}" != "1" ]; then
     write_supervisor_state 0 "" "idle"
