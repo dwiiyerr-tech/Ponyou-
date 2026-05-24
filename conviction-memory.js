@@ -224,7 +224,7 @@ export function recordTradeConvictionOutcome({ mint, symbol, pnl_pct = 0, exit_r
   return coin;
 }
 
-export function getNarrativeConviction(narrative, { nowMs = Date.now() } = {}) {
+export function getNarrativeConviction(narrative, { nowMs = Date.now(), velocity = null, crossBatch = null } = {}) {
   if (!narrative) {
     return {
       narrative: null,
@@ -236,25 +236,50 @@ export function getNarrativeConviction(narrative, { nowMs = Date.now() } = {}) {
 
   const store = loadStore();
   const raw = store.narratives[narrative];
+
+  // Trending boost: new narratives with high velocity get head start
+  let trendingBoost = 0;
+  if (velocity?.is_trending) {
+    const v = velocity;
+    trendingBoost = Math.min(25, Math.round(v.token_count * 6 + (v.buy_ratio > 0.6 ? 10 : 0) + Math.min(v.velocity_score / 5, 8)));
+  }
+
+  // Sustained boost: narrative trending across multiple cycles gets compound bonus
+  let sustainedBoost = 0;
+  if (crossBatch?.active) {
+    const cb = crossBatch.active.find(a => a.narrative === narrative);
+    if (cb) {
+      sustainedBoost = Math.min(15, Math.round(cb.cross_batch_score * 0.25 + cb.consecutive_cycles * 3));
+    }
+  }
+
   if (!raw) {
+    const totalBoost = trendingBoost + sustainedBoost;
+    const convictionScore = totalBoost > 0
+      ? clamp(10 + totalBoost, 0, 100)
+      : 0;
+    const stance = convictionScore >= 28 ? "building" : convictionScore >= 15 ? "watch" : "unknown";
     return {
       narrative,
-      conviction_score: 0,
-      confidence_score: 0,
-      stance: "unknown",
+      conviction_score: convictionScore,
+      confidence_score: totalBoost > 0 ? clamp(totalBoost * 1.2, 0, 50) : 0,
+      stance,
+      trending_boost: trendingBoost,
+      sustained_boost: sustainedBoost > 0 ? sustainedBoost : undefined,
     };
   }
 
   const slot = applyDecay(raw, nowMs);
+  const totalBoost = trendingBoost + sustainedBoost;
   const obs = Math.max(0, slot.observation_count || 0);
   const avgSignal = obs > 0 ? slot.cumulative_signal_score / obs : 0;
   const convictionScore = clamp(
-    10 + avgSignal * 0.42 + Number(slot.cumulative_outcome_delta || 0),
+    10 + avgSignal * 0.42 + Number(slot.cumulative_outcome_delta || 0) + totalBoost,
     0,
     100
   );
   const confidenceScore = clamp(
-    obs * 10 + ((slot.gem_count || 0) + (slot.trash_count || 0) + (slot.rug_count || 0) + (slot.win_count || 0) + (slot.loss_count || 0)) * 7,
+    obs * 10 + ((slot.gem_count || 0) + (slot.trash_count || 0) + (slot.rug_count || 0) + (slot.win_count || 0) + (slot.loss_count || 0)) * 7 + Math.min(totalBoost, 25),
     0,
     100
   );
@@ -277,10 +302,12 @@ export function getNarrativeConviction(narrative, { nowMs = Date.now() } = {}) {
     avg_signal_score: Number(avgSignal.toFixed(1)),
     decay_factor: slot.decay_factor,
     stance,
+    trending_boost: trendingBoost > 0 ? trendingBoost : undefined,
+    sustained_boost: sustainedBoost > 0 ? sustainedBoost : undefined,
   };
 }
 
-export function getCoinConviction(mint, token = null, { nowMs = Date.now() } = {}) {
+export function getCoinConviction(mint, token = null, { nowMs = Date.now(), narrativeVelocity = null, crossBatchVelocity = null } = {}) {
   if (!mint) {
     return {
       mint: null,
@@ -298,7 +325,10 @@ export function getCoinConviction(mint, token = null, { nowMs = Date.now() } = {
   const store = loadStore();
   const coin = store.coins[mint];
   const narrativeNames = coin?.narratives?.length ? coin.narratives : extractNarrativeNames(token || {});
-  const narrativeConvictions = narrativeNames.map(name => getNarrativeConviction(name, { nowMs }));
+  const narrativeConvictions = narrativeNames.map(name => {
+    const vel = narrativeVelocity?.velocities?.[name] || null;
+    return getNarrativeConviction(name, { nowMs, velocity: vel, crossBatch: crossBatchVelocity });
+  });
   const strongestNarrative = narrativeConvictions.sort((a, b) => b.conviction_score - a.conviction_score)[0] || null;
   if (!coin) {
     return {
@@ -313,6 +343,7 @@ export function getCoinConviction(mint, token = null, { nowMs = Date.now() } = {
       stance: strongestNarrative?.stance || "unknown",
       narratives: narrativeNames,
       narrative_cluster: strongestNarrative,
+      trending_boost: strongestNarrative?.trending_boost || 0,
     };
   }
 
@@ -360,6 +391,7 @@ export function getCoinConviction(mint, token = null, { nowMs = Date.now() } = {
     decay_factor: decayedCoin.decay_factor,
     narratives: narrativeNames,
     narrative_cluster: strongestNarrative,
+    trending_boost: strongestNarrative?.trending_boost || 0,
     stance,
   };
 }

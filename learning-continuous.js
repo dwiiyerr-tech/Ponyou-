@@ -50,7 +50,10 @@ export function recordObservations(candidates) {
     data.observed.push({
       mint: token.mint,
       symbol: token.symbol,
+      name: token.name || null,
       launchpad: token.launchpad || null,
+      narrative: token.narrative || null,
+      narrative_tags: token.narrative_tags || [],
       observed_at: new Date().toISOString(),
       check_at: new Date(now + 60 * 60 * 1000).toISOString(), // Cek 60 menit kemudian
       initial_mcap: token.mcap || token.initial_mcap,
@@ -59,6 +62,7 @@ export function recordObservations(candidates) {
       flags: token.flags || [],
       rug_score: token.rug_score || 0,
       market_condition: token.market_condition || "UNKNOWN",
+      tier: token.tier || null,
       status: "PENDING",
     });
   }

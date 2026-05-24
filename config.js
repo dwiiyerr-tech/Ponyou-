@@ -395,7 +395,7 @@ export const config = {
   // ─── Strategy Evolution ────────────────
   strategy: {
     evolution: {
-      enabled:                    u.strategyEvolutionEnabled    ?? false,
+      enabled:                    u.strategyEvolutionEnabled    ?? true,
       minWinRateGate:             u.strategyMinWinRate          ?? 0.80,
       minBacktestTrades:          u.strategyMinBacktestTrades   ?? 100,
       minPaperTrades:             u.strategyMinPaperTrades      ?? 30,
@@ -418,8 +418,8 @@ export const config = {
     // stays silent until explicitly enabled. dryRun=true logs candidates
     // instead of enqueueing them.
     fundamentalProducer: {
-      enabled:                u.fundamentalProducerEnabled  ?? false,
-      dryRun:                 u.fundamentalProducerDryRun   ?? true,
+      enabled:                u.fundamentalProducerEnabled  ?? true,
+      dryRun:                 u.fundamentalProducerDryRun   ?? true,  // safe: logs only, no enqueue
       intervalMin:            u.fundamentalProducerInterval ?? 30,    // cron-style scan window
       minDataAgeDays:         u.fundamentalMinDataAgeDays   ?? 30,    // maturity gate: agent must have ≥N days of data
       minConviction:          u.fundamentalMinConviction    ?? 68,    // coin/narrative score 0-100
@@ -438,8 +438,8 @@ export const config = {
     // "live" to actually apply. minLiveScoreForOverride is the WR floor
     // (default 0.85 = 85%) BEFORE evolved rules can take over a regime.
     runtimeSelector: {
-      enabled:                  u.strategySelectorEnabled       ?? false,
-      mode:                     u.strategySelectorMode          ?? "shadow", // "shadow" | "live"
+      enabled:                  u.strategySelectorEnabled       ?? true,
+      mode:                     u.strategySelectorMode          ?? "shadow", // safe: logs diffs, no live override
       minLiveScoreForOverride:  u.strategySelectorMinLiveScore  ?? 0.85,
       minLiveTradesForOverride: u.strategySelectorMinLiveTrades ?? 20,
       cacheTtlMs:               u.strategySelectorCacheTtlMs    ?? 60_000,
