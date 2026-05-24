@@ -361,6 +361,18 @@ export function registerDefaultFeatures() {
       return 0;
     },
   });
+
+  registerFeature({
+    name: "cabal_risk",
+    weight: 0.08,
+    note: "Inverse cabal score — 100 means clean, 0 means confirmed cabal",
+    score: (ctx) => {
+      const cabal = ctx.cabal || {};
+      if (cabal.action === "BLOCK_ENTRY") return 0;
+      return clamp(100 - Number(cabal.cabalScore || 0), 0, 100);
+    },
+    gate: (ctx) => (ctx.cabal?.action || "WATCH_ONLY") !== "BLOCK_ENTRY",
+  });
 }
 
 export const FEATURE_REGISTRY_VERSION = "2.0.0";

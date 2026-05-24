@@ -95,6 +95,7 @@ import { harvestMarketRugs } from "./tools/rug-harvester.js";
 import { recordNarrativeOutcome, detectNarrativeVelocity, trackCrossBatchVelocity, getCrossBatchVelocity } from "./tools/narratives.js";
 import { aggregateSignal } from "./signal-aggregator.js";
 import { registerDefaultFeatures, runAllFeatures, listFeatures, getHealthSummary, enableFeature, disableFeature, autoResetBreakers } from "./feature-registry.js";
+import { analyzeCabalPlay, CabalAgentAction } from "./tools/cabal-play-analyzer.js";
 import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
@@ -1955,9 +1956,32 @@ export async function runScreeningCycle({ silent = false } = {}) {
         rug_signals: security?.rug_signals || {},
       });
 
+      // ─── Cabal Play Analysis ──────────────────
+      const cabalInput = {
+        same_funder_holders: security?.rug_signals?.same_funder_holders,
+        same_funder_cluster_size: security?.rug_signals?.same_funder_cluster_size,
+        bundle_buyers_pct: security?.rug_signals?.bundle_buyers_pct,
+        bundle_wallets_count: security?.rug_signals?.bundle_wallets_count,
+        fresh_funded_holders: security?.rug_signals?.fresh_funded_holders,
+        max_single_holder_pct: security?.holders?.max_single_holder_pct,
+        top10_holders_pct: security?.holders?.top10_holders_pct,
+        smartWalletBuys: security?.smart_money?.buys,
+        smartWalletSells: security?.smart_money?.sells,
+      };
+      const cabal = analyzeCabalPlay(cabalInput);
+
       if (rugRisk.score >= 60) {
         log("filter", `${token.symbol}: SKIP rug score ${rugRisk.score}`);
         continue;
+      }
+
+      // Block entry for cabal patterns that demand it
+      if (cabal.action === CabalAgentAction.BLOCK_ENTRY) {
+        log("cabal", `${token.symbol}: BLOCKED — ${cabal.cabalType} score=${cabal.cabalScore} ${cabal.reasons.slice(0,2).join("; ")}`);
+        continue;
+      }
+      if (cabal.cabalType !== "NONE") {
+        log("cabal", `${token.symbol}: ${cabal.cabalType} score=${cabal.cabalScore} action=${cabal.action}`);
       }
 
       if (tokenInfo?.error) {
@@ -2158,6 +2182,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         workflow,
         narrativeTags,
         marketCondition: marketIntel.condition,
+        cabal,
       });
 
       scoredCandidates.push({
@@ -2171,6 +2196,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         tier_execution: tierExec,
         kelly,
         conviction,
+        cabal,
         signal,
         feature_aggregate: featureResult.aggregate,
         feature_scores: featureResult.scores,

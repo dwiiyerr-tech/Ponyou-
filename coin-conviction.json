@@ -17,7 +17,126 @@
       "last_seen_at": "2026-01-01T00:00:00.000Z",
       "last_market_condition": "HOT",
       "narratives": []
+    },
+    "GdQ5vvvt71AwgLmNPpDxSuRvn8UjqEPBB9uUC1Bvpump": {
+      "mint": "GdQ5vvvt71AwgLmNPpDxSuRvn8UjqEPBB9uUC1Bvpump",
+      "symbol": "Robber",
+      "observation_count": 1,
+      "passed_count": 0,
+      "failed_count": 1,
+      "gem_count": 0,
+      "trash_count": 0,
+      "rug_count": 0,
+      "win_count": 0,
+      "loss_count": 0,
+      "cumulative_signal_score": 0,
+      "cumulative_outcome_delta": 0,
+      "last_signal_score": 0,
+      "last_seen_at": "2026-05-24T12:26:08.043Z",
+      "last_market_condition": "COLD",
+      "narratives": []
+    },
+    "FmjijgwEHpe32VPvHy1s7u7TLthh9yu1j75djVbWpump": {
+      "mint": "FmjijgwEHpe32VPvHy1s7u7TLthh9yu1j75djVbWpump",
+      "symbol": "DEGEN",
+      "observation_count": 1,
+      "passed_count": 0,
+      "failed_count": 1,
+      "gem_count": 0,
+      "trash_count": 0,
+      "rug_count": 0,
+      "win_count": 0,
+      "loss_count": 0,
+      "cumulative_signal_score": 0,
+      "cumulative_outcome_delta": 0,
+      "last_signal_score": 0,
+      "last_seen_at": "2026-05-24T12:26:08.043Z",
+      "last_market_condition": "COLD",
+      "narratives": []
+    },
+    "3TYgKwkE2Y3rxdw9osLRSpxpXmSC1C1oo19W9KHspump": {
+      "mint": "3TYgKwkE2Y3rxdw9osLRSpxpXmSC1C1oo19W9KHspump",
+      "symbol": "BULL",
+      "observation_count": 1,
+      "passed_count": 0,
+      "failed_count": 1,
+      "gem_count": 0,
+      "trash_count": 0,
+      "rug_count": 0,
+      "win_count": 0,
+      "loss_count": 0,
+      "cumulative_signal_score": 0,
+      "cumulative_outcome_delta": 0,
+      "last_signal_score": 0,
+      "last_seen_at": "2026-05-24T12:26:08.044Z",
+      "last_market_condition": "COLD",
+      "narratives": [
+        "ANIMAL"
+      ]
+    },
+    "7xnopcDeghj9QTMYmKSjhJRbNvKmfnj1Qci721qrpump": {
+      "mint": "7xnopcDeghj9QTMYmKSjhJRbNvKmfnj1Qci721qrpump",
+      "symbol": "OMEN",
+      "observation_count": 1,
+      "passed_count": 0,
+      "failed_count": 1,
+      "gem_count": 0,
+      "trash_count": 0,
+      "rug_count": 0,
+      "win_count": 0,
+      "loss_count": 0,
+      "cumulative_signal_score": 0,
+      "cumulative_outcome_delta": 0,
+      "last_signal_score": 0,
+      "last_seen_at": "2026-05-24T12:26:08.044Z",
+      "last_market_condition": "COLD",
+      "narratives": []
+    },
+    "EZV9mcvFQqe4Xee7VxUzKt4dDYkUZ2Ye6N2QFuS8pump": {
+      "mint": "EZV9mcvFQqe4Xee7VxUzKt4dDYkUZ2Ye6N2QFuS8pump",
+      "symbol": "MOON",
+      "observation_count": 1,
+      "passed_count": 0,
+      "failed_count": 1,
+      "gem_count": 0,
+      "trash_count": 0,
+      "rug_count": 0,
+      "win_count": 0,
+      "loss_count": 0,
+      "cumulative_signal_score": 0,
+      "cumulative_outcome_delta": 0,
+      "last_signal_score": 0,
+      "last_seen_at": "2026-05-24T12:26:08.045Z",
+      "last_market_condition": "COLD",
+      "narratives": [
+        "NUMBERS"
+      ]
     }
   },
-  "narratives": {}
+  "narratives": {
+    "ANIMAL": {
+      "narrative": "ANIMAL",
+      "observation_count": 1,
+      "gem_count": 0,
+      "trash_count": 0,
+      "rug_count": 0,
+      "win_count": 0,
+      "loss_count": 0,
+      "cumulative_signal_score": 0,
+      "cumulative_outcome_delta": 0,
+      "last_seen_at": "2026-05-24T12:26:08.044Z"
+    },
+    "NUMBERS": {
+      "narrative": "NUMBERS",
+      "observation_count": 1,
+      "gem_count": 0,
+      "trash_count": 0,
+      "rug_count": 0,
+      "win_count": 0,
+      "loss_count": 0,
+      "cumulative_signal_score": 0,
+      "cumulative_outcome_delta": 0,
+      "last_seen_at": "2026-05-24T12:26:08.045Z"
+    }
+  }
 }
