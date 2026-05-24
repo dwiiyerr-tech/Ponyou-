@@ -18,6 +18,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { atomicWriteJson } from "./atomic-write.js";
 import { log } from "./logger.js";
+import { getRuntimeSelector } from "./strategy-runtime-selector.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ACTIVE_FILE = path.join(__dirname, "active-strategy.json");
@@ -263,12 +264,74 @@ function applyOverrides(preset, override) {
 
 /**
  * Return the effective active strategy (preset + overrides), always fresh from disk.
+ *
+ * Resolution order (lowest → highest priority):
+ *   1. PRESET (built-in default)
+ *   2. user override (./strategies-overrides.json)
+ *   3. evolved override (Strategy Evolution registry, opt-in via runtimeSelector)
+ *
+ * `context.regime` lets the caller pass current market regime so the
+ * runtime selector can find an evolved strategy specifically optimized
+ * for that regime. When omitted (or when runtime selector is disabled /
+ * no evolved match), evolved overrides are skipped.
+ *
+ * The returned object carries _runtime_source / _evolved_id metadata so
+ * downstream code (logs, dashboard, audit) can see whether evolved rules
+ * were actually applied.
  */
-export function getStrategy(id = null) {
+export function getStrategy(id = null, context = {}) {
   const targetId = id || getActiveStrategyId();
   const preset = PRESETS[targetId] || PRESETS[DEFAULT_STRATEGY];
-  const overrides = loadOverrides()[targetId];
-  return applyOverrides(preset, overrides);
+  const userOverrides = loadOverrides()[targetId];
+  let merged = applyOverrides(preset, userOverrides);
+  merged._runtime_source = "preset";
+  merged._evolved_id = null;
+
+  // ── Strategy Evolution runtime override (opt-in) ────────────────
+  const selector = getRuntimeSelector();
+  if (selector && context?.regime !== undefined) {
+    let resolved;
+    try {
+      resolved = selector.effectiveOverrides(context.regime);
+    } catch {
+      resolved = null;
+    }
+    if (resolved && (resolved.overrides || resolved.roiPatch)) {
+      // Live mode: apply on top of user overrides. Shadow mode: selector
+      // already set overrides=null, so this stays a no-op (but the
+      // selector logged the diff).
+      if (resolved.overrides) {
+        merged = applyOverrides(merged, resolved.overrides);
+      }
+      if (resolved.roiPatch && typeof resolved.roiPatch === "object") {
+        if (merged.minimal_roi && typeof merged.minimal_roi === "object") {
+          merged.minimal_roi = { ...merged.minimal_roi, ...resolved.roiPatch };
+        }
+        // checkROI prefers roi_presets[regime] over minimal_roi. Patch the
+        // regime-specific table too so the evolved TP actually fires when
+        // the matching regime ROI lookup happens.
+        if (context.regime && merged.roi_presets && typeof merged.roi_presets === "object") {
+          const regimeRoi = merged.roi_presets[context.regime];
+          if (regimeRoi && typeof regimeRoi === "object") {
+            merged.roi_presets = {
+              ...merged.roi_presets,
+              [context.regime]: { ...regimeRoi, ...resolved.roiPatch },
+            };
+          }
+        }
+      }
+      merged._runtime_source = resolved.source;
+      merged._evolved_id = resolved.evolvedId;
+      merged._evolved_name = resolved.evolvedName;
+    } else if (resolved) {
+      // Shadow result with no actual overrides — record for diagnostics.
+      merged._runtime_source = resolved.source;
+      merged._evolved_id = resolved.evolvedId;
+      merged._evolved_name = resolved.evolvedName;
+    }
+  }
+
+  return merged;
 }
 
 export function listStrategies() {

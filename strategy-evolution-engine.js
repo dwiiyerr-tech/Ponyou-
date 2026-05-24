@@ -64,11 +64,18 @@ export class StrategyEvolutionEngine {
 
     let propResult;
     try {
+      // Merge gate evidence with the producer's fundamental evidence so the
+      // Telegram proposal can render BOTH the WR escalation bars (from gate)
+      // AND the fundamental snapshot (sources, maturity, sampled mints/wallets).
+      const mergedEvidence = {
+        ...gateResult.evidence,
+        ...(candidate?.evidence ? { fundamental: candidate.evidence } : {}),
+      };
       propResult = await this.#proposal.submit({
         ...candidate,
         id,
         scores: gateResult.scores,
-        evidence: gateResult.evidence,
+        evidence: mergedEvidence,
       });
     } catch (e) {
       try { this.#registry.reject(id, `proposal threw: ${e?.message || e}`); } catch {}

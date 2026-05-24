@@ -16,6 +16,8 @@ import {
   isRugExitReason,
   recordRuggedNarrativesForExit,
 } from "./narrative-contagion.js";
+import { analyzeHolderStructure } from "./holder-memory.js";
+import { summarizeSmartWalletHistory } from "./smart-wallet-history.js";
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
 import { executeTool, registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape } from "./telegram.js";
@@ -82,6 +84,7 @@ import {
 } from "./learning-continuous.js";
 import {
   getCoinConviction, recordCoinObservation, recordObservationOutcomes, recordTradeConvictionOutcome,
+  getNarrativeConviction,
 } from "./conviction-memory.js";
 import {
   buildTokenRegime, getRegimeAssessment, recordRegimeObservation, recordRegimeTradeOutcome,
@@ -121,6 +124,9 @@ import { StrategyEvolutionBus } from "./strategy-evolution-bus.js";
 import { StrategyRegistry } from "./strategy-registry.js";
 import { StrategyGate } from "./strategy-gate.js";
 import { StrategyProposal } from "./strategy-proposal.js";
+import { StrategyComposer } from "./strategy-composer.js";
+import { FundamentalStrategyProducer } from "./fundamental-strategy-producer.js";
+import { StrategyRuntimeSelector, setRuntimeSelector } from "./strategy-runtime-selector.js";
 import {
   readAutomationCommand, publishAutomationState, persistAutomationPreference,
   issueSupervisorCommand, publishSupervisorState, readSupervisorState,
@@ -153,19 +159,85 @@ const agentRouter = new AgentRouter({
 log("startup", `AgentRouter initialized — Gemini: ${!!process.env.GEMINI_API_KEY}, Codex: true`);
 
 // Strategy Evolution Engine — opt-in via config.strategy.evolution.enabled
+// Two-stage opt-in:
+//   strategy.evolution.enabled            → engine + composer + registry + gate live
+//   strategy.fundamentalProducer.enabled  → producer also runs (defaults to dryRun)
+let _fundamentalProducer = null;
 if (config.strategy?.evolution?.enabled) {
   const _strategyRegistry = new StrategyRegistry({ persistPath: "./data/strategy-registry.json" });
-  const _strategyBus = new StrategyEvolutionBus({ maxQueue: 5 });
+  const _strategyBus = new StrategyEvolutionBus({ maxQueue: config.strategy.evolution.maxCandidateQueue ?? 5 });
   const _strategyGate = new StrategyGate({});
-  const _strategyProposal = new StrategyProposal({ sendTelegram: sendMessage });
+  const _strategyProposal = new StrategyProposal({
+    sendTelegram: sendMessage,
+    autoApproveConvictionMin:   config.strategy.evolution.autoApproveConvictionMin ?? 0.95,
+    autoApproveMinMaturityDays: config.strategy.fundamentalProducer?.minDataAgeDays ?? 30,
+    proposalTimeoutMs:          (config.strategy.evolution.proposalTimeoutHours ?? 24) * 60 * 60 * 1000,
+  });
+  const _strategyComposer = new StrategyComposer({
+    registry: _strategyRegistry,
+    // LLM generator is intentionally null in Phase-1 — composer.generate() will
+    // simply return null and the producer falls back to compose-only.
+    llmGenerator: null,
+  });
   const _evolutionEngine = new StrategyEvolutionEngine({
     bus: _strategyBus,
     gate: _strategyGate,
     registry: _strategyRegistry,
     proposal: _strategyProposal,
+    degradationThreshold: config.strategy.evolution.degradationThreshold ?? 0.75,
   });
   _evolutionEngine.start();
   log("startup", "Strategy Evolution Engine started (strategy.evolution.enabled=true).");
+
+  // Runtime selector — when enabled, allows agent to PICK from the evolved
+  // registry at trade time instead of always using the static PRESET.
+  // Off by default; even when enabled, defaults to "shadow" mode (logs the
+  // diff without applying), so the operator can compare evolved vs preset
+  // for a few days before flipping to "live".
+  const runtimeSelectorCfg = config.strategy?.runtimeSelector || {};
+  if (runtimeSelectorCfg.enabled) {
+    const _runtimeSelector = new StrategyRuntimeSelector({
+      registry: _strategyRegistry,
+      config: runtimeSelectorCfg,
+      logger: {
+        info: (...args) => log("strategy_selector", args.map(String).join(" ")),
+        warn: (...args) => log("strategy_selector_warn", args.map(String).join(" ")),
+        error: (...args) => log("strategy_selector_error", args.map(String).join(" ")),
+      },
+    });
+    setRuntimeSelector(_runtimeSelector);
+    log("startup", `Strategy Runtime Selector active (mode=${runtimeSelectorCfg.mode || "shadow"}).`);
+  }
+
+  if (config.strategy?.fundamentalProducer?.enabled) {
+    _fundamentalProducer = new FundamentalStrategyProducer({
+      bus: _strategyBus,
+      composer: _strategyComposer,
+      registry: _strategyRegistry,
+      memories: {
+        getCoinConviction,
+        getNarrativeConviction,
+        summarizeSmartWalletHistory,
+        analyzeHolderStructure,
+        getRegimeAssessment,
+        getExecutionQualityAssessment,
+      },
+      config: config.strategy.fundamentalProducer,
+      logger: {
+        info: (...args) => log("fundamental_producer", args.map(String).join(" ")),
+        warn: (...args) => log("fundamental_producer_warn", args.map(String).join(" ")),
+        error: (...args) => log("fundamental_producer_error", args.map(String).join(" ")),
+      },
+    });
+    // No contextProvider here — the screening cycle calls _fundamentalProducer.tick(ctx)
+    // when it has fresh candidates. start() flips the running flag for status checks.
+    _fundamentalProducer.start();
+    log("startup", `FundamentalStrategyProducer started (dryRun=${config.strategy.fundamentalProducer.dryRun}).`);
+  }
+}
+
+export function getFundamentalProducer() {
+  return _fundamentalProducer;
 }
 
 export function getAgentRouter() {
@@ -204,7 +276,7 @@ async function enrichMarketResearchWithAgentRouter({ marketIntel, candidates }) 
     return null;
   }
 
-  const saved = recordMarketResearchEnrichment({
+  const saved = await recordMarketResearchEnrichment({
     agent: researchResult.agent,
     duration_ms: researchResult.durationMs,
     condition: marketIntel.condition,
@@ -532,7 +604,7 @@ async function handleStrategyTelegramCommand(text) {
     if (mode === "on" || mode === "off") {
       const enabled = mode === "on";
       issueSupervisorCommand({ action: "set_power", enabled, source: "telegram" });
-      publishSupervisorState({ desiredRunning: enabled, source: "telegram_command" });
+      await publishSupervisorState({ desiredRunning: enabled, source: "telegram_command" });
       await sendHTML(`✅ Agent process power <b>${enabled ? "ON" : "OFF"}</b> command queued to supervisor.`);
     } else {
       await sendHTML(`Usage: <code>/agent on</code> or <code>/agent off</code>`);
@@ -789,7 +861,7 @@ async function executePendingIntent(id) {
   } catch (e) {
     consumeIntent(id, "failed", { error: e.message });
     recordSwapOutcome({ success: false });
-    recordExecutionQuality({
+    await recordExecutionQuality({
       walletAddress: args.wallet_address || getActiveWallet()?.address || null,
       provider: "auto",
       mode: args.token_in === "SOL" ? "buy" : "sell",
@@ -804,7 +876,7 @@ async function executePendingIntent(id) {
 
   const succeeded = result?.success || result?.dry_run;
   recordSwapOutcome({ success: !!succeeded });
-  recordExecutionQuality({
+  await recordExecutionQuality({
     walletAddress: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
     provider: result?.execution_provider || "auto",
     mode: args.token_in === "SOL" ? "buy" : "sell",
@@ -1341,7 +1413,7 @@ async function checkDeterministicExits(tokens) {
           wallet: token.wallet_address ? getWalletByAddress(token.wallet_address)?.keypair || null : null,
         })
       );
-      recordExecutionQuality({
+      await recordExecutionQuality({
         walletAddress: token.wallet_address || null,
         provider: partialRes?.execution_provider || "auto",
         mode: "sell",
@@ -1352,7 +1424,7 @@ async function checkDeterministicExits(tokens) {
         latencyMs: Date.now() - partialStartAt,
       });
       if (partialRes.success || partialRes.dry_run) {
-        markPartialTPLanded(posKey);
+        await markPartialTPLanded(posKey);
         markPartialTPDone(token.position_key || token.mint, token.wallet_address || null);
         if (telegramEnabled()) {
           sendHTML(
@@ -1435,7 +1507,7 @@ export async function runManagementCycle({ silent = false } = {}) {
         })
       );
       recordSwapOutcome({ success: !!(res.success || res.dry_run) });
-      recordExecutionQuality({
+      await recordExecutionQuality({
         walletAddress: exit.wallet_address || null,
         provider: res?.execution_provider || "auto",
         mode: "sell",
@@ -1460,7 +1532,7 @@ export async function runManagementCycle({ silent = false } = {}) {
         // sold, hitting Jupiter with zero balance. Cheap insurance.
         await recordClose(exit.position_key || exit.mint, exit.reason, exit.wallet_address || null);
         _rugMonitor?.detachPosition(exit.position_key || exit.mint);
-        clearPartialTPGuard(exit.position_key || exit.mint);
+        await clearPartialTPGuard(exit.position_key || exit.mint);
         recordRuggedNarrativesForExit({ reason: exit.reason, token: tokenData || {} });
         const tradePnl = exit.pnl_pct || 0;
         recordTrade(!exit.is_loss);
@@ -1516,7 +1588,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           rug_detected: /rug/i.test(exit.reason),
           attribution,
         });
-        recordTradeAttribution({
+        await recordTradeAttribution({
           mint: exit.mint,
           symbol: exit.symbol,
           pnl_pct: tradePnl,
@@ -1530,7 +1602,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           pnl_pct: tradePnl,
           exit_reason: exit.reason,
         });
-        recordRegimeTradeOutcome({
+        await recordRegimeTradeOutcome({
           marketCondition: tokenData?.market_condition || getMarketIntelligence().condition,
           tier: tokenData?.tier_execution?.tier || tokenData?.tier?.label || "UNKNOWN",
           narrative: tokenData?.conviction?.narrative_cluster?.narrative || (Array.isArray(tokenData?.narrative_tags) ? (typeof tokenData.narrative_tags[0] === "string" ? tokenData.narrative_tags[0] : tokenData.narrative_tags[0]?.narrative) : null) || "OTHER",
@@ -1541,7 +1613,7 @@ export async function runManagementCycle({ silent = false } = {}) {
         const tpTriggered = /immediate tp|roi|trailing stop/i.test(exit.reason || "") && (exit.pnl_pct || 0) >= (config.management.autoTakeProfitPct ?? 50);
         if (tpTriggered) {
           const cooldownHours = config.management.antiGreedCooldownHours ?? 12;
-          setTokenCooldown(exit.mint, cooldownHours, "auto_tp");
+          await setTokenCooldown(exit.mint, cooldownHours, "auto_tp");
           const profitSweep = computeProfitSweepAmount(
             Math.max(0, (tokenData?.usd || 0) - (tracked?.initial_value_usd || 0)),
             balance.sol_price || 0
@@ -1653,7 +1725,7 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
               const llmPosKey = walletAddress ? `${tokenIn}::${walletAddress}` : tokenIn;
               await recordClose(tokenIn, "LLM Manager Decision", walletAddress);
               _rugMonitor?.detachPosition(llmPosKey);
-              clearPartialTPGuard(llmPosKey);
+              await clearPartialTPGuard(llmPosKey);
               recordRuggedNarrativesForExit({ reason: "LLM Manager Decision", token: {} });
               recordTrade(true); // assume LLM exits for profit
               await handleDailyTradeGuardOutcome(true, {
@@ -1767,7 +1839,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     }
 
     // ─── Market intelligence ─────────────────────
-    const marketSnap = recordMarketSnapshot(cappedCandidates);
+    const marketSnap = await recordMarketSnapshot(cappedCandidates);
     const marketIntel = getMarketIntelligence();
     const heatmap = computeMarketRegime();
     log("market", `Market: ${marketIntel.condition} (confidence: ${marketSnap.confidence}) → heatmap ${heatmap.regime} maxPos=${heatmap.max_positions}`);
@@ -1797,7 +1869,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const scoredCandidates = [];
     for (const token of narrativeFiltered.slice(0, 8)) {
       if (isTokenBlacklisted(token.mint)) continue;
-      if (isTokenOnCooldown(token.mint)) continue;
+      if (await isTokenOnCooldown(token.mint)) continue;
       if (token.creator && isDevBlocked(token.creator)) continue;
 
       const security = await getTokenSecurityDetails({ mint: token.mint });
@@ -2015,8 +2087,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
     // Catat semua candidates (termasuk yang tidak lolos) untuk belajar nanti
     if (scoredCandidates.length > 0) {
       for (const candidate of scoredCandidates) {
-        recordCoinObservation(candidate);
-        recordRegimeObservation(candidate);
+        await recordCoinObservation(candidate);
+        await recordRegimeObservation(candidate);
         recordDecision({
           type: "screening_candidate",
           mint: candidate.mint,
@@ -2035,6 +2107,22 @@ export async function runScreeningCycle({ silent = false } = {}) {
       recordObservations(scoredCandidates);
       // Build ticker registry — learn symbol→mint mappings from real market data
       try { bulkRegisterTickers(scoredCandidates); } catch (e) { log("ticker_error", e.message); }
+
+      // Feed fundamental signals to the strategy producer. Internal throttle
+      // (maxPerHour) prevents spam — tick is safe to call every screening cycle.
+      if (_fundamentalProducer) {
+        try {
+          const sampleTokens = scoredCandidates.slice(0, 8);
+          const sampleWallets = listSmartWallets({ minDecayMultiplier: 0.5 })
+            .slice(0, 12)
+            .map(w => w.address);
+          await _fundamentalProducer.tick({
+            sampleTokens,
+            sampleWallets,
+            regime: computeMarketRegime?.()?.regime || null,
+          });
+        } catch (e) { log("fundamental_producer_error", e.message); }
+      }
     }
 
     let passingCandidates = scoredCandidates
@@ -2294,7 +2382,7 @@ async function seedSmartWallets() {
     }
     const qualified = (result.discovered || []).filter(w => w.qualified);
     for (const w of qualified.slice(0, 15)) {
-      addSmartWallet({ address: w.address, label: w.label || `auto_${w.address.slice(0, 6)}` });
+      await addSmartWallet({ address: w.address, label: w.label || `auto_${w.address.slice(0, 6)}` });
     }
     if (qualified.length > 0) {
       log("smart_wallets", `Seeded ${qualified.length} smart wallets from discovery pipeline`);
@@ -2719,7 +2807,11 @@ function publishRuntimeAutomationState(source = "runtime") {
 function setAutomationEnabled(enabled, source = "runtime", persist = false) {
   if (enabled) startCronJobs();
   else stopCronJobs();
-  if (persist) persistAutomationPreference(enabled);
+  if (persist) {
+    persistAutomationPreference(enabled).catch((err) =>
+      log("automation", `persistAutomationPreference failed: ${err?.message || err}`)
+    );
+  }
   publishRuntimeAutomationState(source);
   return cronStarted;
 }
