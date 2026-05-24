@@ -340,5 +340,50 @@ Audit-source: Claude session audit (40k-line diff from codex-coleader.log)
 
 ---
 
+## PR-022: Read-Modify-Write Mutex for Memory Stores
+Status: ready_for_review
+Priority: high
+Safety: safe
+Goal: Concurrent async callers were free to interleave the load → mutate → atomicWriteJson sequence on shared JSON state files. PR-019's tmp+rename already gave crash-consistency, but the same-process interleave gap remained — a producer and a screening cycle could both load v1, both mutate, both write, and one increment is lost. Add an in-process per-path mutex (withFileLock) and wrap every RMW path through it. External-process writers stay out of scope (production deploy is a single Node process).
+Workers:
+  research: claude
+  build: claude
+  review: claude
+Tasks:
+- [x] atomic-write.js: withFileLock(filePath, fn) backed by per-path Promise chain (worker: claude)
+- [x] Convert 11 memory modules from sync to async + withFileLock — automation-control, conviction-memory, dev-blocklist, execution-quality-memory, partial-tp-guard, regime-memory, smart-wallet-history, smart-wallets, token-blacklist, trade-attribution, trade-cooldowns (worker: claude)
+- [x] Update callers to await async writes — fast-buy, market-intelligence, tools/{dexscreener,executor,wallet-discovery}, index.js screening cycle (worker: claude)
+- [x] tests/rmw-mutex.test.js: prove unprotected RMW loses writes, withFileLock keeps the increment serialized (worker: claude)
+- [x] Update 7 existing memory-store test suites for async APIs (worker: claude)
+- [x] Review & finalize (worker: claude)
+Added: 2026-05-24
+Audit-source: Strategy Evolution producer would hit this race against the screening cycle; surfaced during PR-023 wiring.
+
+---
+
+## PR-023: Strategy Evolution — Runtime Wiring
+Status: ready_for_review
+Priority: high
+Safety: safe
+Goal: Without this PR, evolved strategies are write-only — producer + gate + proposal + registry create them, but the agent never reads them at trade time, so every trade still uses the hardcoded PRESETS in strategies.js. Bridge the registry into runtime in three opt-in pieces: data-maturity gate (so the agent doesn't compose from undersampled memory), fundamental-signal producer (signals → composer → bus), and a runtime selector (shadow/live override at trade time). All defaults safe-off; producer also defaults dryRun so first activation is observation only.
+Workers:
+  research: claude
+  build: claude
+  review: claude
+Tasks:
+- [x] data-maturity.js: single source of truth for "agent data age" — surveys regime-memory, coin-conviction, smart-wallet-history, execution-quality and returns earliest observation timestamp (worker: claude)
+- [x] fundamental-strategy-producer.js: bridge fundamental signals → StrategyComposer → StrategyEvolutionBus, throttled LLM generate() (1×/24h) only when registry < llmFallbackMinActive (worker: claude)
+- [x] strategy-runtime-selector.js: bridge evolved registry → trade-time decisions; modes enabled=false / shadow / live; WR floor 0.85 + 20-live-trade min before override (worker: claude)
+- [x] strategies.js: getStrategy(id, context) accepts regime; resolution chain PRESET → user override → evolved override; tag _runtime_source / _evolved_id / _evolved_name (worker: claude)
+- [x] strategy-proposal.js: 3-gate auto-approve (conviction ≥0.95 + WR ≥0.90 + maturity ≥30d), ASCII 80%→100% bars, fundamental evidence block (worker: claude)
+- [x] config.js: strategy.fundamentalProducer + strategy.runtimeSelector blocks, all defaults safe-off (worker: claude)
+- [x] index.js: startup wires both behind flags; screening cycle calls producer.tick(ctx) (worker: claude)
+- [x] 63 new tests across 4 modules; 769/769 suite passes (worker: claude)
+- [x] Review & finalize (worker: claude)
+Added: 2026-05-24
+Audit-source: PR-008 (Strategy Evolution) closed without runtime adoption — registry populated, agent never consulted it.
+
+---
+
 ## Codex Co-Leader Notes
 - 2026-05-21: Codex co-leader loop enabled via ops/codex-coleader-loop.sh. Claude remains final review/decision gate; Codex handles build/test tasks.
