@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXEC_FILE = path.join(__dirname, "execution-quality.json");
@@ -89,7 +89,7 @@ export function buildExecutionContext({
   };
 }
 
-export function recordExecutionQuality({
+export async function recordExecutionQuality({
   walletAddress = null,
   provider = null,
   mode = null,
@@ -99,25 +99,27 @@ export function recordExecutionQuality({
   success = false,
   latencyMs = 0,
 } = {}) {
-  const store = loadStore();
-  const route = getOrCreateRoute(store, buildExecutionContext({
-    walletAddress,
-    provider,
-    mode,
-    split,
-    marketCondition,
-    slippage,
-  }));
+  return withFileLock(EXEC_FILE, async () => {
+    const store = loadStore();
+    const route = getOrCreateRoute(store, buildExecutionContext({
+      walletAddress,
+      provider,
+      mode,
+      split,
+      marketCondition,
+      slippage,
+    }));
 
-  route.attempts += 1;
-  if (success) route.successes += 1;
-  else route.failures += 1;
-  route.cumulative_latency_ms += Number(latencyMs || 0);
-  route.cumulative_slippage += Number(slippage || 0);
-  route.cumulative_quality_delta += success ? 8 : -12;
-  route.last_seen_at = new Date().toISOString();
-  saveStore(store);
-  return route;
+    route.attempts += 1;
+    if (success) route.successes += 1;
+    else route.failures += 1;
+    route.cumulative_latency_ms += Number(latencyMs || 0);
+    route.cumulative_slippage += Number(slippage || 0);
+    route.cumulative_quality_delta += success ? 8 : -12;
+    route.last_seen_at = new Date().toISOString();
+    saveStore(store);
+    return route;
+  });
 }
 
 export function getExecutionQualityAssessment({

@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REGIME_FILE = path.join(__dirname, "regime-memory.json");
@@ -94,19 +94,21 @@ export function buildTokenRegime(token = {}) {
   };
 }
 
-export function recordRegimeObservation(token = {}, { nowMs = Date.now() } = {}) {
+export async function recordRegimeObservation(token = {}, { nowMs = Date.now() } = {}) {
   if (!token?.mint) return null;
-  const store = loadStore();
-  const regime = buildTokenRegime(token);
-  const slot = getOrCreateRegime(store, regime.key, regime);
-  slot.observation_count += 1;
-  slot.cumulative_signal_score += Number(token.conviction?.conviction_score || token.avg_signal_score || 0);
-  slot.last_seen_at = new Date(nowMs).toISOString();
-  saveStore(store);
-  return slot;
+  return withFileLock(REGIME_FILE, async () => {
+    const store = loadStore();
+    const regime = buildTokenRegime(token);
+    const slot = getOrCreateRegime(store, regime.key, regime);
+    slot.observation_count += 1;
+    slot.cumulative_signal_score += Number(token.conviction?.conviction_score || token.avg_signal_score || 0);
+    slot.last_seen_at = new Date(nowMs).toISOString();
+    saveStore(store);
+    return slot;
+  });
 }
 
-export function recordRegimeTradeOutcome({
+export async function recordRegimeTradeOutcome({
   marketCondition = "UNKNOWN",
   tier = "UNKNOWN",
   narrative = "OTHER",
@@ -114,18 +116,20 @@ export function recordRegimeTradeOutcome({
   pnl_pct = 0,
   nowMs = Date.now(),
 } = {}) {
-  const store = loadStore();
-  const key = buildRegimeKey({ marketCondition, tier, narrative, verdict });
-  const slot = getOrCreateRegime(store, key, { marketCondition, tier, narrative, verdict });
-  slot.trade_count += 1;
-  if (Number(pnl_pct || 0) > 0) slot.win_count += 1;
-  else slot.loss_count += 1;
-  slot.cumulative_outcome_delta += Number(pnl_pct || 0) > 0
-    ? Math.min(18, Math.max(4, Number(pnl_pct || 0) / 4))
-    : -Math.min(18, Math.max(4, Math.abs(Number(pnl_pct || 0)) / 4));
-  slot.last_seen_at = new Date(nowMs).toISOString();
-  saveStore(store);
-  return slot;
+  return withFileLock(REGIME_FILE, async () => {
+    const store = loadStore();
+    const key = buildRegimeKey({ marketCondition, tier, narrative, verdict });
+    const slot = getOrCreateRegime(store, key, { marketCondition, tier, narrative, verdict });
+    slot.trade_count += 1;
+    if (Number(pnl_pct || 0) > 0) slot.win_count += 1;
+    else slot.loss_count += 1;
+    slot.cumulative_outcome_delta += Number(pnl_pct || 0) > 0
+      ? Math.min(18, Math.max(4, Number(pnl_pct || 0) / 4))
+      : -Math.min(18, Math.max(4, Math.abs(Number(pnl_pct || 0)) / 4));
+    slot.last_seen_at = new Date(nowMs).toISOString();
+    saveStore(store);
+    return slot;
+  });
 }
 
 export function getRegimeAssessment(token = {}, { nowMs = Date.now() } = {}) {

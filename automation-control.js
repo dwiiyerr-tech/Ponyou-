@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -27,11 +27,13 @@ export function readUserConfig() {
   return readJson(USER_CONFIG_PATH, {}) || {};
 }
 
-export function persistAutomationPreference(enabled) {
-  const cfg = readUserConfig();
-  cfg.automationEnabled = !!enabled;
-  writeJson(USER_CONFIG_PATH, cfg);
-  return cfg;
+export async function persistAutomationPreference(enabled) {
+  return withFileLock(USER_CONFIG_PATH, async () => {
+    const cfg = readUserConfig();
+    cfg.automationEnabled = !!enabled;
+    writeJson(USER_CONFIG_PATH, cfg);
+    return cfg;
+  });
 }
 
 export function readAutomationState() {
@@ -44,19 +46,21 @@ export function readAutomationState() {
   }) || {};
 }
 
-export function publishAutomationState(state = {}) {
-  const current = readAutomationState();
-  const next = {
-    ...current,
-    ...state,
-    enabled: !!(state.enabled ?? current.enabled),
-    cronStarted: !!(state.cronStarted ?? current.cronStarted),
-    telegramPolling: !!(state.telegramPolling ?? current.telegramPolling),
-    source: state.source || current.source || "runtime",
-    updatedAt: new Date().toISOString(),
-  };
-  writeJson(AUTOMATION_STATE_PATH, next);
-  return next;
+export async function publishAutomationState(state = {}) {
+  return withFileLock(AUTOMATION_STATE_PATH, async () => {
+    const current = readAutomationState();
+    const next = {
+      ...current,
+      ...state,
+      enabled: !!(state.enabled ?? current.enabled),
+      cronStarted: !!(state.cronStarted ?? current.cronStarted),
+      telegramPolling: !!(state.telegramPolling ?? current.telegramPolling),
+      source: state.source || current.source || "runtime",
+      updatedAt: new Date().toISOString(),
+    };
+    writeJson(AUTOMATION_STATE_PATH, next);
+    return next;
+  });
 }
 
 export function issueAutomationCommand({ action = "set_enabled", enabled = null, source = "agent" } = {}) {
@@ -86,20 +90,22 @@ export function readSupervisorState() {
   }) || {};
 }
 
-export function publishSupervisorState(state = {}) {
-  const current = readSupervisorState();
-  const next = {
-    ...current,
-    ...state,
-    desiredRunning: !!(state.desiredRunning ?? current.desiredRunning),
-    agentRunning: !!(state.agentRunning ?? current.agentRunning),
-    pid: state.pid ?? current.pid ?? null,
-    mode: state.mode ?? current.mode ?? null,
-    source: state.source || current.source || "supervisor",
-    updatedAt: new Date().toISOString(),
-  };
-  writeJson(SUPERVISOR_STATE_PATH, next);
-  return next;
+export async function publishSupervisorState(state = {}) {
+  return withFileLock(SUPERVISOR_STATE_PATH, async () => {
+    const current = readSupervisorState();
+    const next = {
+      ...current,
+      ...state,
+      desiredRunning: !!(state.desiredRunning ?? current.desiredRunning),
+      agentRunning: !!(state.agentRunning ?? current.agentRunning),
+      pid: state.pid ?? current.pid ?? null,
+      mode: state.mode ?? current.mode ?? null,
+      source: state.source || current.source || "supervisor",
+      updatedAt: new Date().toISOString(),
+    };
+    writeJson(SUPERVISOR_STATE_PATH, next);
+    return next;
+  });
 }
 
 export function issueSupervisorCommand({ action = "set_power", enabled = null, source = "agent" } = {}) {

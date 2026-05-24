@@ -6,7 +6,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUG_FILE = path.join(__dirname, "rug-memory.json");
@@ -31,24 +31,28 @@ function saveMem(mem) {
   atomicWriteJson(RUG_FILE, mem);
 }
 
-export function blockDev({ address, reason = "" } = {}) {
+export async function blockDev({ address, reason = "" } = {}) {
   if (!address) return { error: "address required" };
-  const mem = loadMem();
-  if (!mem.blacklisted_devs.includes(address)) mem.blacklisted_devs.push(address);
-  mem.dev_meta[address] = { reason, added_at: new Date().toISOString() };
-  saveMem(mem);
-  return { saved: true, address, reason };
+  return withFileLock(RUG_FILE, async () => {
+    const mem = loadMem();
+    if (!mem.blacklisted_devs.includes(address)) mem.blacklisted_devs.push(address);
+    mem.dev_meta[address] = { reason, added_at: new Date().toISOString() };
+    saveMem(mem);
+    return { saved: true, address, reason };
+  });
 }
 
-export function unblockDev({ address } = {}) {
+export async function unblockDev({ address } = {}) {
   if (!address) return { error: "address required" };
-  const mem = loadMem();
-  const before = mem.blacklisted_devs.length;
-  mem.blacklisted_devs = mem.blacklisted_devs.filter(a => a !== address);
-  delete mem.dev_meta[address];
-  const removed = mem.blacklisted_devs.length !== before;
-  if (removed) saveMem(mem);
-  return { removed, address };
+  return withFileLock(RUG_FILE, async () => {
+    const mem = loadMem();
+    const before = mem.blacklisted_devs.length;
+    mem.blacklisted_devs = mem.blacklisted_devs.filter(a => a !== address);
+    delete mem.dev_meta[address];
+    const removed = mem.blacklisted_devs.length !== before;
+    if (removed) saveMem(mem);
+    return { removed, address };
+  });
 }
 
 export function isBlockedDev(address) {

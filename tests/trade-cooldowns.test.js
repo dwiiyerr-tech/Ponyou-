@@ -10,9 +10,9 @@ afterEach(() => {
 });
 
 describe("trade cooldowns", () => {
-  it("stores and resolves active token cooldowns", () => {
-    setTokenCooldown("mintA", 1, "auto_tp");
-    expect(isTokenOnCooldown("mintA")).toBe(true);
-    expect(getTokenCooldown("mintA")?.reason).toBe("auto_tp");
+  it("stores and resolves active token cooldowns", async () => {
+    await setTokenCooldown("mintA", 1, "auto_tp");
+    expect(await isTokenOnCooldown("mintA")).toBe(true);
+    expect((await getTokenCooldown("mintA"))?.reason).toBe("auto_tp");
   });
 });

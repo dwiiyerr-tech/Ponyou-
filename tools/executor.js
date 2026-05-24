@@ -498,7 +498,7 @@ export async function executeTool(name, args) {
     }
 
     if (isSwapTool(name)) {
-      recordExecutionQuality({
+      await recordExecutionQuality({
         walletAddress: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
         provider: result?.execution_provider || "auto",
         mode: args.token_in === "SOL" ? "buy" : (args.token_out === "SOL" ? "sell" : "swap"),
@@ -527,7 +527,7 @@ export async function executeTool(name, args) {
     if (isSwapTool(name)) {
       const activeWallet = getActiveWallet();
       if (activeWallet?.address) markWalletError(activeWallet.address);
-      recordExecutionQuality({
+      await recordExecutionQuality({
         walletAddress: args.wallet_address || activeWallet?.address || null,
         provider: "auto",
         mode: args.token_in === "SOL" ? "buy" : (args.token_out === "SOL" ? "sell" : "swap"),

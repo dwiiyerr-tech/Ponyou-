@@ -11,9 +11,9 @@ beforeEach(() => {
 });
 
 describe("execution quality memory", () => {
-  it("upgrades a wallet-route after repeated successful executions", () => {
+  it("upgrades a wallet-route after repeated successful executions", async () => {
     for (let i = 0; i < 3; i++) {
-      recordExecutionQuality({
+      await recordExecutionQuality({
         walletAddress: "walletA",
         provider: "jupiter_ultra",
         mode: "buy",
@@ -39,9 +39,9 @@ describe("execution quality memory", () => {
     expect(assessment.size_multiplier).toBeGreaterThan(1);
   });
 
-  it("penalizes weak routes after repeated failures", () => {
+  it("penalizes weak routes after repeated failures", async () => {
     for (let i = 0; i < 3; i++) {
-      recordExecutionQuality({
+      await recordExecutionQuality({
         walletAddress: "walletB",
         provider: "jupiter_ultra",
         mode: "buy",
@@ -67,8 +67,8 @@ describe("execution quality memory", () => {
     expect(assessment.size_multiplier).toBeLessThanOrEqual(0.75);
   });
 
-  it("ranks wallets by remembered execution quality", () => {
-    recordExecutionQuality({
+  it("ranks wallets by remembered execution quality", async () => {
+    await recordExecutionQuality({
       walletAddress: "walletA",
       provider: "auto",
       mode: "entry",
@@ -78,7 +78,7 @@ describe("execution quality memory", () => {
       success: true,
       latencyMs: 900,
     });
-    recordExecutionQuality({
+    await recordExecutionQuality({
       walletAddress: "walletA",
       provider: "auto",
       mode: "entry",
@@ -88,7 +88,7 @@ describe("execution quality memory", () => {
       success: true,
       latencyMs: 1000,
     });
-    recordExecutionQuality({
+    await recordExecutionQuality({
       walletAddress: "walletB",
       provider: "auto",
       mode: "entry",
@@ -98,7 +98,7 @@ describe("execution quality memory", () => {
       success: false,
       latencyMs: 3000,
     });
-    recordExecutionQuality({
+    await recordExecutionQuality({
       walletAddress: "walletB",
       provider: "auto",
       mode: "entry",
@@ -118,8 +118,8 @@ describe("execution quality memory", () => {
     expect(ranked[1].address).toBe("walletB");
   });
 
-  it("decays stale execution quality over time", () => {
-    recordExecutionQuality({
+  it("decays stale execution quality over time", async () => {
+    await recordExecutionQuality({
       walletAddress: "walletC",
       provider: "jito",
       mode: "sell",

@@ -22,19 +22,19 @@ afterEach(() => {
 });
 
 describe("smart wallet history", () => {
-  it("records snapshots and returns rolling history", () => {
-    recordSmartWalletSnapshot("walletA", { timeframe: "24h", realized_pnl_sol: 0.5, winrate: 0.6, conviction_score: 60 });
-    recordSmartWalletSnapshot("walletA", { timeframe: "24h", realized_pnl_sol: 1.2, winrate: 0.8, conviction_score: 75 });
+  it("records snapshots and returns rolling history", async () => {
+    await recordSmartWalletSnapshot("walletA", { timeframe: "24h", realized_pnl_sol: 0.5, winrate: 0.6, conviction_score: 60 });
+    await recordSmartWalletSnapshot("walletA", { timeframe: "24h", realized_pnl_sol: 1.2, winrate: 0.8, conviction_score: 75 });
 
     const history = getSmartWalletHistory("walletA", { timeframe: "24h", limit: 10 });
     expect(history).toHaveLength(2);
     expect(history[1].realized_pnl_sol).toBeCloseTo(1.2);
   });
 
-  it("summarizes stability and trend from recent snapshots", () => {
-    recordSmartWalletSnapshot("walletA", { timeframe: "24h", realized_pnl_sol: 0.2, winrate: 0.55, conviction_score: 45 });
-    recordSmartWalletSnapshot("walletA", { timeframe: "24h", realized_pnl_sol: 0.8, winrate: 0.7, conviction_score: 68 });
-    recordSmartWalletSnapshot("walletA", { timeframe: "24h", realized_pnl_sol: 1.4, winrate: 0.8, conviction_score: 82 });
+  it("summarizes stability and trend from recent snapshots", async () => {
+    await recordSmartWalletSnapshot("walletA", { timeframe: "24h", realized_pnl_sol: 0.2, winrate: 0.55, conviction_score: 45 });
+    await recordSmartWalletSnapshot("walletA", { timeframe: "24h", realized_pnl_sol: 0.8, winrate: 0.7, conviction_score: 68 });
+    await recordSmartWalletSnapshot("walletA", { timeframe: "24h", realized_pnl_sol: 1.4, winrate: 0.8, conviction_score: 82 });
 
     const summary = summarizeSmartWalletHistory("walletA", { timeframe: "24h", limit: 12 });
     expect(summary.sample_count).toBe(3);

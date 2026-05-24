@@ -13,6 +13,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INTEL_FILE = path.join(__dirname, "market-intel.json");
@@ -49,14 +50,16 @@ function saveIntel(intel) {
   atomicWriteJson(INTEL_FILE, intel);
 }
 
-export function recordMarketResearchEnrichment(enrichment) {
-  const intel = loadIntel();
-  intel.latestResearch = {
-    ts: new Date().toISOString(),
-    ...enrichment,
-  };
-  saveIntel(intel);
-  return intel.latestResearch;
+export async function recordMarketResearchEnrichment(enrichment) {
+  return withFileLock(INTEL_FILE, async () => {
+    const intel = loadIntel();
+    intel.latestResearch = {
+      ts: new Date().toISOString(),
+      ...enrichment,
+    };
+    saveIntel(intel);
+    return intel.latestResearch;
+  });
 }
 
 // ─── Analysis ─────────────────────────────────────────────────
@@ -127,47 +130,49 @@ export function analyzeMarketCondition(tokens) {
  * Record a new market snapshot and update current condition.
  * Call this after every discoverTokens() call.
  */
-export function recordMarketSnapshot(tokens) {
-  const intel = loadIntel();
-  const analysis = analyzeMarketCondition(tokens);
+export async function recordMarketSnapshot(tokens) {
+  return withFileLock(INTEL_FILE, async () => {
+    const intel = loadIntel();
+    const analysis = analyzeMarketCondition(tokens);
 
-  // If no data (API unreachable), skip snapshot and keep previous condition
-  if (analysis.condition === null) {
-    log("market", `Market snapshot skipped — no token data (API unreachable), keeping: ${intel.currentCondition}`);
-    return { ...analysis, condition: intel.currentCondition, smoothed_condition: intel.currentCondition };
-  }
+    // If no data (API unreachable), skip snapshot and keep previous condition
+    if (analysis.condition === null) {
+      log("market", `Market snapshot skipped — no token data (API unreachable), keeping: ${intel.currentCondition}`);
+      return { ...analysis, condition: intel.currentCondition, smoothed_condition: intel.currentCondition };
+    }
 
-  intel.snapshots.push({
-    ts: new Date().toISOString(),
-    ...analysis,
+    intel.snapshots.push({
+      ts: new Date().toISOString(),
+      ...analysis,
+    });
+
+    // Keep rolling window
+    if (intel.snapshots.length > MAX_SNAPSHOTS) {
+      intel.snapshots = intel.snapshots.slice(-MAX_SNAPSHOTS);
+    }
+
+    // Smooth: condition must appear N times in a row to change.
+    // Special case: until we have enough history (< 3 snapshots), accept the
+    // freshly observed condition immediately rather than staying stuck on NORMAL.
+    const recent = intel.snapshots.slice(-3).map(s => s.condition);
+    const latest = recent[recent.length - 1];
+    const prevCondition = intel.currentCondition;
+
+    const agreesWithLatest = recent.filter(c => c === latest).length;
+    const shouldAdopt =
+      recent.length < 3 ? true : agreesWithLatest >= 2;
+
+    if (shouldAdopt) {
+      intel.currentCondition = latest;
+    }
+
+    if (intel.currentCondition !== prevCondition) {
+      log("market", `Market condition changed: ${prevCondition} → ${intel.currentCondition} (avg_swaps: ${analysis.metrics.avg_swaps})`);
+    }
+
+    saveIntel(intel);
+    return { ...analysis, smoothed_condition: intel.currentCondition };
   });
-
-  // Keep rolling window
-  if (intel.snapshots.length > MAX_SNAPSHOTS) {
-    intel.snapshots = intel.snapshots.slice(-MAX_SNAPSHOTS);
-  }
-
-  // Smooth: condition must appear N times in a row to change.
-  // Special case: until we have enough history (< 3 snapshots), accept the
-  // freshly observed condition immediately rather than staying stuck on NORMAL.
-  const recent = intel.snapshots.slice(-3).map(s => s.condition);
-  const latest = recent[recent.length - 1];
-  const prevCondition = intel.currentCondition;
-
-  const agreesWithLatest = recent.filter(c => c === latest).length;
-  const shouldAdopt =
-    recent.length < 3 ? true : agreesWithLatest >= 2;
-
-  if (shouldAdopt) {
-    intel.currentCondition = latest;
-  }
-
-  if (intel.currentCondition !== prevCondition) {
-    log("market", `Market condition changed: ${prevCondition} → ${intel.currentCondition} (avg_swaps: ${analysis.metrics.avg_swaps})`);
-  }
-
-  saveIntel(intel);
-  return { ...analysis, smoothed_condition: intel.currentCondition };
 }
 
 /**

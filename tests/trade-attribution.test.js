@@ -83,11 +83,11 @@ describe("trade attribution", () => {
     expect(attribution.scores.execution).toBeGreaterThan(attribution.scores.timing);
   });
 
-  it("stores attribution counts in summary", () => {
-    recordTradeAttribution({ primary_cause: "pick" });
-    recordTradeAttribution({ primary_cause: "timing" });
-    recordTradeAttribution({ primary_cause: "execution" });
-    recordTradeAttribution({ primary_cause: "mixed" });
+  it("stores attribution counts in summary", async () => {
+    await recordTradeAttribution({ primary_cause: "pick" });
+    await recordTradeAttribution({ primary_cause: "timing" });
+    await recordTradeAttribution({ primary_cause: "execution" });
+    await recordTradeAttribution({ primary_cause: "mixed" });
 
     const summary = getAttributionSummary();
     expect(summary.total).toBe(4);

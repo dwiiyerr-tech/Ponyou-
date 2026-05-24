@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 import { classifyNarrative } from "./tools/narratives.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -116,34 +116,36 @@ export function deriveSignalScore(token = {}) {
   return clamp(Number(score.toFixed(2)), 0, 100);
 }
 
-export function recordCoinObservation(token = {}, { minIntervalMs = 30 * 60 * 1000 } = {}) {
+export async function recordCoinObservation(token = {}, { minIntervalMs = 30 * 60 * 1000 } = {}) {
   if (!token?.mint) return null;
-  const store = loadStore();
-  const coin = getOrCreateCoin(store, token.mint, token.symbol);
-  const now = Date.now();
-  const lastSeen = coin.last_seen_at ? new Date(coin.last_seen_at).getTime() : 0;
-  if (lastSeen && now - lastSeen < minIntervalMs) return coin;
+  return withFileLock(CONVICTION_FILE, async () => {
+    const store = loadStore();
+    const coin = getOrCreateCoin(store, token.mint, token.symbol);
+    const now = Date.now();
+    const lastSeen = coin.last_seen_at ? new Date(coin.last_seen_at).getTime() : 0;
+    if (lastSeen && now - lastSeen < minIntervalMs) return coin;
 
-  const signalScore = deriveSignalScore(token);
-  const narratives = extractNarrativeNames(token);
-  coin.observation_count += 1;
-  if (token.passed) coin.passed_count += 1;
-  else coin.failed_count += 1;
-  coin.cumulative_signal_score += signalScore;
-  coin.last_signal_score = signalScore;
-  coin.last_seen_at = new Date(now).toISOString();
-  coin.last_market_condition = token.market_condition || coin.last_market_condition || "UNKNOWN";
-  coin.narratives = narratives;
+    const signalScore = deriveSignalScore(token);
+    const narratives = extractNarrativeNames(token);
+    coin.observation_count += 1;
+    if (token.passed) coin.passed_count += 1;
+    else coin.failed_count += 1;
+    coin.cumulative_signal_score += signalScore;
+    coin.last_signal_score = signalScore;
+    coin.last_seen_at = new Date(now).toISOString();
+    coin.last_market_condition = token.market_condition || coin.last_market_condition || "UNKNOWN";
+    coin.narratives = narratives;
 
-  for (const narrative of narratives) {
-    const slot = getOrCreateNarrative(store, narrative);
-    slot.observation_count += 1;
-    slot.cumulative_signal_score += signalScore;
-    slot.last_seen_at = new Date(now).toISOString();
-  }
+    for (const narrative of narratives) {
+      const slot = getOrCreateNarrative(store, narrative);
+      slot.observation_count += 1;
+      slot.cumulative_signal_score += signalScore;
+      slot.last_seen_at = new Date(now).toISOString();
+    }
 
-  saveStore(store);
-  return coin;
+    saveStore(store);
+    return coin;
+  });
 }
 
 export function recordObservationOutcomes(results = []) {
