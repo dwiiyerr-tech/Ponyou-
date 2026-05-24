@@ -520,6 +520,8 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
 
   const extensions = await getMintExtensions(connection, mint);
 
+  const dexscreenerOnly = process.env.SCREENING_MODE === "dexscreener";
+
   let fresh = { fresh_funded_holders: 0 };
   let sybil = { same_funder_holders: 0, common_funder: null };
   let bundle = { bundle_buyers_pct: 0, bundle_wallets: 0 };
@@ -529,7 +531,12 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
   let shyftFallbackUsed = false;
   let shyftReason = null;
 
-  if (heliusExpected && heliusCircuitOpen()) {
+  if (dexscreenerOnly) {
+    // DexScreener-only mode — skip all Helius/Shyft wallet analysis.
+    // Only DexScreener-derived metrics (LP lock, wash trade, holder conc).
+    heliusDegraded = false;
+    heliusReason = "dexscreener_only_mode";
+  } else if (heliusExpected && heliusCircuitOpen()) {
     // Try Shyft fallback first.
     const shyftKey = process.env.SHYFT_API_KEY;
     if (shyftKey && holderOwners.length > 0) {
@@ -559,7 +566,7 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
     }
   }
 
-  if (!shyftFallbackUsed && !heliusDegraded && heliusOK && holderOwners.length > 0) {
+  if (!dexscreenerOnly && !shyftFallbackUsed && !heliusDegraded && heliusOK && holderOwners.length > 0) {
     fresh = await getFreshFundedCount(holderOwners, apiKey, launchTs || Math.floor(Date.now() / 1000));
     sybil = await getSameFunderCluster(holderOwners, apiKey);
     heliusErrorCount += Number(fresh?._error_count || 0) + Number(sybil?._error_count || 0);
@@ -569,7 +576,7 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
       heliusDegraded = true;
     }
   }
-  if (!shyftFallbackUsed && !heliusDegraded && heliusOK && launchTs) {
+  if (!dexscreenerOnly && !shyftFallbackUsed && !heliusDegraded && heliusOK && launchTs) {
     bundle = await getBundleBuyersPct(mint, apiKey, launchTs);
     if (bundle?._error) {
       heliusDegraded = true;
@@ -588,10 +595,10 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
     ...bundle,
     ...lp,
     ...wash,
-    _helius_used: heliusOK,
-    _helius_expected: heliusExpected,
+    _helius_used: dexscreenerOnly ? false : heliusOK,
+    _helius_expected: dexscreenerOnly ? false : heliusExpected,
     _helius_degraded: heliusDegraded,
-    _data_quality: heliusDegraded ? "degraded" : "full",
+    _data_quality: dexscreenerOnly ? "dexscreener" : (heliusDegraded ? "degraded" : "full"),
     _helius_reason: heliusReason,
     _shyft_reason: shyftReason,
     _helius_error_count: heliusErrorCount,
