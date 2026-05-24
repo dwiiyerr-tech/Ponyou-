@@ -439,7 +439,7 @@ export const config = {
     // (default 0.85 = 85%) BEFORE evolved rules can take over a regime.
     runtimeSelector: {
       enabled:                  u.strategySelectorEnabled       ?? true,
-      mode:                     u.strategySelectorMode          ?? "shadow", // safe: logs diffs, no live override
+      mode:                     u.strategySelectorMode          ?? "live", // evolved strategies applied to trading
       minLiveScoreForOverride:  u.strategySelectorMinLiveScore  ?? 0.85,
       minLiveTradesForOverride: u.strategySelectorMinLiveTrades ?? 20,
       cacheTtlMs:               u.strategySelectorCacheTtlMs    ?? 60_000,

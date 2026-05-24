@@ -1,36 +1,47 @@
 /**
- * Feature Registry — declarative signal registration for the screening pipeline.
+ * Feature Registry v2.0 — declarative signals + circuit breaker + health stats.
  *
- * Instead of manual import + splice into runScreeningCycle(), features register
- * themselves with a name, weight, scoring function, and optional gate function.
- * The pipeline calls runAllFeatures() to get a unified score map per candidate.
+ * Per-feature:
+ *   - Circuit breaker: auto-disable after 3 consecutive errors in a cycle
+ *   - Runtime toggle:  enableFeature(name) / disableFeature(name)
+ *   - Health stats:    latency p50, error count, breaker trips, last score
  *
  * Usage:
- *   import { registerFeature } from "./feature-registry.js";
- *   registerFeature({
- *     name: "conviction",
- *     weight: 0.35,
- *     score: ({ conviction }) => conviction.conviction_score || 0,
- *     gate:  ({ conviction }) => conviction.stance !== "avoid",
- *   });
+ *   registerFeature({ name: "my_signal", weight: 0.15, score: (ctx) => {...} });
+ *   runAllFeatures(ctx) → { aggregate, scores, gates, health }
+ *   getHealthReport()  → per-feature status for dashboard
  */
 
 const _features = [];
 const _featureMap = new Map();
 
-/**
- * Register a feature signal.
- *
- * @param {Object} opts
- * @param {string} opts.name       - unique feature name
- * @param {number} opts.weight     - weight in aggregate score (0-1, sum should ≈ 1)
- * @param {Function} opts.score    - (candidateContext) => 0-100 score
- * @param {Function} [opts.gate]   - (candidateContext) => boolean, skip if false
- * @param {string} [opts.note]     - human-readable description
- */
+// ─── Health & Circuit Breaker State ──────────────────────────────
+
+const _health = new Map(); // name → { calls, errors, latencyMs[], breakerTrips, tripped, lastScore }
+
+function healthOf(name) {
+  if (!_health.has(name)) {
+    _health.set(name, {
+      calls: 0,
+      errors: 0,
+      latencyMs: [],
+      breaker_trips: 0,
+      breaker_tripped: false,
+      breaker_tripped_at: null,
+      last_score: 0,
+      enabled: true,
+    });
+  }
+  return _health.get(name);
+}
+
+const BREAKER_MAX_CONSECUTIVE_ERRORS = 3;
+const LATENCY_WINDOW = 50; // keep last N latency samples
+
+// ─── Registration + Toggle ───────────────────────────────────────
+
 export function registerFeature({ name, weight = 0.1, score, gate = null, note = "" }) {
   if (_featureMap.has(name)) {
-    // Update existing
     const existing = _featureMap.get(name);
     existing.weight = weight;
     existing.score = score;
@@ -38,69 +49,130 @@ export function registerFeature({ name, weight = 0.1, score, gate = null, note =
     existing.note = note || existing.note;
     return;
   }
-  const feature = { name, weight, score, gate, note };
-  _features.push(feature);
-  _featureMap.set(name, feature);
+  _features.push({ name, weight, score, gate, note });
+  _featureMap.set(name, _features[_features.length - 1]);
+  healthOf(name); // init health
 }
 
-/**
- * Remove a feature by name. Returns true if it existed.
- */
 export function unregisterFeature(name) {
   const idx = _features.findIndex(f => f.name === name);
   if (idx >= 0) _features.splice(idx, 1);
-  return _featureMap.delete(name);
+  _featureMap.delete(name);
+  _health.delete(name);
 }
 
-/**
- * List all registered features (name, weight, hasGate).
- */
+export function enableFeature(name) {
+  const h = healthOf(name);
+  h.enabled = true;
+  h.breaker_tripped = false;
+  h.breaker_tripped_at = null;
+  return true;
+}
+
+export function disableFeature(name) {
+  const h = healthOf(name);
+  h.enabled = false;
+  return true;
+}
+
+export function isFeatureEnabled(name) {
+  return healthOf(name).enabled && !healthOf(name).breaker_tripped;
+}
+
 export function listFeatures() {
-  return _features.map(f => ({
-    name: f.name,
-    weight: f.weight,
-    has_gate: typeof f.gate === "function",
-    note: f.note,
-  }));
+  return _features.map(f => {
+    const h = healthOf(nameOf(f));
+    return {
+      name: f.name,
+      weight: f.weight,
+      has_gate: typeof f.gate === "function",
+      note: f.note,
+      enabled: h.enabled && !h.breaker_tripped,
+      breaker_tripped: h.breaker_tripped,
+    };
+  });
 }
 
-/**
- * Run all registered features for a single candidate. Returns:
- *   { scores: { [featureName]: 0-100 }, gates: { [featureName]: boolean },
- *     aggregate: 0-100, passed: boolean }
- *
- * @param {Object} ctx — candidate context (must contain all data features need)
- */
+const nameOf = (f) => f.name || f;
+
+// ─── Core Runner ─────────────────────────────────────────────────
+
 export function runAllFeatures(ctx = {}) {
   const scores = {};
   const gates = {};
+  const healthSnapshot = {};
   let totalWeight = 0;
   let weightedSum = 0;
   let allGatesPassed = true;
+  let consecutiveErrors = 0;
 
   for (const f of _features) {
-    // Gate check (skip if feature says this candidate doesn't apply)
+    const h = healthOf(f.name);
+
+    // Skip disabled or breaker-tripped features
+    if (!h.enabled) {
+      gates[f.name] = "disabled";
+      continue;
+    }
+    if (h.breaker_tripped) {
+      gates[f.name] = "breaker_tripped";
+      continue;
+    }
+
+    // Gate check
     if (f.gate && !f.gate(ctx)) {
       gates[f.name] = false;
       continue;
     }
     gates[f.name] = true;
 
+    // Score with timing + error tracking
+    const t0 = Date.now();
     let s = 0;
+    let errored = false;
     try {
       s = clamp(Number(f.score(ctx)) || 0, 0, 100);
+      if (!Number.isFinite(s)) { s = 0; errored = true; }
     } catch (e) {
       s = 0;
+      errored = true;
     }
+    const latency = Date.now() - t0;
+
+    // Update health
+    h.calls++;
+    h.last_score = s;
+    h.latencyMs.push(latency);
+    if (h.latencyMs.length > LATENCY_WINDOW) h.latencyMs.shift();
+
+    if (errored) {
+      h.errors++;
+      consecutiveErrors++;
+      // Circuit breaker: trip after N consecutive errors
+      if (consecutiveErrors >= BREAKER_MAX_CONSECUTIVE_ERRORS && !h.breaker_tripped) {
+        h.breaker_tripped = true;
+        h.breaker_tripped_at = new Date().toISOString();
+        h.breaker_trips++;
+        gates[f.name] = "breaker_tripped";
+        continue;
+      }
+    } else {
+      consecutiveErrors = 0;
+    }
+
     scores[f.name] = s;
     weightedSum += s * f.weight;
     totalWeight += f.weight;
 
-    // Gate by minimum score if feature weight is high
     if (f.weight >= 0.20 && s < 15) allGatesPassed = false;
+
+    healthSnapshot[f.name] = {
+      score: s,
+      latency_ms: latency,
+      errored,
+    };
   }
 
-  // Normalize if total weight ≠ 1
   const aggregate = totalWeight > 0
     ? Math.round(weightedSum / totalWeight)
     : 0;
@@ -111,18 +183,77 @@ export function runAllFeatures(ctx = {}) {
     aggregate,
     passed: allGatesPassed,
     total_weight: Number(totalWeight.toFixed(2)),
+    health: healthSnapshot,
   };
+}
+
+// ─── Health Report ───────────────────────────────────────────────
+
+export function getHealthReport() {
+  const report = [];
+  for (const f of _features) {
+    const h = healthOf(f.name);
+    const lats = h.latencyMs.slice(-LATENCY_WINDOW).sort((a, b) => a - b);
+    const p50 = lats.length > 0 ? lats[Math.floor(lats.length / 2)] : 0;
+    const p95 = lats.length > 0 ? lats[Math.floor(lats.length * 0.95)] : 0;
+    const errorRate = h.calls > 0 ? (h.errors / h.calls * 100).toFixed(1) : "0.0";
+
+    report.push({
+      feature: f.name,
+      weight: f.weight,
+      enabled: h.enabled && !h.breaker_tripped,
+      breaker_tripped: h.breaker_tripped,
+      breaker_trips: h.breaker_trips,
+      calls: h.calls,
+      errors: h.errors,
+      error_rate_pct: Number(errorRate),
+      latency_p50_ms: p50,
+      latency_p95_ms: p95,
+      last_score: h.last_score,
+    });
+  }
+  return report;
+}
+
+export function getHealthSummary() {
+  const report = getHealthReport();
+  const total = report.length;
+  const healthy = report.filter(r => r.enabled && !r.breaker_tripped).length;
+  const tripped = report.filter(r => r.breaker_tripped).length;
+  const disabled = report.filter(r => !r.enabled).length;
+
+  return {
+    total_features: total,
+    healthy,
+    tripped,
+    disabled,
+    features: report,
+  };
+}
+
+/**
+ * Auto-reset breakers older than `maxAgeMs`. Call once per cycle.
+ */
+export function autoResetBreakers({ maxAgeMs = 10 * 60 * 1000 } = {}) {
+  const now = Date.now();
+  for (const [name, h] of _health) {
+    if (h.breaker_tripped && h.breaker_tripped_at) {
+      const age = now - new Date(h.breaker_tripped_at).getTime();
+      if (age > maxAgeMs) {
+        h.breaker_tripped = false;
+        h.breaker_tripped_at = null;
+      }
+    }
+  }
 }
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, Math.round(v)));
 }
 
-// ─── Default Feature Registrations ────────────────────────────────
-// Called once at startup to wire the standard signal set.
+// ─── Default Registrations ───────────────────────────────────────
 
 export function registerDefaultFeatures() {
-  // Clear any previous registrations
   _features.length = 0;
   _featureMap.clear();
 
@@ -232,4 +363,4 @@ export function registerDefaultFeatures() {
   });
 }
 
-export const FEATURE_REGISTRY_VERSION = "1.0.0";
+export const FEATURE_REGISTRY_VERSION = "2.0.0";
