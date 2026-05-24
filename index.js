@@ -92,7 +92,9 @@ import {
 import { recordExecutionQuality, getExecutionQualityAssessment } from "./execution-quality-memory.js";
 import { assessTradeAttribution, recordTradeAttribution } from "./trade-attribution.js";
 import { harvestMarketRugs } from "./tools/rug-harvester.js";
-import { recordNarrativeOutcome } from "./tools/narratives.js";
+import { recordNarrativeOutcome, detectNarrativeVelocity, trackCrossBatchVelocity, getCrossBatchVelocity } from "./tools/narratives.js";
+import { aggregateSignal } from "./signal-aggregator.js";
+import { registerDefaultFeatures, runAllFeatures, listFeatures } from "./feature-registry.js";
 import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
@@ -144,6 +146,10 @@ log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " (demo/dry
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
 
 const MAX_CANDIDATES_PER_CYCLE = 20;
+
+// ─── Feature Registry ──────────────────────────
+registerDefaultFeatures();
+log("startup", `Feature registry: ${listFeatures().length} signals registered`);
 
 export { computeRegimeSizeMultiplier } from "./market-safety.js";
 
@@ -1866,13 +1872,40 @@ export async function runScreeningCycle({ silent = false } = {}) {
     if (narrativeFiltered.length < cappedCandidates.length) {
       log("screening", `Narrative contagion: removed ${cappedCandidates.length - narrativeFiltered.length}/${cappedCandidates.length} candidates`);
     }
+
+    // ─── Narrative Velocity Detection ─────────────
+    const narrativeVelocity = detectNarrativeVelocity(cappedCandidates);
+    if (narrativeVelocity.trendingNarratives.length > 0) {
+      log("narrative", `Velocity trending: ${narrativeVelocity.trendingNarratives.join(", ")}`);
+    }
+    // Persist velocity across cycles so sustained narratives gain compound momentum
+    trackCrossBatchVelocity(narrativeVelocity);
+    const crossBatchVelocity = getCrossBatchVelocity();
+
     const scoredCandidates = [];
+    const batchTokens = [];
     for (const token of narrativeFiltered.slice(0, 8)) {
       if (isTokenBlacklisted(token.mint)) continue;
       if (await isTokenOnCooldown(token.mint)) continue;
       if (token.creator && isDevBlocked(token.creator)) continue;
+      batchTokens.push(token);
+    }
 
-      const security = await getTokenSecurityDetails({ mint: token.mint });
+    // ─── Parallel API fetch phase ──────────────────
+    const apiResults = await Promise.all(
+      batchTokens.map(async (token) => {
+        const security = await getTokenSecurityDetails({ mint: token.mint }).catch(e => ({ error: e.message }));
+        let tokenInfo = null;
+        try { tokenInfo = await getTokenInfo({ query: token.mint }); } catch (e) { tokenInfo = { error: e.message }; }
+        return { token, security, tokenInfo };
+      })
+    );
+
+    for (const { token, security, tokenInfo } of apiResults) {
+      if (security?.error) {
+        log("filter", `${token.symbol}: SKIP — security fetch failed: ${security.error}`);
+        continue;
+      }
       const rugRisk = scoreRugRisk({
         mint: token.mint,
         creator: token.creator || security?.security?.creator,
@@ -1885,12 +1918,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
         continue;
       }
 
-      // Fetch global fees for wash trading detection
-      let tokenInfo;
-      try {
-        tokenInfo = await getTokenInfo({ query: token.mint });
-      } catch (e) {
-        log("filter", `${token.symbol}: SKIP — getTokenInfo failed: ${e.message}`);
+      if (tokenInfo?.error) {
+        log("filter", `${token.symbol}: SKIP — getTokenInfo failed: ${tokenInfo.error}`);
         continue;
       }
       const globalFees = tokenInfo.results?.[0]?.global_fees_sol || 0;
@@ -1995,7 +2024,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
             capped_at: null,
       };
       const sizedAmount = kelly.deploy_amount_sol || preKellyAmount;
-      const conviction = getCoinConviction(token.mint, token);
+      const conviction = getCoinConviction(token.mint, token, { narrativeVelocity, crossBatchVelocity });
       // agentRouter.invoke() available for research delegation — see agent-router.js
       const narrativeTags = Array.isArray(token.narrative_tags)
         ? token.narrative_tags
@@ -2007,12 +2036,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
               ...filterResult,
               rug_score: rugRisk.score,
               kelly,
+              narrative_tags: narrativeTags,
               momentum_entry_pass: momentumEntry.pass,
               volatility_adjusted_size: sizedAmount,
             },
             conviction,
             marketCondition: marketIntel.condition,
-            probeSizeFraction: config.decisionWorkflow?.probeSizeFraction ?? 0.35,
+            config: config.decisionWorkflow,
+            narrativeVelocity,
           })
         : {
             verdict: "active",
@@ -2062,6 +2093,31 @@ export async function runScreeningCycle({ silent = false } = {}) {
         recommendedAmount = Number((preRegimeAmount * sizeMultiplier).toFixed(4));
       }
 
+      const signal = aggregateSignal({
+        conviction,
+        velocity: narrativeVelocity,
+        crossBatch: crossBatchVelocity,
+        regime,
+        kelly,
+        technicals,
+        marketCondition: marketIntel.condition,
+        narrativeTags,
+      });
+
+      // Feature registry aggregate (all registered signals in one score)
+      const featureResult = runAllFeatures({
+        token: { ...enhancedToken, ...filterResult, rug_score: rugRisk.score },
+        conviction,
+        velocity: narrativeVelocity,
+        crossBatch: crossBatchVelocity,
+        kelly,
+        technicals,
+        regime,
+        workflow,
+        narrativeTags,
+        marketCondition: marketIntel.condition,
+      });
+
       scoredCandidates.push({
         ...enhancedToken, ...filterResult,
         passed,
@@ -2073,6 +2129,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
         tier_execution: tierExec,
         kelly,
         conviction,
+        signal,
+        feature_aggregate: featureResult.aggregate,
+        feature_scores: featureResult.scores,
         regime,
         workflow,
         technicals,
@@ -2199,13 +2258,14 @@ Posisi aktif: ${openTokens.length}/${positionLimit}
 
 CANDIDATES (lolos 4-filter + rug check):
 ${JSON.stringify(passingCandidates)}
-
+${narrativeVelocity.promptContext ? `\n${narrativeVelocity.promptContext}\n` : ""}${crossBatchVelocity.promptContext ? `${crossBatchVelocity.promptContext}\n` : ""}
 WORKFLOW KEPUTUSAN HATI-HATI:
 1. Default adalah SKIP jika conviction lemah, caution tinggi, atau edge belum jelas.
 2. \`workflow.verdict=probe\` berarti hanya boleh entry kecil sesuai \`recommended_deploy_amount_sol\`.
 3. \`workflow.verdict=active\` berarti boleh entry normal sesuai \`recommended_deploy_amount_sol\`.
 4. Jangan override \`Kelly\` negatif. Jika \`kelly.should_skip=true\`, jangan buy.
 5. Prioritaskan coin dengan conviction yang dibangun dari observasi berulang, bukan FOMO snapshot.
+6. OVERRIDE MOMENTUM: Jika narrative velocity terdeteksi (≥3 token dari narasi sama, buy pressure >55%, volume tinggi), conviction trending_boost mengkompensasi cold-start. Token dengan trending_boost >15 dan workflow.verdict=probe boleh di-entry dengan size kecil meskipun conviction masih "unknown". Narasi trending mendahulukan momentum over history.
 
 Pilih yang TERBAIK dan lakukan swap_token hanya jika edge jelas.
 ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}

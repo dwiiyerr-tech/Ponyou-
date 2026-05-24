@@ -10,6 +10,7 @@ export function evaluateCandidateDecision({
   probeSizeFraction = 0.35,
   policy: policyOverride = null,
   config = {},
+  narrativeVelocity = null,
 } = {}) {
   const normalMarket = String(marketCondition || "UNKNOWN").toUpperCase().trim();
   const convictionScore = Number(conviction.conviction_score || 0);
@@ -76,6 +77,24 @@ export function evaluateCandidateDecision({
     cautionScore += 14;
     reasons.push("weak_conviction");
   }
+
+  // ─── Narrative Velocity Gate Override ──────────────────────────
+  // Trending narratives get reduced thresholds — momentum > history
+  let velocityOverride = false;
+  const tokenNarratives = Array.isArray(token.narrative_tags)
+    ? token.narrative_tags.map(t => typeof t === "string" ? t : t?.narrative).filter(Boolean)
+    : [];
+  if (narrativeVelocity && tokenNarratives.length > 0) {
+    for (const n of tokenNarratives) {
+      const vel = narrativeVelocity.velocities?.[n] || narrativeVelocity[n];
+      if (vel?.is_trending && (vel.velocity_score || 0) >= 60) {
+        cautionScore = Math.max(0, cautionScore - 15);
+        reasons.push(`narrative_velocity:${n}`);
+        velocityOverride = true;
+        break;
+      }
+    }
+  }
   const canConvictionReduce = !(
     (token.rug_score || 0) >= 20 ||
     criticalFlags.length >= 1 ||
@@ -88,18 +107,25 @@ export function evaluateCandidateDecision({
 
   cautionScore = clamp(cautionScore, 0, 100);
 
+  // Velocity override: lower conviction thresholds for trending narratives
+  const probeConvictionFloor = velocityOverride ? 45 : 65;
+  const shadowConvictionFloor = velocityOverride ? 20 : 35;
+  const activeConfidenceFloor = velocityOverride
+    ? Math.min(policy.entry.activeConfidenceFloor || 0, 30)
+    : policy.entry.activeConfidenceFloor;
+
   let verdict = "active";
   let sizeMultiplier = 1;
   if (token.kelly?.should_skip || normalMarket === "DEAD" || cautionScore >= 45 || (token.rug_score || 0) >= policy.entry.hardBlockRugScore) {
     verdict = "skip";
     sizeMultiplier = 0;
-  } else if (convictionConfidence < policy.entry.shadowConfidenceFloor || convictionScore < 35) {
+  } else if (convictionConfidence < policy.entry.shadowConfidenceFloor || convictionScore < shadowConvictionFloor) {
     verdict = "shadow";
     sizeMultiplier = 0;
   } else if (
     cautionScore >= policy.entry.probeCautionThreshold ||
-    convictionScore < 65 ||
-    convictionConfidence < policy.entry.activeConfidenceFloor ||
+    convictionScore < probeConvictionFloor ||
+    convictionConfidence < (activeConfidenceFloor ?? 0) ||
     convictionConfidence < (policy.entry.probeConfidenceFloor ?? 0)
   ) {
     verdict = "probe";
@@ -115,5 +141,6 @@ export function evaluateCandidateDecision({
     recommended_amount_sol: Number(((token.volatility_adjusted_size || 0) * sizeMultiplier).toFixed(4)),
     fast_track_eligible: verdict === "active" && cautionScore <= 18 && flagCount === 0 && token.momentum_entry_pass !== false,
     llm_can_buy: verdict === "probe" || verdict === "active",
+    velocity_override: velocityOverride,
   };
 }
