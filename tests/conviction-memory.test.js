@@ -14,9 +14,9 @@ beforeEach(() => {
 });
 
 describe("conviction memory", () => {
-  it("builds conviction from repeated clean observations", () => {
+  it("builds conviction from repeated clean observations", async () => {
     for (let i = 0; i < 3; i++) {
-      recordCoinObservation({
+      await recordCoinObservation({
         mint: "mintA",
         symbol: "AAA",
         passed: true,
@@ -34,9 +34,9 @@ describe("conviction memory", () => {
     expect(conviction.confidence_score).toBeGreaterThan(20);
   });
 
-  it("upgrades conviction when observations become gems and profitable trades", () => {
+  it("upgrades conviction when observations become gems and profitable trades", async () => {
     for (let i = 0; i < 3; i++) {
-      recordCoinObservation({
+      await recordCoinObservation({
         mint: "mintB",
         symbol: "BBB",
         passed: true,
@@ -58,8 +58,8 @@ describe("conviction memory", () => {
     expect(conviction.stance).toBe("strong");
   });
 
-  it("cuts conviction when the coin repeatedly looks bad", () => {
-    recordCoinObservation({
+  it("cuts conviction when the coin repeatedly looks bad", async () => {
+    await recordCoinObservation({
       mint: "mintC",
       symbol: "CCC",
       passed: false,
@@ -101,9 +101,9 @@ describe("conviction memory", () => {
     expect(clean).toBeGreaterThan(dirty);
   });
 
-  it("builds narrative cluster conviction and lets a coin inherit it", () => {
+  it("builds narrative cluster conviction and lets a coin inherit it", async () => {
     for (let i = 0; i < 3; i++) {
-      recordCoinObservation({
+      await recordCoinObservation({
         mint: `ai-${i}`,
         symbol: `AI${i}`,
         name: "AI Agent Coin",
@@ -126,12 +126,12 @@ describe("conviction memory", () => {
     expect(inherited.conviction_score).toBeGreaterThan(0);
   });
 
-  it("decays stale conviction over time", () => {
+  it("decays stale conviction over time", async () => {
     const start = Date.UTC(2026, 0, 1);
     const realNow = Date.now;
     Date.now = () => start;
     try {
-      recordCoinObservation({
+      await recordCoinObservation({
         mint: "mintDecay",
         symbol: "DECAY",
         passed: true,

@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ATTR_FILE = path.join(__dirname, "trade-attribution.json");
@@ -136,18 +136,20 @@ export function assessTradeAttribution({
   };
 }
 
-export function recordTradeAttribution(entry = {}) {
-  const store = loadStore();
-  store.trades.push({
-    ts: new Date().toISOString(),
-    ...entry,
-  });
-  if (store.trades.length > 500) store.trades = store.trades.slice(-500);
+export async function recordTradeAttribution(entry = {}) {
+  return withFileLock(ATTR_FILE, async () => {
+    const store = loadStore();
+    store.trades.push({
+      ts: new Date().toISOString(),
+      ...entry,
+    });
+    if (store.trades.length > 500) store.trades = store.trades.slice(-500);
 
-  const cause = entry.primary_cause || "mixed";
-  if (!store.summary[cause]) store.summary[cause] = 0;
-  store.summary[cause] += 1;
-  saveStore(store);
+    const cause = entry.primary_cause || "mixed";
+    if (!store.summary[cause]) store.summary[cause] = 0;
+    store.summary[cause] += 1;
+    saveStore(store);
+  });
 }
 
 export function getAttributionSummary() {

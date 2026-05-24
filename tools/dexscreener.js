@@ -763,7 +763,7 @@ export async function getSmartMoneyRank({ timeframe = "24h" } = {}) {
       const recentTxns = txns.filter(tx => tx.timestamp >= cutoff);
       const swaps = recentTxns.map(parseSolanaSwap).filter(Boolean);
       const performance = analyzeSmartWalletPerformance(swaps);
-      recordSmartWalletSnapshot(wallet.address, { ...performance, timeframe });
+      await recordSmartWalletSnapshot(wallet.address, { ...performance, timeframe });
       const history = summarizeSmartWalletHistory(wallet.address, { timeframe, limit: 12 });
 
       results.push({

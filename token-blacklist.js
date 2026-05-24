@@ -7,7 +7,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUG_FILE = path.join(__dirname, "rug-memory.json");
@@ -32,24 +32,28 @@ function saveMem(mem) {
   atomicWriteJson(RUG_FILE, mem);
 }
 
-export function addToBlacklist({ mint, reason = "" } = {}) {
+export async function addToBlacklist({ mint, reason = "" } = {}) {
   if (!mint) return { error: "mint required" };
-  const mem = loadMem();
-  if (!mem.blacklisted_tokens.includes(mint)) mem.blacklisted_tokens.push(mint);
-  mem.blacklist_meta[mint] = { reason, added_at: new Date().toISOString() };
-  saveMem(mem);
-  return { saved: true, mint, reason };
+  return withFileLock(RUG_FILE, async () => {
+    const mem = loadMem();
+    if (!mem.blacklisted_tokens.includes(mint)) mem.blacklisted_tokens.push(mint);
+    mem.blacklist_meta[mint] = { reason, added_at: new Date().toISOString() };
+    saveMem(mem);
+    return { saved: true, mint, reason };
+  });
 }
 
-export function removeFromBlacklist({ mint } = {}) {
+export async function removeFromBlacklist({ mint } = {}) {
   if (!mint) return { error: "mint required" };
-  const mem = loadMem();
-  const before = mem.blacklisted_tokens.length;
-  mem.blacklisted_tokens = mem.blacklisted_tokens.filter(m => m !== mint);
-  delete mem.blacklist_meta[mint];
-  const removed = mem.blacklisted_tokens.length !== before;
-  if (removed) saveMem(mem);
-  return { removed, mint };
+  return withFileLock(RUG_FILE, async () => {
+    const mem = loadMem();
+    const before = mem.blacklisted_tokens.length;
+    mem.blacklisted_tokens = mem.blacklisted_tokens.filter(m => m !== mint);
+    delete mem.blacklist_meta[mint];
+    const removed = mem.blacklisted_tokens.length !== before;
+    if (removed) saveMem(mem);
+    return { removed, mint };
+  });
 }
 
 export function isBlacklisted(mint) {

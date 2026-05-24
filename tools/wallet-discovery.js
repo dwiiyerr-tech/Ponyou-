@@ -327,7 +327,7 @@ export async function discoverSmartWallets({
       results.push(entry);
 
       if (qualifies && entry.selection.selected && auto_add && !entry.promoted) {
-        addSmartWallet({
+        await addSmartWallet({
           address: addr,
           label: `auto:wr${Math.round(stats.winrate * 100)}_pnl${stats.realized_pnl_sol.toFixed(2)}SOL_n${stats.completed_trades}`,
           source_tokens: sourceTokens,

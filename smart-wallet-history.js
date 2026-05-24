@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HISTORY_FILE = path.join(__dirname, "smart-wallet-history.json");
@@ -34,28 +34,30 @@ function computeTrend(values = []) {
   return late - early;
 }
 
-export function recordSmartWalletSnapshot(address, snapshot = {}) {
+export async function recordSmartWalletSnapshot(address, snapshot = {}) {
   if (!address) return null;
-  const data = loadHistoryFile();
-  if (!data.wallets[address]) data.wallets[address] = { snapshots: [] };
+  return withFileLock(HISTORY_FILE, async () => {
+    const data = loadHistoryFile();
+    if (!data.wallets[address]) data.wallets[address] = { snapshots: [] };
 
-  const entry = {
-    ts: snapshot.ts || new Date().toISOString(),
-    timeframe: snapshot.timeframe || "24h",
-    realized_pnl_sol: Number(snapshot.realized_pnl_sol || 0),
-    winrate: Number(snapshot.winrate || 0),
-    conviction_score: Number(snapshot.conviction_score || 0),
-    buy_pressure: Number(snapshot.buy_pressure ?? 0.5),
-    trade_count: Number(snapshot.trade_count || 0),
-    open_positions: Number(snapshot.open_positions || 0),
-  };
+    const entry = {
+      ts: snapshot.ts || new Date().toISOString(),
+      timeframe: snapshot.timeframe || "24h",
+      realized_pnl_sol: Number(snapshot.realized_pnl_sol || 0),
+      winrate: Number(snapshot.winrate || 0),
+      conviction_score: Number(snapshot.conviction_score || 0),
+      buy_pressure: Number(snapshot.buy_pressure ?? 0.5),
+      trade_count: Number(snapshot.trade_count || 0),
+      open_positions: Number(snapshot.open_positions || 0),
+    };
 
-  data.wallets[address].snapshots.push(entry);
-  if (data.wallets[address].snapshots.length > MAX_SNAPSHOTS_PER_WALLET) {
-    data.wallets[address].snapshots = data.wallets[address].snapshots.slice(-MAX_SNAPSHOTS_PER_WALLET);
-  }
-  saveHistoryFile(data);
-  return entry;
+    data.wallets[address].snapshots.push(entry);
+    if (data.wallets[address].snapshots.length > MAX_SNAPSHOTS_PER_WALLET) {
+      data.wallets[address].snapshots = data.wallets[address].snapshots.slice(-MAX_SNAPSHOTS_PER_WALLET);
+    }
+    saveHistoryFile(data);
+    return entry;
+  });
 }
 
 export function getSmartWalletHistory(address, { timeframe = null, limit = 12 } = {}) {

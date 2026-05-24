@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 import { applyScoreDecay } from "./wallet-score-decay.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -33,31 +33,35 @@ function normalizeWalletRecord(record = {}, address) {
   };
 }
 
-export function addSmartWallet({ address, label = "", source_tokens = [], stats = null, selection = null, notes = "" } = {}) {
+export async function addSmartWallet({ address, label = "", source_tokens = [], stats = null, selection = null, notes = "" } = {}) {
   if (!address) return { error: "address required" };
-  const wallets = load();
-  wallets[address] = normalizeWalletRecord({
-    ...(wallets[address] || {}),
-    address,
-    label: label || wallets[address]?.label || "",
-    source_tokens: source_tokens.length ? source_tokens : wallets[address]?.source_tokens,
-    stats: stats || wallets[address]?.stats || null,
-    selection: selection || wallets[address]?.selection || null,
-    follow_mode: selection?.follow_mode || wallets[address]?.follow_mode || "shadow",
-    notes: notes || wallets[address]?.notes || "",
-  }, address);
-  save(wallets);
-  return { saved: true, address, label: wallets[address].label, selection: wallets[address].selection };
+  return withFileLock(WALLETS_FILE, async () => {
+    const wallets = load();
+    wallets[address] = normalizeWalletRecord({
+      ...(wallets[address] || {}),
+      address,
+      label: label || wallets[address]?.label || "",
+      source_tokens: source_tokens.length ? source_tokens : wallets[address]?.source_tokens,
+      stats: stats || wallets[address]?.stats || null,
+      selection: selection || wallets[address]?.selection || null,
+      follow_mode: selection?.follow_mode || wallets[address]?.follow_mode || "shadow",
+      notes: notes || wallets[address]?.notes || "",
+    }, address);
+    save(wallets);
+    return { saved: true, address, label: wallets[address].label, selection: wallets[address].selection };
+  });
 }
 
-export function removeSmartWallet({ address } = {}) {
-  const wallets = load();
-  const existed = address in wallets;
-  if (existed) {
-    delete wallets[address];
-    save(wallets);
-  }
-  return { removed: existed, address };
+export async function removeSmartWallet({ address } = {}) {
+  return withFileLock(WALLETS_FILE, async () => {
+    const wallets = load();
+    const existed = address in wallets;
+    if (existed) {
+      delete wallets[address];
+      save(wallets);
+    }
+    return { removed: existed, address };
+  });
 }
 
 export function listSmartWallets({ minDecayMultiplier = 0 } = {}) {

@@ -23,7 +23,7 @@ describe("regime memory", () => {
     expect(regime.key).toBe("HOT|MICRO_CAP|AI|probe");
   });
 
-  it("learns positive regimes and applies a tailwind multiplier", () => {
+  it("learns positive regimes and applies a tailwind multiplier", async () => {
     const token = {
       mint: "mintA",
       market_condition: "HOT",
@@ -32,15 +32,15 @@ describe("regime memory", () => {
       workflow: { verdict: "active" },
     };
 
-    for (let i = 0; i < 3; i++) recordRegimeObservation(token);
-    recordRegimeTradeOutcome({
+    for (let i = 0; i < 3; i++) await recordRegimeObservation(token);
+    await recordRegimeTradeOutcome({
       marketCondition: "HOT",
       tier: "MICRO_CAP",
       narrative: "AI",
       verdict: "active",
       pnl_pct: 55,
     });
-    recordRegimeTradeOutcome({
+    await recordRegimeTradeOutcome({
       marketCondition: "HOT",
       tier: "MICRO_CAP",
       narrative: "AI",
@@ -54,7 +54,7 @@ describe("regime memory", () => {
     expect(assessment.size_multiplier).toBeGreaterThan(1);
   });
 
-  it("shrinks size when a regime keeps losing", () => {
+  it("shrinks size when a regime keeps losing", async () => {
     const token = {
       mint: "mintB",
       market_condition: "COLD",
@@ -63,15 +63,15 @@ describe("regime memory", () => {
       workflow: { verdict: "probe" },
     };
 
-    for (let i = 0; i < 2; i++) recordRegimeObservation(token);
-    recordRegimeTradeOutcome({
+    for (let i = 0; i < 2; i++) await recordRegimeObservation(token);
+    await recordRegimeTradeOutcome({
       marketCondition: "COLD",
       tier: "NEW_PAIR",
       narrative: "DOGS",
       verdict: "probe",
       pnl_pct: -30,
     });
-    recordRegimeTradeOutcome({
+    await recordRegimeTradeOutcome({
       marketCondition: "COLD",
       tier: "NEW_PAIR",
       narrative: "DOGS",
@@ -85,7 +85,7 @@ describe("regime memory", () => {
     expect(assessment.size_multiplier).toBeLessThanOrEqual(0.4);
   });
 
-  it("decays stale regime memory over time", () => {
+  it("decays stale regime memory over time", async () => {
     const token = {
       mint: "mintC",
       market_condition: "HOT",
@@ -94,8 +94,8 @@ describe("regime memory", () => {
       workflow: { verdict: "active" },
     };
     const start = Date.UTC(2026, 0, 1);
-    recordRegimeObservation(token, { nowMs: start });
-    recordRegimeTradeOutcome({
+    await recordRegimeObservation(token, { nowMs: start });
+    await recordRegimeTradeOutcome({
       marketCondition: "HOT",
       tier: "MID_CAP",
       narrative: "TECH",

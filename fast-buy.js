@@ -125,7 +125,7 @@ export async function executeFastBuy({
   recordSwapOutcome({ success: succeeded });
   const latencyMs = elapsedMs(t);
   recordLatency("fast_buy_swap_ms", latencyMs);
-  recordExecutionQuality({
+  await recordExecutionQuality({
     walletAddress: result?.wallet_address || walletAddress || null,
     provider: result?.execution_provider || "auto",
     mode: "buy",
