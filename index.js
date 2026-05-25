@@ -153,8 +153,28 @@ import { isPartialTPLanded, markPartialTPLanded, clearPartialTPGuard } from "./p
 
 log("startup", "Ponyou AI Agent starting...");
 const executionMode = resolveExecutionMode();
-log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " (demo/dry-run unified)" : ""}`);
+log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " — real swaps on devnet (fake SOL)" : " — live mainnet (real SOL)"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
+
+// Devnet faucet: auto-fund demo wallet with devnet SOL on startup
+if (executionMode.isDemo) {
+  import("./tools/devnet-faucet.js").then(async ({ ensureDevnetBalance, getDevnetBalance }) => {
+    try {
+      const walletModule = await import("./tools/wallet.js");
+      const balance = await walletModule.getWalletBalances();
+      if (balance?.wallet) {
+        const bal = await getDevnetBalance(balance.wallet);
+        log("devnet", `Wallet ${balance.wallet.slice(0, 8)}… balance: ${bal?.sol?.toFixed(4) || "?"} SOL`);
+        const funded = await ensureDevnetBalance(balance.wallet);
+        if (funded.funded && funded.signature) {
+          log("devnet", `Faucet funded ${funded.amount_sol} SOL`);
+        }
+      }
+    } catch (e) {
+      log("devnet_warn", `Faucet init: ${e.message}`);
+    }
+  }).catch(() => {});
+}
 
 // PID file guard: prevent duplicate instances
 (async () => {
