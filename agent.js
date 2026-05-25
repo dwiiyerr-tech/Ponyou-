@@ -91,6 +91,10 @@ import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
 let client = null;
 let currentProvider = null;
 
+export function getLLMClient() {
+  return client;
+}
+
 async function initLLMClient(config) {
   currentProvider = detectProvider(config);
   try {
@@ -195,8 +199,11 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         log("agent", `Provider ${currentProvider} lacks trusted tool-choice support; using auto mode.`);
       }
 
+      const LLM_TIMEOUT_MS = config.llm.timeoutMs || 120_000;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
           response = await client.chat.completions.create({
             model: usedModel,
             messages,
@@ -204,8 +211,19 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             tool_choice: toolChoice,
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
-          });
+          }, { signal: controller.signal });
+          clearTimeout(timeout);
         } catch (error) {
+          clearTimeout(timeout); // ensure cleanup even if error thrown during clearTimeout
+          // Handle LLM timeout / abort
+          if (error.name === "AbortError" || error.message?.includes("abort") || error.message?.includes("timeout")) {
+            log("agent_error", `LLM call timed out after ${LLM_TIMEOUT_MS}ms (attempt ${attempt + 1}/3)`);
+            if (attempt < 2) {
+              await new Promise(r => setTimeout(r, 2000));
+              continue;
+            }
+            throw new Error(`LLM API timed out after ${attempt + 1} attempts`);
+          }
           const errorInfo = handleProviderError(error, currentProvider);
 
           // Handle system role rejection

@@ -451,6 +451,17 @@ const PROTECTED_TOOLS = new Set([
   "self_update",
 ]);
 
+const TOOL_TIMEOUT_MS = 90_000; // 90s per tool — longer than LLM timeout to allow swap confirmations
+
+function withToolTimeout(promise, toolName) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT_MS / 1000}s`)), TOOL_TIMEOUT_MS)
+    ),
+  ]);
+}
+
 export async function executeTool(name, args) {
   const startTime = Date.now();
   name = name.replace(/<.*$/, "").trim();
@@ -480,7 +491,7 @@ export async function executeTool(name, args) {
   }
 
   try {
-    const result = await fn(callArgs);
+    const result = await withToolTimeout(fn(callArgs), name);
     const duration = Date.now() - startTime;
     const success = result?.success !== false && !result?.error;
 

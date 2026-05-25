@@ -39,7 +39,7 @@ import { atomicWriteJson } from "./atomic-write.js";
 import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
 import {
   startTimer, elapsedMs, recordLatency, recordError, recordCounter,
-  setGauge, getStats, flushMetrics,
+  setGauge, getStats, flushMetrics, recordCumulativePnl,
 } from "./metrics.js";
 import {
   readKillState, isKilled, setSessionBaseline, reportBalance,
@@ -71,7 +71,7 @@ import {
   getRecommendedAdjustments, recordMarketResearchEnrichment,
 } from "./market-intelligence.js";
 import {
-  scoreRugRisk, isDevBlocked, isTokenBlacklisted, recordRug,
+  scoreRugRisk, isDevBlocked, isTokenBlacklisted, recordRug, getRugMemory,
 } from "./lessons.js";
 import {
   getLearningModeStatus, activateLearningMode, markAnalysisRun,
@@ -92,6 +92,15 @@ import {
 import { recordExecutionQuality, getExecutionQualityAssessment } from "./execution-quality-memory.js";
 import { assessTradeAttribution, recordTradeAttribution } from "./trade-attribution.js";
 import { harvestMarketRugs } from "./tools/rug-harvester.js";
+import { preScreenBatch } from "./tools/trash-filter.js";
+import { detectAnomaly, hasAnyActiveFlag } from "./tools/rug-anomaly.js";
+import { analyzeRugWithLLM } from "./tools/rug-llm-analysis.js";
+import { simulateSell } from "./tools/sell-simulator.js";
+import { screenDayPhaseTokens, isWeekendEntryWindow, isWeekdayExitWindow, formatWatchlistForNotification } from "./tools/day-phase-screener.js";
+import { initStagedEntry, checkStagedEntryTrigger, advanceStagedEntry, getStage1Amount } from "./tools/staged-entry.js";
+import { getRugCheckReport, rugCheckToSignals } from "./tools/rugcheck.js";
+import { getWalletSnapshot } from "./tools/solscan.js";
+import { blacklistDev, checkDevBlacklist, getDevBlacklist } from "./tools/dev-blacklist.js";
 import { recordNarrativeOutcome, detectNarrativeVelocity, trackCrossBatchVelocity, getCrossBatchVelocity } from "./tools/narratives.js";
 import { aggregateSignal } from "./signal-aggregator.js";
 import { registerDefaultFeatures, runAllFeatures, listFeatures, getHealthSummary, enableFeature, disableFeature, autoResetBreakers } from "./feature-registry.js";
@@ -147,6 +156,21 @@ const executionMode = resolveExecutionMode();
 log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " (demo/dry-run unified)" : ""}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
 
+// PID file guard: prevent duplicate instances
+(async () => {
+  const { writeFileSync: _wfs, readFileSync: _rfs, existsSync: _es, unlinkSync: _us } = await import("fs");
+  const PID_FILE = new URL("./.agent.pid", import.meta.url).pathname;
+  if (_es(PID_FILE)) {
+    const oldPid = parseInt(_rfs(PID_FILE, "utf8").trim(), 10);
+    try { process.kill(oldPid, 0); log("startup", `Replacing stale PID ${oldPid}`); } catch (_) { /* stale */ }
+  }
+  _wfs(PID_FILE, String(process.pid));
+  process.on("exit", () => { try { _us(PID_FILE); } catch (_) {} });
+})();
+
+// Clean stale test artifacts that may have leaked into state.json
+cleanStaleTestPositions();
+
 const MAX_CANDIDATES_PER_CYCLE = 20;
 
 // ─── Data Maintenance ─────────────────────────
@@ -168,13 +192,14 @@ const agentRouter = new AgentRouter({
   },
   rufloEnabled: false, // disable ruflo for now
 });
-log("startup", `AgentRouter initialized — Gemini: ${!!process.env.GEMINI_API_KEY}, Codex: true`);
+log("startup", `AgentRouter initialized — Gemini: disabled (using Claude direct), Codex: true`);
 
 // Strategy Evolution Engine — opt-in via config.strategy.evolution.enabled
 // Two-stage opt-in:
 //   strategy.evolution.enabled            → engine + composer + registry + gate live
 //   strategy.fundamentalProducer.enabled  → producer also runs (defaults to dryRun)
 let _fundamentalProducer = null;
+let _evolutionEngine = null; // module-level for degradation cron access
 if (config.strategy?.evolution?.enabled) {
   const _strategyRegistry = new StrategyRegistry({ persistPath: "./data/strategy-registry.json" });
   const _strategyBus = new StrategyEvolutionBus({ maxQueue: config.strategy.evolution.maxCandidateQueue ?? 5 });
@@ -191,7 +216,7 @@ if (config.strategy?.evolution?.enabled) {
     // simply return null and the producer falls back to compose-only.
     llmGenerator: null,
   });
-  const _evolutionEngine = new StrategyEvolutionEngine({
+  _evolutionEngine = new StrategyEvolutionEngine({
     bus: _strategyBus,
     gate: _strategyGate,
     registry: _strategyRegistry,
@@ -252,6 +277,10 @@ export function getFundamentalProducer() {
   return _fundamentalProducer;
 }
 
+export function getEvolutionEngine() {
+  return _evolutionEngine;
+}
+
 export function getAgentRouter() {
   return agentRouter;
 }
@@ -279,7 +308,7 @@ async function enrichMarketResearchWithAgentRouter({ marketIntel, candidates }) 
   ].join("\n");
 
   const researchResult = await agentRouter.invoke(marketQuery, {
-    preferAgent: "gemini",
+    preferAgent: "claude",
     timeoutMs: 45_000,
     confidenceGate: { safetySensitive: false, minConfidence: 0.6 },
   });
@@ -361,7 +390,7 @@ function buildPrompt() {
 
 async function getPortfolioSnapshot() {
   if (!isMultiWalletEnabled()) {
-    const balance = await getWalletBalances();
+    const balance = await withTimeout(getWalletBalances(), CYCLE_RPC_TIMEOUT_MS, "getWalletBalances");
     const tokens = (balance.tokens || []).map(token => ({
       ...token,
       wallet_address: balance.wallet || null,
@@ -423,6 +452,15 @@ let cronStarted = false;
 let _dashboardIpcTimer = null;
 let _ttyPromptTimer = null;
 let _automationCommandTimer = null;
+
+function withTimeout(promise, ms, label = "op") {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`Timeout: ${label} after ${ms}ms`)), ms)),
+  ]);
+}
+
+const CYCLE_RPC_TIMEOUT_MS = 45_000; // 45s timeout for RPC calls in cron cycles
 
 function stripThink(t) {
   return t ? t.replace(/<think>[\s\S]*?<\/think>/gi, "").trim() : t;
@@ -551,7 +589,7 @@ async function handleStrategyTelegramCommand(text) {
       `<b>Daily Guard</b> · ${htmlEscape(dailyGuard)}`,
       `<b>Plan</b> · ${planLine}`,
       fmt.divider(),
-      fmt.it("/strategy /strategies /stratset /health /feature /confirm /dailyguard /auto /agent /pending /yes /no /pnl /status /plan /resetplan"),
+      fmt.it("/strategy /strategies /stratset /health /feature /confirm /dailyguard /auto /dayphase /devcheck /agent /pending /yes /no /pnl /status /plan /resetplan"),
     ];
     await sendHTML(lines.join("\n"));
     return true;
@@ -659,6 +697,52 @@ async function handleStrategyTelegramCommand(text) {
       await sendHTML(`✅ Agent process power <b>${enabled ? "ON" : "OFF"}</b> command queued to supervisor.`);
     } else {
       await sendHTML(`Usage: <code>/agent on</code> or <code>/agent off</code>`);
+    }
+    return true;
+  }
+
+  if (cmd === "/devcheck") {
+    const bl = getDevBlacklist();
+    if (bl.total === 0) {
+      await sendHTML("✅ <b>Dev Blacklist</b> — empty. No devs blacklisted yet.");
+    } else {
+      const lines = [
+        `<b>Dev Blacklist</b> — ${bl.total} entries`,
+        `🔴 Critical: ${bl.critical} | 🟠 High: ${bl.high} | 🟡 Medium: ${bl.medium} | ⚪ Low: ${bl.low}`,
+        bl.expired > 0 ? `⏰ Expired: ${bl.expired}` : "",
+        "",
+        ...bl.entries.slice(0, 5).map(e =>
+          `${e.tier === "CRITICAL" ? "🔴" : e.tier === "HIGH" ? "🟠" : "🟡"} ${e.creator.slice(0, 10)}... | ${e.rug_count} rug(s) | ${e.reason?.slice(0, 40)}`
+        ),
+      ];
+      await sendHTML(lines.filter(Boolean).join("\n"));
+    }
+    return true;
+  }
+
+  if (cmd === "/dayphase") {
+    await sendHTML("🔍 <b>Day Phase Screening...</b>");
+    try {
+      const { watchlist, stats } = await screenDayPhaseTokens();
+      const entryStatus = isWeekendEntryWindow()
+        ? "✅ Weekend — entry window OPEN"
+        : "⏳ Entry window: Saturday-Sunday";
+      const exitStatus = isWeekdayExitWindow()
+        ? "📤 Weekday exit window OPEN"
+        : "";
+      await sendHTML([
+        `<b>Day Phase Trade Scan</b>`,
+        `Discovered: ${stats.discovered} | Screened: ${stats.screened} | Passed: ${stats.passed}`,
+        `High: ${stats.high_confidence} | Medium: ${stats.medium_confidence} | Low: ${stats.low_confidence}`,
+        entryStatus,
+        exitStatus,
+        "",
+        ...(watchlist.length > 0
+          ? [formatWatchlistForNotification(watchlist, 10)]
+          : ["No tokens match day-phase criteria right now."]),
+      ].filter(Boolean).join("\n"));
+    } catch (e) {
+      await sendHTML(`❌ Day-phase scan failed: ${e.message}`);
     }
     return true;
   }
@@ -951,6 +1035,15 @@ async function executePendingIntent(id) {
     symbol = tokenInfo?.results?.[0]?.symbol || symbol;
     const balance = await getWalletBalances();
     solPriceUsd = balance?.sol_price || 0;
+    // Retry once if sol_price is missing — wallet API can return stale data
+    if (!solPriceUsd || solPriceUsd <= 0) {
+      const retry = await getWalletBalances();
+      solPriceUsd = retry?.sol_price || 0;
+    }
+    // If STILL missing, log explicit warning — position tracked but PnL will be 0%
+    if (!solPriceUsd || solPriceUsd <= 0) {
+      log("intent_warn", `solPriceUsd still 0 after retry for #${id} — position PnL will read 0%`);
+    }
     initial_value_usd = (args.amount || 0) * solPriceUsd;
   } catch (e) {
     log("intent_warn", `metadata fetch failed for #${id}: ${e.message}`);
@@ -1322,8 +1415,10 @@ function handleTradeLoss({ symbol, mint, pnl_pct, entry_usd, exit_usd, hold_minu
   const consecutive = getConsecutiveLosses();
   const tripped = maxLosses > 0 && consecutive >= maxLosses;
 
-  // Trigger learning jika: stop-loss hit, loss > 10%, ATAU consecutive loss tripped
-  if (!tripped && pnl_pct > -10 && exit_reason !== "Stop Loss") return;
+  // Trigger learning jika: stop-loss/hard-cut hit, loss > -5%, atau consecutive tripped.
+  // Belajar dari SEMUA loss, bukan hanya yang besar. Loss kecil adalah sinyal awal.
+  const isStopOrCut = exit_reason?.includes("Stop Loss") || exit_reason?.includes("Hard Cut") || exit_reason?.includes("stop_loss") || exit_reason?.includes("Trailing Stop");
+  if (!tripped && pnl_pct > -5 && !isStopOrCut) return;
 
   const triggerType = tripped ? "SERIES_LOSS" : "STOP_LOSS";
   const lossContext = {
@@ -1360,11 +1455,16 @@ async function checkDeterministicExits(tokens) {
   const market = getMarketIntelligence();
   const condition = market.condition || "NORMAL";
 
+  // Resolve active strategy once per cycle — its exit params
+  // (stoploss, trailing, partial TP) now feed into risk policy.
+  const activeStrategy = getStrategy(null, { regime: condition });
+
   for (const token of tokens) {
     const riskPolicy = buildRiskPolicy({
       marketCondition: condition,
       token,
       config,
+      strategyParams: activeStrategy, // wire strategy exit params
     });
     const tracked = getTrackedPosition(token.position_key || token.mint, token.wallet_address || null);
     if (!tracked) continue;
@@ -1510,15 +1610,117 @@ async function checkDeterministicExits(tokens) {
   return exits;
 }
 
+// ─── Staged Entry Check ───────────────────────────────────────
+
+/**
+ * Check all open positions for pending staged entry triggers.
+ * Runs every management cycle. When a stage triggers, execute
+ * the swap and update the position's avg entry price.
+ */
+async function checkStagedEntries(tokens, balance) {
+  const stagedBuys = [];
+  const solPrice = balance?.sol_price || 0;
+
+  for (const token of tokens) {
+    const tracked = getTrackedPosition(token.position_key || token.mint, token.wallet_address || null);
+    if (!tracked) continue;
+
+    const staged = tracked?.signal_snapshot?.staged_entry;
+    if (!staged?.enabled) continue;
+    if (staged.completed_stages >= staged.stages) continue;
+
+    const currentPnlPct = tracked.initial_value_usd > 0
+      ? ((token.usd - tracked.initial_value_usd) / tracked.initial_value_usd) * 100
+      : 0;
+    const currentPrice = token?.priceUsd || token?.price_usd || (token?.balance > 0 ? token.usd / token.balance : 0);
+    const ageMinutes = (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000;
+
+    const trigger = checkStagedEntryTrigger(staged, currentPnlPct, currentPrice, ageMinutes);
+
+    if (trigger.trigger && trigger.next_amount_sol > 0) {
+      stagedBuys.push({
+        mint: token.mint,
+        symbol: token.symbol,
+        position_key: token.position_key || token.mint,
+        wallet_address: token.wallet_address || null,
+        amount_sol: trigger.next_amount_sol,
+        reason: trigger.reason,
+        staged,
+        tracked,
+        currentPrice,
+      });
+    }
+  }
+
+  // Execute staged buys
+  for (const buy of stagedBuys) {
+    log("staged_entry", `${buy.symbol}: Stage ${buy.staged.next_stage}/${buy.staged.stages} triggered — ${buy.reason}. Buying ${buy.amount_sol.toFixed(4)} SOL`);
+    try {
+      const { result: res } = await withProgressiveSlippage(
+        (slippage) => swapToken({
+          token_in: "SOL",
+          token_out: buy.mint,
+          amount: buy.amount_sol,
+          slippage,
+          wallet: buy.wallet_address ? getWalletByAddress(buy.wallet_address)?.keypair || null : null,
+        })
+      );
+
+      if (res?.success || res?.dry_run) {
+        // Update staged entry tracking
+        const updated = advanceStagedEntry(buy.staged, buy.currentPrice);
+        buy.tracked.signal_snapshot.staged_entry = updated;
+
+        // Update position: add SOL amount, recompute avg entry value
+        const oldAmount = buy.tracked.amount_sol || 0;
+        const oldValue = buy.tracked.initial_value_usd || 0;
+        const newAmount = oldAmount + buy.amount_sol;
+        const newValue = oldValue + (buy.amount_sol * solPrice);
+        buy.tracked.amount_sol = newAmount;
+        buy.tracked.initial_value_usd = newValue;
+
+        // Persist updated position
+        await trackPosition({
+          position: buy.mint,
+          pool: buy.tracked.pool || "jupiter",
+          pool_name: buy.symbol,
+          amount_sol: newAmount,
+          initial_value_usd: newValue,
+          signal_snapshot: buy.tracked.signal_snapshot,
+          wallet_address: buy.wallet_address,
+        });
+
+        recordCounter("swaps_executed");
+        log("staged_entry", `${buy.symbol}: Stage ${updated.completed_stages}/${updated.stages} complete. Avg entry: $${updated.avg_entry_price_usd?.toFixed(6)}. Total SOL: ${newAmount.toFixed(4)}`);
+
+        if (telegramEnabled()) {
+          sendHTML(
+            `📥 <b>Staged Entry</b> · ${htmlEscape(buy.symbol || "?")}\n` +
+            `Stage ${updated.completed_stages}/${updated.stages} · +${buy.amount_sol.toFixed(3)} SOL\n` +
+            `Avg entry: $${updated.avg_entry_price_usd?.toFixed(6)}\n` +
+            `Total: ${newAmount.toFixed(4)} SOL`
+          ).catch(() => {});
+        }
+      } else {
+        log("staged_entry_warn", `${buy.symbol}: Stage ${buy.staged.next_stage} swap failed — ${res?.error || "unknown"}. Will retry next cycle.`);
+      }
+    } catch (e) {
+      log("staged_entry_error", `${buy.symbol}: Stage swap error: ${e.message}`);
+    }
+  }
+
+  return stagedBuys;
+}
+
 // ─── Management Cycle ─────────────────────────────────────────
 
 export async function runManagementCycle({ silent = false } = {}) {
   if (_managementBusy) return null;
+  _managementBusy = true;
 
   const gate = await checkAllGates("management");
-  if (gate.blocked) return gate.reason;
+  if (gate.blocked) { _managementBusy = false; return gate.reason; }
 
-  _managementBusy = true;
   timers.managementLastRun = Date.now();
   log("cron", "Starting management cycle");
   let mgmtReport = null;
@@ -1544,7 +1746,11 @@ export async function runManagementCycle({ silent = false } = {}) {
       return mgmtReport;
     }
 
-    // ─── Step 1: Deterministic exits ─────────────
+    // ─── Step 1: Staged entries (DCA buys) ───────
+    // Check BEFORE exits — don't exit a position that's about to get a staged buy
+    const stagedBuys = await checkStagedEntries(tokens, balance);
+
+    // ─── Step 2: Deterministic exits ─────────────
     const deterministicExits = await checkDeterministicExits(tokens);
     for (const exit of deterministicExits) {
       log("strategy", `EXIT: ${exit.symbol} — ${exit.reason}`);
@@ -1628,6 +1834,12 @@ export async function runManagementCycle({ silent = false } = {}) {
           tokenData,
           executionQuality,
         });
+        const exitSolReceived = res?.amount_out != null ? Number(res.amount_out) / 1e9 : null;
+        const entrySolSpent = tracked?.amount_sol ?? null;
+        const swapFeeSol = res?.tx_fee_lamports != null ? Number(res.tx_fee_lamports) / 1e9 : null;
+        const realizedPnlPct = entrySolSpent > 0 && exitSolReceived != null
+          ? ((exitSolReceived - entrySolSpent) / entrySolSpent) * 100
+          : null;
         recordTradeOutcome({
           mint: exit.mint,
           symbol: exit.symbol,
@@ -1638,6 +1850,10 @@ export async function runManagementCycle({ silent = false } = {}) {
           exit_reason: exit.reason,
           rug_detected: /rug/i.test(exit.reason),
           attribution,
+          entry_sol: entrySolSpent,
+          exit_sol: exitSolReceived,
+          swap_fee_sol: swapFeeSol,
+          actual_realized_pct: realizedPnlPct,
         });
         await recordTradeAttribution({
           mint: exit.mint,
@@ -1653,6 +1869,11 @@ export async function runManagementCycle({ silent = false } = {}) {
           pnl_pct: tradePnl,
           exit_reason: exit.reason,
         });
+        // Cumulative PnL tracking
+        const tradeUsdDelta = (tracked?.initial_value_usd || 0) > 0
+          ? (tracked.initial_value_usd * tradePnl) / 100
+          : (tokenData?.usd || 0) - (tracked?.initial_value_usd || 0);
+        recordCumulativePnl(tradeUsdDelta);
         await recordRegimeTradeOutcome({
           marketCondition: tokenData?.market_condition || getMarketIntelligence().condition,
           tier: tokenData?.tier_execution?.tier || tokenData?.tier?.label || "UNKNOWN",
@@ -1812,17 +2033,18 @@ ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
 
 export async function runScreeningCycle({ silent = false } = {}) {
   if (_screeningBusy) return null;
+  _screeningBusy = true;
 
   if (isSessionComplete()) {
+    _screeningBusy = false;
     const s = getTradingPlanStatus();
     log("trading_plan", `Session complete: ${s.trades_completed}/${s.target} trades. Screening blocked. /resetplan to restart.`);
     return `Trading plan selesai (${s.trades_completed}/${s.target}). /resetplan untuk mulai sesi baru.`;
   }
 
   const gate = await checkAllGates("screening");
-  if (gate.blocked) return gate.reason;
+  if (gate.blocked) { _screeningBusy = false; return gate.reason; }
 
-  _screeningBusy = true;
   timers.screeningLastRun = Date.now();
   log("cron", "Starting screening cycle");
   let screenReport = null;
@@ -1918,6 +2140,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
       log("screening", `Narrative contagion: removed ${cappedCandidates.length - narrativeFiltered.length}/${cappedCandidates.length} candidates`);
     }
 
+    // ─── Layer 0: Pre-Screening Trash Filter ─────
+    // Zero-API-cost checks using DexScreener data only.
+    // Reject obvious trash/honeypot BEFORE spending Helius credits.
+    const rugMemory = getRugMemory();
+    const recentRugs = getPerformanceHistory({ limit: 20 }).filter(t => t.rug_detected);
+    const preScreenResult = preScreenBatch(narrativeFiltered, { rugMemory, recentRugs });
+    const preScreened = preScreenResult.passed;
+    if (preScreenResult.stats.blocked > 0) {
+      log("screening", `Trash filter blocked ${preScreenResult.stats.blocked}/${narrativeFiltered.length} — saved API calls`);
+    }
+
     // ─── Feature Health Maintenance ──────────────
     autoResetBreakers({ maxAgeMs: 10 * 60 * 1000 });
 
@@ -1932,7 +2165,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     const scoredCandidates = [];
     const batchTokens = [];
-    for (const token of narrativeFiltered.slice(0, 8)) {
+    for (const token of preScreened.slice(0, 8)) {
       if (isTokenBlacklisted(token.mint)) continue;
       if (await isTokenOnCooldown(token.mint)) continue;
       if (token.creator && isDevBlocked(token.creator)) continue;
@@ -1942,24 +2175,89 @@ export async function runScreeningCycle({ silent = false } = {}) {
     // ─── Parallel API fetch phase ──────────────────
     const apiResults = await Promise.all(
       batchTokens.map(async (token) => {
-        const security = await getTokenSecurityDetails({ mint: token.mint }).catch(e => ({ error: e.message }));
-        let tokenInfo = null;
-        try { tokenInfo = await getTokenInfo({ query: token.mint }); } catch (e) { tokenInfo = { error: e.message }; }
-        return { token, security, tokenInfo };
+        const [security, tokenInfo, rugCheck] = await Promise.allSettled([
+          getTokenSecurityDetails({ mint: token.mint }),
+          getTokenInfo({ query: token.mint }).catch(e => ({ error: e.message })),
+          getRugCheckReport(token.mint), // FREE — RugCheck API
+        ]);
+        return {
+          token,
+          security: security.status === "fulfilled" ? security.value : { error: security.reason?.message },
+          tokenInfo: tokenInfo.status === "fulfilled" ? tokenInfo.value : { error: tokenInfo.reason?.message },
+          rugCheck: rugCheck.status === "fulfilled" ? rugCheck.value : { error: rugCheck.reason?.message },
+        };
       })
     );
 
-    for (const { token, security, tokenInfo } of apiResults) {
+    for (const { token, security, tokenInfo, rugCheck } of apiResults) {
       if (security?.error) {
         log("filter", `${token.symbol}: SKIP — security fetch failed: ${security.error}`);
         continue;
       }
+      // ── RugCheck integration: convert RugCheck report → Ponyou signals
+      const rugCheckSignals = rugCheck?.indexed ? rugCheckToSignals(rugCheck) : {};
+
+      // ── Dev blacklist check (market-cap-aware)
+      const creatorAddr = token.creator || security?.security?.creator || null;
+      const devBl = checkDevBlacklist(creatorAddr);
+      if (devBl.blocked) {
+        log("dev_blacklist", `${token.symbol}: BLOCKED — dev ${creatorAddr?.slice(0, 10)} is ${devBl.tier} blacklisted (${devBl.entry?.reason})`);
+        continue;
+      }
+      // Flagged devs add to rug score
+      let devBlBonus = 0;
+      if (devBl.flagged) {
+        devBlBonus = devBl.tier === "MEDIUM" ? 12 : 6;
+      }
+
       const rugRisk = scoreRugRisk({
         mint: token.mint,
-        creator: token.creator || security?.security?.creator,
+        creator: creatorAddr,
         launchpad: token.launchpad,
-        rug_signals: security?.rug_signals || {},
+        mcap: token.mcap || 0,
+        rug_signals: {
+          ...(security?.rug_signals || {}),
+          _trash_flags: token._trash_flags || [],
+          ...rugCheckSignals,                               // RugCheck enrichment
+          _dev_blacklist_tier: devBl.tier,                  // dev blacklist context
+        },
       });
+
+      // Add dev blacklist penalty AFTER scoreRugRisk (separate concern)
+      if (devBlBonus > 0) {
+        rugRisk.score = Math.min(100, rugRisk.score + devBlBonus);
+        rugRisk.reasons.push(`Dev ${devBl.tier} blacklisted (${devBl.entry?.rug_count || 1} rugs, +${devBlBonus})`);
+      }
+
+      // ─── Anomaly Detection (embedding similarity) ────
+      // Compare token feature vector against all known rugs.
+      // Catches novel patterns that don't exact-match any fingerprint.
+      let anomalyResult = null;
+      if (rugRisk.score < 60 && hasAnyActiveFlag(security?.rug_signals || {})) {
+        anomalyResult = detectAnomaly(security?.rug_signals || {});
+        if (anomalyResult.anomaly_detected) {
+          log("rug_anomaly", `${token.symbol}: ANOMALY ${anomalyResult.anomaly_score}/100 — similar to ${anomalyResult.closest_matches?.map(m => m.symbol).join(", ")}`);
+          // Anomaly boost: push rug score up based on similarity
+          const anomalyBoost = Math.round(anomalyResult.anomaly_score * 0.25);
+          rugRisk.score = Math.min(100, rugRisk.score + anomalyBoost);
+          if (anomalyBoost >= 8) {
+            rugRisk.reasons.push(`Anomaly: ${anomalyResult.anomaly_score}% similarity to ${anomalyResult.closest_matches?.length || 0} known rugs (+${anomalyBoost})`);
+          }
+        }
+      }
+
+      // ─── LLM Analysis for ambiguous tokens ────────────
+      // Tokens with rug score 25-55 are ambiguous — not clearly
+      // safe, not clearly a rug. Ask the LLM for a second opinion.
+      if (rugRisk.score >= 25 && rugRisk.score < 60) {
+        const rugCorpusSize = anomalyResult?.rug_corpus_size ?? 0;
+        const llmAnalysis = await analyzeRugWithLLM(token, security?.rug_signals || {}, anomalyResult, rugCorpusSize);
+        if (!llmAnalysis.skipped && llmAnalysis.adjustment !== 0) {
+          rugRisk.score = Math.min(100, Math.max(0, rugRisk.score + llmAnalysis.adjustment));
+          rugRisk.reasons.push(`LLM analysis: ${llmAnalysis.verdict} (adj ${llmAnalysis.adjustment >= 0 ? '+' : ''}${llmAnalysis.adjustment}) — ${llmAnalysis.reason?.slice(0, 60)}`);
+          log("rug_llm", `${token.symbol}: LLM adjusted rug score by ${llmAnalysis.adjustment >= 0 ? '+' : ''}${llmAnalysis.adjustment} → ${rugRisk.score} (${llmAnalysis.verdict})`);
+        }
+      }
 
       // ─── Cabal Play Analysis ──────────────────
       const cabalInput = {
@@ -1977,6 +2275,25 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
       if (rugRisk.score >= 60) {
         log("filter", `${token.symbol}: SKIP rug score ${rugRisk.score}`);
+        // Auto-blacklist confirmed honeypots so they never waste another cycle
+        if (rugRisk.score >= 100) {
+          const honeypotReasons = rugRisk.reasons.join("; ");
+          if (!isTokenBlacklisted(token.mint)) {
+            recordRug({
+              mint: token.mint,
+              symbol: token.symbol,
+              creator: creatorAddr,
+              launchpad: token.launchpad,
+              rug_signals: security?.rug_signals || {},
+              exit_reason: `honeypot_autoblacklist: ${honeypotReasons}`,
+            });
+            // Also blacklist the dev with market-cap-aware tiering
+            if (creatorAddr) {
+              blacklistDev({ creator: creatorAddr, mint: token.mint, symbol: token.symbol, mcap: token.mcap || 0, reason: `honeypot: ${honeypotReasons.slice(0, 80)}` });
+            }
+            log("trash_filter", `Auto-blacklisted honeypot: ${token.symbol || token.mint.slice(0, 8)} — ${honeypotReasons}`);
+          }
+        }
         continue;
       }
 
@@ -1993,14 +2310,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
         log("filter", `${token.symbol}: SKIP — getTokenInfo failed: ${tokenInfo.error}`);
         continue;
       }
+
+      // Active strategy for tier execution + downstream context
+      const activeStrategy = getStrategy(null, { regime: marketIntel.condition });
       const globalFees = tokenInfo.results?.[0]?.global_fees_sol || 0;
       const tierInfo = getMcapTier(token.mcap);
-      const tierExec = getTierExecutionProfile(token.mcap);
+      const tierExec = getTierExecutionProfile(token.mcap, activeStrategy?.id || null);
       if (tierExec.sell_only) {
         log("filter", `${token.symbol}: SKIP sell-only tier ${tierExec.tier}`);
         continue;
       }
-      const enhancedToken = { ...token, global_fees_sol: globalFees, tier: tierInfo };
+      const enhancedToken = { ...token, global_fees_sol: globalFees, tier: tierInfo, _trash_flags: token._trash_flags || [] };
 
       const filterResult = await run4FilterProtocol(enhancedToken, security, gasFee);
 
@@ -2290,6 +2610,29 @@ export async function runScreeningCycle({ silent = false } = {}) {
         if (guard.warn) {
           log("pre_swap_guard", `${candidate.symbol || candidate.mint}: ${guard.warn}`);
         }
+
+        // ─── Pre-flight sell simulation ──────────────
+        // Verify on-chain that the token CAN actually be sold.
+        // Catches Token-2022 + custom program honeypots that would
+        // trap capital. Run BEFORE committing to a swap.
+        const sellSim = await simulateSell(candidate.mint, { timeoutMs: 5000 });
+        if (sellSim.can_sell === false) {
+          log("sell_sim_block", `${candidate.symbol || candidate.mint}: BLOCKED — sell simulation failed: ${sellSim.reason}`);
+          if (!isTokenBlacklisted(candidate.mint)) {
+            recordRug({
+              mint: candidate.mint,
+              symbol: candidate.symbol,
+              rug_signals: { _sell_sim_blocked: true, _sell_sim_reason: sellSim.reason },
+              exit_reason: `sell_sim_blocked: ${sellSim.reason}`,
+            });
+          }
+          continue;
+        }
+        if (sellSim.can_sell === null) {
+          // Simulation inconclusive — flag but don't block
+          log("sell_sim_warn", `${candidate.symbol || candidate.mint}: sell simulation inconclusive — ${sellSim.reason}`);
+        }
+
         guardedCandidates.push(candidate);
       }
       passingCandidates = guardedCandidates;
@@ -2369,12 +2712,24 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                     amount: deployAmount,
                   }];
               for (const exec of executions) {
+                // Staged entry: only deploy stage-1 amount, not full allocation
+                const activeStrat = getStrategy(null, { regime: marketIntel.condition });
+                const stagedCfg = activeStrat?.staged_entry;
+                const stage1Amount = getStage1Amount(stagedCfg, exec.amount || deployAmount);
+                const entryUsd = (stage1Amount * (balance.sol_price || 0)) || 0;
+
+                // Init staged entry tracking for subsequent stages
+                let stagedTracking = null;
+                if (stagedCfg?.enabled && stagedCfg.stages > 1) {
+                  stagedTracking = initStagedEntry(null, activeStrat, stage1Amount, balance.sol_price || 0);
+                }
+
                 await trackPosition({
                   position: token.mint,
                   pool: "jupiter",
                   pool_name: token.symbol,
-                  amount_sol: exec.amount || deployAmount,
-                  initial_value_usd: ((exec.amount || deployAmount) * (balance.sol_price || 0)) || 0,
+                  amount_sol: stage1Amount,
+                  initial_value_usd: entryUsd,
                   signal_snapshot: {
                     mint: token.mint,
                     symbol: token.symbol,
@@ -2384,6 +2739,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                     regime: token.regime || null,
                     workflow: token.workflow || null,
                     kelly: token.kelly || null,
+                    staged_entry: stagedTracking,
                     execution_context: {
                       wallet_address: exec.wallet_address || null,
                       provider: result?.execution_provider || "auto",
@@ -2454,6 +2810,17 @@ async function handleSmartWalletSwap(event) {
     }
     recordCounter("geyser_smart_buy_triggered");
     log("geyser_smart_buy", `wallet=${String(event.wallet || "?").slice(0,8)} mint=${mint.slice(0,8)} slot=${event.slot}`);
+
+    // Update last_active on tracked smart wallet (prevents score decay to zero)
+    try {
+      const wallets = listSmartWallets();
+      const match = wallets.find(w => w.address === event.wallet);
+      if (match) {
+        match.last_active = new Date().toISOString();
+        // best-effort persist — don't block the geyser handler
+        import("./smart-wallets.js").then(m => m._updateWallet?.(match)).catch(() => {});
+      }
+    } catch { /* non-critical */ }
     if (!config.fastTrack?.enabled) {
       log("geyser_smart_buy", "fast-track disabled — signal received but no auto-buy");
       return;
@@ -2513,32 +2880,73 @@ function handleGeyserDisconnect(attempt) {
 }
 
 async function seedSmartWallets() {
-  if (listSmartWallets({ minDecayMultiplier: 0.5 }).length > 0) return; // already populated (active wallets only)
-  if (process.env.SCREENING_MODE === "dexscreener") {
-    log("smart_wallets", "DexScreener-only mode — skipping Helius wallet discovery");
-    return;
-  }
-  log("smart_wallets", "smart-wallets.json empty — running auto-discovery…");
+  if (listSmartWallets({ minDecayMultiplier: 0.5 }).length > 0) return; // already populated
+
+  log("smart_wallets", "smart-wallets.json empty — seeding from discovered wallets…");
+
+  // Path 1: Promote from existing discovered-wallets.json (free, no API calls)
   try {
-    const result = await discoverSmartWallets({ source_tokens: 5, min_winrate: 0.6, min_trades: 5, auto_add: false });
-    if (result.error) {
-      log("smart_wallets", `Auto-seed skipped: ${result.error}`);
-      return;
-    }
-    const qualified = (result.discovered || []).filter(w => w.qualified);
-    for (const w of qualified.slice(0, 15)) {
-      await addSmartWallet({ address: w.address, label: w.label || `auto_${w.address.slice(0, 6)}` });
-    }
-    if (qualified.length > 0) {
-      log("smart_wallets", `Seeded ${qualified.length} smart wallets from discovery pipeline`);
+    const { readFileSync } = await import("fs");
+    const discovered = JSON.parse(readFileSync("discovered-wallets.json", "utf8"));
+    const allWallets = Object.values(discovered).filter(w => w && typeof w === "object" && w.address);
+    const elite = allWallets
+      .filter(w => (w.stats?.winrate || 0) >= 0.65 && (w.stats?.completed_trades || 0) >= 3)
+      .sort((a, b) => (b.stats?.winrate || 0) - (a.stats?.winrate || 0));
+
+    if (elite.length > 0) {
+      for (const w of elite.slice(0, 15)) {
+        await addSmartWallet({
+          address: w.address,
+          label: `elite_${w.address.slice(0, 6)}`,
+          stats: w.stats || {},
+          source_tokens: w.source_tokens || [],
+          follow_mode: (w.stats?.winrate || 0) >= 0.75 ? "active" : "probe",
+          last_active: w.last_active || new Date().toISOString(),
+          notes: `Promoted from discovered: ${(w.stats?.winrate || 0) * 100}% WR / ${w.stats?.completed_trades || 0} trades`,
+        });
+      }
+      log("smart_wallets", `Seeded ${elite.slice(0, 15).length} elite wallets from discovered-wallets.json (${elite.filter(w => w.stats?.winrate >= 0.75).length} active, ${elite.filter(w => w.stats?.winrate >= 0.65 && w.stats?.winrate < 0.75).length} probe)`);
+
       if (_geyserStream) {
-        const addrs = listSmartWallets({ minDecayMultiplier: 0.5 }).map(w => w.address);
+        const addrs = listSmartWallets().map(w => w.address);
         _geyserStream.refreshSubscriptions(addrs);
         log("smart_wallets", `Geyser subscriptions updated: ${addrs.length} wallets`);
       }
       if (telegramEnabled()) {
-        sendHTML(`✅ <b>Smart wallets seeded</b> — ${qualified.length} wallets found via discovery`).catch(() => {});
+        const top3 = elite.slice(0, 3).map(w => `${(w.stats?.winrate*100).toFixed(0)}%/${w.stats?.completed_trades}t`).join(", ");
+        sendHTML(`✅ <b>Smart wallets seeded</b> — ${elite.slice(0,15).length} from discovery (${elite.length} total eligible)\nTop: ${top3}`).catch(() => {});
       }
+      return;
+    }
+  } catch (e) {
+    log("smart_wallets", `Discovered-wallets promotion failed: ${e.message}`);
+  }
+
+  // Path 2: Helius-powered discovery (only if API key available)
+  if (process.env.SCREENING_MODE === "dexscreener" || !process.env.HELIUS_API_KEY) {
+    log("smart_wallets", "No Helius — skip live discovery. Run with HELIUS_API_KEY for fresh wallet scanning.");
+    return;
+  }
+
+  log("smart_wallets", "Running live Helius discovery…");
+  try {
+    const result = await discoverSmartWallets({ source_tokens: 5, min_winrate: 0.6, min_trades: 5, auto_add: false });
+    if (result.error) { log("smart_wallets", `Auto-seed skipped: ${result.error}`); return; }
+    const promoted = (result.qualified || []);
+    for (const w of promoted.slice(0, 15)) {
+      await addSmartWallet({
+        address: w.address,
+        label: `auto_${w.address.slice(0, 6)}`,
+        stats: { winrate: w.winrate, completed_trades: w.completed_trades, realized_pnl_sol: w.realized_pnl_sol, avg_hold_seconds: w.avg_hold_seconds, unique_tokens: w.unique_tokens },
+        source_tokens: w.source_tokens || [],
+        selection: w.selection || null,
+        follow_mode: w.selection?.follow_mode || "shadow",
+        last_active: new Date().toISOString(),
+      });
+    }
+    if (promoted.length > 0) {
+      log("smart_wallets", `Seeded ${promoted.length} smart wallets from live discovery`);
+      if (_geyserStream) { _geyserStream.refreshSubscriptions(listSmartWallets().map(w => w.address)); }
     }
   } catch (e) {
     log("smart_wallets", `Auto-seed error: ${e.message}`);
@@ -2564,10 +2972,23 @@ const rugMonitorFetchers = {
   },
   getTopHolders: async (mint) => {
     try {
-      const mod = await import("./tools/rug-signals.js");
-      if (typeof mod.fetchTopHolders === "function") return mod.fetchTopHolders(mint, 10);
-    } catch (_) {}
-    return [];
+      // Use existing getTokenLargeAccounts → resolve owners → return wallet addresses + balances
+      const { Connection, PublicKey } = await import("@solana/web3.js");
+      const conn = new Connection(process.env.RPC_URL || "https://api.mainnet-beta.solana.com", "confirmed");
+      const mintPk = new PublicKey(mint);
+      const largest = await conn.getTokenLargestAccounts(mintPk);
+      const accounts = (largest?.value || []).slice(0, 10);
+      if (accounts.length === 0) return [];
+      // Resolve token-account → owner wallet for each
+      const parsed = await conn.getMultipleParsedAccounts(accounts.map(a => new PublicKey(a.address)));
+      const mintDecimals = 6; // default assumption; exact decimals require mintInfo fetch
+      return accounts.map((acc, i) => {
+        const info = parsed?.value?.[i]?.data?.parsed?.info;
+        const owner = info?.owner || null;
+        const balance = acc.uiAmount || (acc.amount / Math.pow(10, mintDecimals));
+        return { wallet: owner, address: acc.address, balance };
+      });
+    } catch (_) { return []; }
   },
   getTokenBalance: async (owner, mint) => {
     try {
@@ -2719,6 +3140,36 @@ export function startCronJobs() {
   _cronTasks.forEach(t => t.stop());
   const tasks = [];
 
+  // ─── Daily Advance: auto-advance trading plan at midnight UTC ──
+  // Runs at 00:01 UTC each night. Fetches actual wallet balance,
+  // records yesterday's results, and resets session for the new day.
+  // Without this, the 30-day compound plan stays on day 1 forever.
+  tasks.push(cron.schedule("1 0 * * *", async () => {
+    if (!config.pilot?.enabled) return;
+    const plan = getTradingPlan();
+    if (!plan) return;
+    try {
+      const balance = await getWalletBalances();
+      const totalUsd = (balance?.sol_usd || 0) + (balance?.tokens || []).reduce((s, t) => s + (t.usd || 0), 0);
+      if (!Number.isFinite(totalUsd) || totalUsd <= 0) {
+        log("plan", `Midnight advance skipped — invalid wallet balance: ${totalUsd}`);
+        return;
+      }
+      const result = advanceDay(totalUsd, getStrategy(null)?.id || null);
+      log("plan", `Day advanced: ${result.day - 1} → ${plan.currentDay}. PnL yesterday: ${result.pnl_pct}%. Today's target: $${plan.schedule[plan.currentDay - 1]?.target_usd?.toFixed(2)}`);
+      if (telegramEnabled()) {
+        const achieved = result.achieved ? "✅" : "❌";
+        sendHTML(
+          `${achieved} <b>Day ${result.day} closed</b>\n` +
+          `PnL: ${fmt.pct(result.pnl_pct)} · ${result.wins}W/${result.losses}L · ${result.trades} trades\n` +
+          `Target: ${result.achieved ? "HIT" : "MISSED"} · Day ${plan.currentDay} starts at $${result.actual_usd?.toFixed(2)}`
+        ).catch(() => {});
+      }
+    } catch (e) {
+      log("plan_error", `Midnight advance failed: ${e.message}`);
+    }
+  }));
+
   // Management (setiap N menit, mulai dari :00)
   tasks.push(cron.schedule(`*/${config.schedule.managementIntervalMin} * * * *`, runManagementCycle));
 
@@ -2750,6 +3201,77 @@ export function startCronJobs() {
         log("cron", `Wallet prune: removed ${result.removed} stale wallets, kept ${result.kept}`);
       }
     } catch (e) { /* file may not exist, OK */ }
+  }));
+
+  // Strategy degradation scan — auto-deactivate evolved strategies whose
+  // live win rate has dropped below the degradation threshold (4am UTC).
+  // Runs daily; only scans strategies with ≥10 live trades.
+  tasks.push(cron.schedule("0 4 * * *", async () => {
+    try {
+      if (typeof _evolutionEngine?.scanAllDegradations === "function") {
+        const degraded = await _evolutionEngine.scanAllDegradations();
+        if (degraded.length > 0) {
+          log("strategy_degradation", `Auto-degraded ${degraded.length} strategies: ${degraded.map(d => d.name).join(", ")}`);
+          if (telegramEnabled()) {
+            sendHTML(`⚠️ <b>Strategy Degradation</b>\n${degraded.map(d => `${d.name}: WR ${(d.liveWinRate*100).toFixed(0)}% (${d.liveTrades} trades)`).join("\n")}`).catch(() => {});
+          }
+        }
+      }
+    } catch (e) { /* best-effort */ }
+  }));
+
+  // Day Phase Trade screening — daily sweep for mature sideway tokens (8am UTC)
+  // Runs once per day because these tokens don't appear/disappear quickly.
+  tasks.push(cron.schedule("0 8 * * *", async () => {
+    try {
+      const active = getStrategy(null)?.id;
+      if (active !== "day_phase_trading") return; // only when strategy is active
+      log("day_phase", "Running daily day-phase screening...");
+      const { watchlist, stats } = await screenDayPhaseTokens();
+      if (watchlist.length > 0 && telegramEnabled()) {
+        await sendHTML(formatWatchlistForNotification(watchlist, 10));
+      }
+      log("day_phase", `Daily sweep: ${stats.passed} candidates (${stats.high_confidence} high confidence)`);
+    } catch (e) {
+      log("day_phase_error", `Daily screening failed: ${e.message}`);
+    }
+  }));
+
+  // Smart wallet re-discovery — refresh wallet pool every 6 hours
+  // New profitable wallets appear constantly; without this the bot
+  // only sees wallets that existed at first boot.
+  tasks.push(cron.schedule("0 */6 * * *", async () => {
+    try {
+      const existing = listSmartWallets({ minDecayMultiplier: 0.5 }).length;
+      const result = await discoverSmartWallets({ source_tokens: 8, min_winrate: 0.6, min_trades: 5, auto_add: false });
+      const fresh = (result.qualified || []).filter(w => w.winrate >= 0.65);
+      let added = 0;
+      for (const w of fresh.slice(0, 5)) {
+        const wallets = listSmartWallets();
+        if (!wallets.some(ex => ex.address === w.address)) {
+          await addSmartWallet({
+            address: w.address,
+            label: `discovered_${w.address.slice(0, 6)}`,
+            stats: {
+              winrate: w.winrate,
+              completed_trades: w.completed_trades,
+              realized_pnl_sol: w.realized_pnl_sol,
+              avg_hold_seconds: w.avg_hold_seconds,
+              unique_tokens: w.unique_tokens,
+            },
+            source_tokens: w.source_tokens || [],
+            follow_mode: "shadow",
+            last_active: new Date().toISOString(),
+          });
+          added++;
+        }
+      }
+      if (added > 0 && _geyserStream) {
+        const addrs = listSmartWallets({ minDecayMultiplier: 0.5 }).map(w => w.address);
+        _geyserStream.refreshSubscriptions(addrs);
+      }
+      if (added > 0) log("smart_wallets", `Rediscovery: added ${added} new wallets (pool: ${existing} → ${existing + added})`);
+    } catch (e) { /* best-effort */ }
   }));
 
   // Vault (daily check — cron checks if 7 days elapsed)
