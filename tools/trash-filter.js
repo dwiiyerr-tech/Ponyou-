@@ -280,7 +280,9 @@ function scoreNameHygiene(token, recentRugs) {
 
   for (const pat of SCAM_NAME_PATTERNS) {
     if (pat.test(name) || pat.test(symbol)) {
-      return { score: 10, reasons: [`scam pattern in name: ${pat.source}`] };
+      // Hard-block: scam pattern in name/symbol is nearly always a rug
+      // Downgraded from scoring-only in v2.0.1 back to hard-block
+      return { score: 10, block: true, blockReason: `scam_name: ${pat.source}`, reasons: [`scam pattern in name/symbol: ${pat.source}`] };
     }
   }
 
@@ -569,6 +571,22 @@ export function scoreTrash(token, ctx = {}) {
     feeIntegrity: scoreVolume(token),
     distribution: scoreDistribution(token),
   };
+
+  // Check if any dimension signals a hard-block
+  for (const [name, dim] of Object.entries(dims)) {
+    if (dim.block) {
+      return {
+        block: true,
+        score: 100,
+        tier: "BLOCK",
+        tierAction: "block",
+        flags: [],
+        reasons: [dim.blockReason || dim.reasons[0] || `${name}: blocked`],
+        breakdown: { [name]: { score: dim.score, max: SCORING[name]?.max || 0, reasons: dim.reasons, blocked: true } },
+        marketMultiplier: 1,
+      };
+    }
+  }
 
   // Raw score = sum of dimension scores (each already clamped to its max)
   let rawScore = 0;
