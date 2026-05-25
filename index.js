@@ -2,8 +2,20 @@ import "dotenv/config";
 import cron from "node-cron";
 import readline from "readline";
 import { createRugCircuitBreaker } from "./rug-circuit-breaker.js";
+import { heliusCircuitOpen, helius429Hit } from "./tools/rug-signals.js";
 import { agentLoop } from "./agent.js";
 import AgentRouter from "./agent-router.js";
+import { agentBus } from "./agents/agent-bus.js";
+import { registerAgent, setAgentStatus, getDashboardSummary } from "./agents/agent-registry.js";
+import { initHuntersAgent, runHuntersExpedition, getHuntersPrey, getHuntersDashboard } from "./agents/hunters-agent.js";
+import { initScreeningAgent, getScreeningDashboard } from "./agents/screening-agent.js";
+import { initManagementAgent } from "./agents/management-agent.js";
+import { initGeneralAgent } from "./agents/general-agent.js";
+import { initTrashLayer } from "./agents/trash-layer.js";
+import { initOrchestratorAgent, runOrchestratorCycle, setFullAutomationMode, getOrchestratorDashboard } from "./agents/orchestrator-agent.js";
+import { runAutomationQualification, isAutomationActive, guardAutomatedDecision, getAutomationState, approveAutomation, rejectAutomation, revokeAutomation } from "./agents/automation-rules.js";
+import { initProOrchestrator, isProModeActive, getProDashboard } from "./agents/pro-orchestrator.js";
+import { checkWalletSignals, getWalletTierStats, discoverWalletTiers, TIER_CONFIG } from "./tools/wallet-tiers.js";
 import { log } from "./logger.js";
 import { getWalletBalances } from "./tools/wallet.js";
 import { applyFeeEntryGuard, getSolanaGasFee, shouldSkipEntriesForGasFee } from "./tools/solana-rpc.js";
@@ -93,6 +105,7 @@ import { recordExecutionQuality, getExecutionQualityAssessment } from "./executi
 import { assessTradeAttribution, recordTradeAttribution } from "./trade-attribution.js";
 import { harvestMarketRugs } from "./tools/rug-harvester.js";
 import { preScreenBatch } from "./tools/trash-filter.js";
+import { runHunterExpedition, injectHunterPrey, getHunterStats, getCachedPrey } from "./tools/hunter-agent.js";
 import { detectAnomaly, hasAnyActiveFlag } from "./tools/rug-anomaly.js";
 import { analyzeRugWithLLM } from "./tools/rug-llm-analysis.js";
 import { simulateSell } from "./tools/sell-simulator.js";
@@ -153,11 +166,12 @@ import { isPartialTPLanded, markPartialTPLanded, clearPartialTPGuard } from "./p
 
 log("startup", "Ponyou AI Agent starting...");
 const executionMode = resolveExecutionMode();
-log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " — real swaps on devnet (fake SOL)" : " — live mainnet (real SOL)"}`);
+log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " — paper trading (mainnet data, simulated execution, no real SOL)" : " — live mainnet (real SOL)"}`);
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
 
-// Devnet faucet: auto-fund demo wallet with devnet SOL on startup
-if (executionMode.isDemo) {
+// Devnet faucet: auto-fund wallet with devnet SOL only when using devnet RPC.
+// Paper-trading demo mode uses mainnet — no faucet needed.
+if (executionMode.isDemo && (process.env.RPC_URL || "").includes("devnet")) {
   import("./tools/devnet-faucet.js").then(async ({ ensureDevnetBalance, getDevnetBalance }) => {
     try {
       const walletModule = await import("./tools/wallet.js");
@@ -213,6 +227,53 @@ const agentRouter = new AgentRouter({
   rufloEnabled: false, // disable ruflo for now
 });
 log("startup", `AgentRouter initialized — Gemini: disabled (using Claude direct), Codex: true`);
+
+// ─── Multi-Agent System Init ──────────────────────────
+// Wire all 4 agents: Hunters, Screening, Management, General
+registerAgent("hunters",    { role: "hunters",    healthCheck: () => getHuntersDashboard() });
+registerAgent("screening",  { role: "screening",  healthCheck: () => getScreeningDashboard() });
+registerAgent("management", { role: "management", healthCheck: () => ({ initialized: true }) });
+registerAgent("general",    { role: "general",    healthCheck: () => ({ llmReady: !!getAgentRouter() }) });
+registerAgent("trash-layer", { role: "hunters",   healthCheck: () => ({ initialized: true }) }); // gatekeeper between hunters→screening
+registerAgent("orchestrator", { role: "screening", healthCheck: () => getOrchestratorDashboard() });
+
+initHuntersAgent();
+initScreeningAgent({
+  runScreeningCycle: runScreeningCycle,
+  checkAllGates: checkAllGates,
+});
+initManagementAgent({
+  runManagementCycle: runManagementCycle,
+  checkAllGates: checkAllGates,
+  telegramEnabled: telegramEnabled,
+  llmReviewEnabled: true,
+});
+initGeneralAgent({
+  agentLoop,
+  config,
+});
+initTrashLayer();
+initOrchestratorAgent({
+  getStrategyFn: (id, opts) => getStrategy(id, opts),
+  getMarketIntelFn: () => getMarketIntelligence(),
+});
+setFullAutomationMode(true); // Enable full automation
+
+setAgentStatus("orchestrator", "running", "Orchestrator active — full automation workflow");
+initProOrchestrator(); // Pro mode — activates after automation approved
+registerAgent("pro-orchestrator", { role: "screening", healthCheck: () => getProDashboard() });
+setAgentStatus("pro-orchestrator", isProModeActive() ? "running" : "stopped",
+  isProModeActive() ? "PRO MODE — elite decision engine online" : "Pro mode locked — awaiting automation approval");
+setAgentStatus("trash-layer", "running", "Trash layer active — gatekeeper between Hunters and Screening");
+setAgentStatus("hunters", "running", "Hunters active — searching for prey");
+setAgentStatus("screening", "running", "Screening active — pipeline ready");
+setAgentStatus("management", "running", "Management active — monitoring positions");
+setAgentStatus("general", "running", "General — chat & Telegram only (no trading)");
+
+// Emit initial market state so agents know current condition
+agentBus.emit("market:update", { condition: getMarketIntelligence().condition });
+
+log("startup", `Multi-Agent System: ${getDashboardSummary().running}/${getDashboardSummary().total} agents running`);
 
 // Strategy Evolution Engine — opt-in via config.strategy.evolution.enabled
 // Two-stage opt-in:
@@ -1199,9 +1260,7 @@ async function refreshSessionPnl(totalUsd) {
   // Skip jika nilai wallet invalid — wallet API gagal sering balikin 0,
   // jangan biarkan itu di-interpret sebagai loss 100%.
   if (!Number.isFinite(totalUsd) || totalUsd <= 0) {
-    if (executionMode.isLive) {
-      log("plan_warn", `refreshSessionPnl skipped: invalid totalUsd=${totalUsd}`);
-    }
+    log("plan_warn", `refreshSessionPnl skipped: invalid totalUsd=${totalUsd} (${executionMode.mode})`);
     return;
   }
   // Kill-switch drawdown check: anchored to the first valid balance the bot
@@ -1739,7 +1798,11 @@ export async function runManagementCycle({ silent = false } = {}) {
   _managementBusy = true;
 
   const gate = await checkAllGates("management");
-  if (gate.blocked) { _managementBusy = false; return gate.reason; }
+  if (gate.blocked) {
+    _managementBusy = false;
+    agentBus.emit("management:gate_blocked", { reason: gate.reason, timestamp: Date.now() });
+    return gate.reason;
+  }
 
   timers.managementLastRun = Date.now();
   log("cron", "Starting management cycle");
@@ -1989,47 +2052,105 @@ export async function runManagementCycle({ silent = false } = {}) {
       }
     }
 
-    // ─── Step 2: LLM management ──────────────────
+    // ─── Step 2: LLM Management (via Agent Bus → General Agent) ──
     const remainingBalance = await getPortfolioSnapshot();
     const remainingTokens = (remainingBalance.tokens || []).filter(t => t.usd >= 0.1 && t.symbol !== "SOL");
 
     if (remainingTokens.length > 0) {
       const planSummary = getPlanSummary();
-      const { content } = await agentLoop(`
-MANAGEMENT CYCLE
-Tokens held: ${JSON.stringify(remainingTokens)}
-${planSummary ? `Plan: Day ${planSummary.day} | P&L: ${planSummary.today_pnl_pct}% | Profit Mode: ${planSummary.profit_mode}` : ""}
+      const marketIntel = getMarketIntelligence();
 
-Review holdings. Exit jika ada rug signal atau trend reversal berat.
-ROI/Trailing/StopLoss ditangani otomatis — fokus ke kualiatif saja.
+      // Emit to bus — General Agent picks up and runs LLM
+      agentBus.emit("management:llm_review_started", {
+        tokenCount: remainingTokens.length,
+        symbols: remainingTokens.map(t => t.symbol),
+        timestamp: Date.now(),
+      });
+
+      const { content } = await agentLoop(`
+MANAGEMENT CYCLE — LLM Portfolio Review
+Market: ${marketIntel.condition} — ${marketIntel.description || ""}
+${planSummary ? `Plan: Day ${planSummary.day}/${planSummary.days_total} | P&L: ${planSummary.today_pnl_pct}% | Target: +${planSummary.daily_target_pct}%${planSummary.profit_mode ? " | PROFIT MODE" : ""}` : ""}
+
+POSITIONS HELD:
+${JSON.stringify(remainingTokens.map(t => ({
+  symbol: t.symbol,
+  mint: t.mint?.slice(0, 8),
+  usd_value: t.usd?.toFixed(2),
+  pnl_pct: t.pnl_pct?.toFixed(1),
+  age_min: t.age_minutes?.toFixed(0),
+  conviction: t.conviction?.conviction_score,
+  narrative: t.narrative_tags?.[0],
+  market_entry: t.market_condition,
+})))}
+
+TUGAS:
+1. Review setiap posisi — qualitative risk: narrative shifts, conviction decay, market deterioration
+2. EXIT jika: naratif mati, conviction turun >20 poin, atau market jadi DEAD
+3. HOLD jika: posisi sehat, naratif masih kuat, conviction building
+4. BOLEH ENTRY BARU jika: ada peluang jelas dari screening, market kondusif (NORMAL/HOT)
+5. Jangan override SL/TP — itu ditangani otomatis oleh sistem
+6. Fokus: protect capital, cut losers early, let winners run
       `, config.llm.managerMaxSteps, [], "MANAGER", config.llm.managementModel, 2048, {
         onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
         onToolFinish: async ({ name, result }) => {
           await liveMessage?.toolFinish(name, result, !result?.error);
           if (name === "swap_token") {
             recordSwapOutcome({ success: !!(result?.success || result?.dry_run) });
+            const isBuy = (result.token_in || result.would_swap?.token_in) === "SOL";
+            agentBus.emit(isBuy ? "management:llm_buy" : "management:llm_sell", {
+              token: result.token_out || result.would_swap?.token_out,
+              symbol: result.symbol,
+              amount: result.amount,
+              dry_run: result.dry_run,
+              success: !!(result?.success || result?.dry_run),
+              timestamp: Date.now(),
+            });
           }
           if (name === "swap_token" && (result.success || result.dry_run)) {
             const tokenOut = result.token_out || result.would_swap?.token_out;
             const tokenIn = result.token_in || result.would_swap?.token_in;
             const walletAddress = result.wallet_address || result.would_swap?.wallet_address || null;
+            // Check if this is a SELL (token_out is SOL/wSOL)
             if (tokenOut === "SOL" || tokenOut === "So11111111111111111111111111111111111111112") {
               const llmPosKey = walletAddress ? `${tokenIn}::${walletAddress}` : tokenIn;
               await recordClose(tokenIn, "LLM Manager Decision", walletAddress);
               _rugMonitor?.detachPosition(llmPosKey);
               await clearPartialTPGuard(llmPosKey);
               recordRuggedNarrativesForExit({ reason: "LLM Manager Decision", token: {} });
-              recordTrade(true); // assume LLM exits for profit
+              recordTrade(true);
               await handleDailyTradeGuardOutcome(true, {
                 mint: tokenIn,
                 symbol: tokenIn?.slice(0, 8),
                 exit_reason: "LLM Manager Decision",
+              });
+              agentBus.emit("management:llm_exit_executed", {
+                mint: tokenIn,
+                reason: "LLM Manager Decision",
+                walletAddress,
+                timestamp: Date.now(),
+              });
+            }
+            // Check if this is a BUY (token_in is SOL/wSOL)
+            if (tokenIn === "SOL" || tokenIn === "So11111111111111111111111111111111111111112") {
+              agentBus.emit("management:llm_entry_executed", {
+                mint: tokenOut,
+                amount_sol: result.amount,
+                walletAddress,
+                timestamp: Date.now(),
               });
             }
           }
         },
       });
       mgmtReport = content;
+
+      // Emit LLM review complete to bus
+      agentBus.emit("management:llm_review_complete", {
+        tokenCount: remainingTokens.length,
+        reportLength: content?.length || 0,
+        timestamp: Date.now(),
+      });
     } else {
       mgmtReport = deterministicExits.length > 0 ? `Closed ${deterministicExits.length} via Strategy.` : "All positions managed.";
     }
@@ -2063,7 +2184,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
   }
 
   const gate = await checkAllGates("screening");
-  if (gate.blocked) { _screeningBusy = false; return gate.reason; }
+  if (gate.blocked) {
+    _screeningBusy = false;
+    agentBus.emit("screening:gate_blocked", { reason: gate.reason, timestamp: Date.now() });
+    return gate.reason;
+  }
 
   timers.screeningLastRun = Date.now();
   log("cron", "Starting screening cycle");
@@ -2131,6 +2256,18 @@ export async function runScreeningCycle({ silent = false } = {}) {
       log("screening", `Capping candidates ${candidates.length} -> ${MAX_CANDIDATES_PER_CYCLE} to avoid API burst`);
     }
 
+    // ─── Inject Hunter Prey ────────────────────────
+    // Merge hunter agent finds with DexScreener discovery.
+    // Hunter prey are pre-scored and get priority in the pipeline.
+    const cachedPrey = getCachedPrey();
+    const allCandidates = cachedPrey.length > 0
+      ? injectHunterPrey(cappedCandidates, cachedPrey, 10)
+      : cappedCandidates;
+    if (allCandidates.length > cappedCandidates.length) {
+      const hunterPrio = cachedPrey.filter(t => t._hunter_score >= 50).length;
+      log("screening", `Hunter injected ${allCandidates.length - cappedCandidates.length} prey (${hunterPrio} priority) → ${allCandidates.length} total candidates`);
+    }
+
     // ─── Market intelligence ─────────────────────
     const marketSnap = await recordMarketSnapshot(cappedCandidates);
     const marketIntel = getMarketIntelligence();
@@ -2140,8 +2277,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       .catch(e => log("market_research_error", e.message));
 
     if (marketIntel.condition === "DEAD") {
-      _screeningBusy = false;
-      return "Market DEAD — skip entries";
+      if (!config.pipelineTestMode) {
+        _screeningBusy = false;
+        return "Market DEAD — skip entries";
+      }
+      log("screening", `Pipeline test mode — skipping DEAD market gate (market: ${marketIntel.condition})`);
     }
 
     // Auto market adaptation now only informs ranking/notes; it must not
@@ -2149,7 +2289,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const marketAdjustments = config.pilot.autoAdaptToMarket
       ? getRecommendedAdjustments(marketIntel.condition)
       : null;
-    if (marketAdjustments?.skip_entry) {
+    if (marketAdjustments?.skip_entry && !config.pipelineTestMode) {
       _screeningBusy = false;
       return `Market adaptation recommends skip_entry for ${marketIntel.condition}`;
     }
@@ -2166,9 +2306,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const rugMemory = getRugMemory();
     const recentRugs = getPerformanceHistory({ limit: 20 }).filter(t => t.rug_detected);
     const preScreenResult = preScreenBatch(narrativeFiltered, { rugMemory, recentRugs });
-    const preScreened = preScreenResult.passed;
+    const preScreened = config.pipelineTestMode
+      ? (() => {
+          narrativeFiltered.forEach(t => { t._trash_test_mode = true; });
+          return narrativeFiltered;
+        })()
+      : preScreenResult.passed;
     if (preScreenResult.stats.blocked > 0) {
-      log("screening", `Trash filter blocked ${preScreenResult.stats.blocked}/${narrativeFiltered.length} — saved API calls`);
+      const modeLabel = config.pipelineTestMode ? " (WARN — pipeline test mode: passing all through)" : " — saved API calls";
+      log("screening", `Trash filter blocked ${preScreenResult.stats.blocked}/${narrativeFiltered.length}${modeLabel}`);
     }
 
     // ─── Feature Health Maintenance ──────────────
@@ -2326,6 +2472,37 @@ export async function runScreeningCycle({ silent = false } = {}) {
         log("cabal", `${token.symbol}: ${cabal.cabalType} score=${cabal.cabalScore} action=${cabal.action}`);
       }
 
+      // ─── Wallet Tier Check ──────────────────────
+      // Check if any wallet involved in this token is flagged by tier system
+      const involvedWallets = [
+        ...(security?.smart_money?.buys || []).map(w => w.wallet || w.address).filter(Boolean),
+        ...(security?.smart_money?.sells || []).map(w => w.wallet || w.address).filter(Boolean),
+        creatorAddr,
+      ].filter(Boolean);
+
+      if (involvedWallets.length > 0) {
+        const walletCheck = checkWalletSignals(involvedWallets, "buy");
+
+        // BLOCK: rug wallet involved
+        if (walletCheck.block) {
+          log("wallet_tiers", `${token.symbol}: BLOCKED — ${walletCheck.warnings[0]}`);
+          continue;
+        }
+
+        // WARNING: insider wallet
+        if (walletCheck.warnings.length > 0) {
+          token._trash_flags = token._trash_flags || [];
+          token._trash_flags.push(...walletCheck.warnings.map(w => `wallet_tier_warn:${w}`));
+          log("wallet_tiers", `${token.symbol}: WARNING — ${walletCheck.warnings.join(", ")}`);
+        }
+
+        // STRONG BUY: elite/smart money buying
+        if (walletCheck.buySignals.length > 0) {
+          token._wallet_buy_signals = walletCheck.buySignals;
+          log("wallet_tiers", `${token.symbol}: BUY SIGNAL — ${walletCheck.buySignals.join(", ")}`);
+        }
+      }
+
       if (tokenInfo?.error) {
         log("filter", `${token.symbol}: SKIP — getTokenInfo failed: ${tokenInfo.error}`);
         continue;
@@ -2385,6 +2562,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         }
       }
 
+      const conviction = getCoinConviction(token.mint, token, { narrativeVelocity, crossBatchVelocity });
       const preKellyAmount = parseFloat(((volatilityAdjustedSize || deployAmount) * (tierExec.size_multiplier || 1)).toFixed(4));
       const tokenEdgeScore = Math.max(5, Math.min(95,
         100 -
@@ -2417,7 +2595,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
               maxPositions: getHeatmapMaxPositions(config.positions?.maxOpen ?? 3),
               winRate: recentWinRate,
               liveTrades: recentTrades.length,
-              conviction: 0,
+              conviction: conviction.conviction_score / 100,
               mode3Approved: config.kelly?.mode3Approved ?? false,
               semanticMemoryEntries: 0,
             } : null,
@@ -2435,7 +2613,6 @@ export async function runScreeningCycle({ silent = false } = {}) {
             capped_at: null,
       };
       const sizedAmount = kelly.deploy_amount_sol || preKellyAmount;
-      const conviction = getCoinConviction(token.mint, token, { narrativeVelocity, crossBatchVelocity });
       const narrativeTags = Array.isArray(token.narrative_tags)
         ? token.narrative_tags
         : [];
@@ -3115,13 +3292,37 @@ function startTurboButtons() {
     if (config.executionEdge?.enabled) {
       try {
         const conns = config.executionEdge.rpcEndpoints.map(e => {
-          const conn = new Connection(e.url, "confirmed");
+          const isHelius = e.url.includes("helius");
           return {
             url: e.url,
             label: e.label,
+            primary: e.primary || false,
             call: async (method, ...args) => {
-              if (typeof conn[method] === "function") return conn[method](...args);
-              throw new Error(`connection does not support ${method}`);
+              // Gate Helius calls through circuit breaker to avoid 429 storms
+              if (isHelius && heliusCircuitOpen()) {
+                throw new Error("Helius circuit open");
+              }
+              const id = Math.random().toString(36).slice(2, 10);
+              const body = JSON.stringify({ jsonrpc: "2.0", id, method, params: args });
+              const res = await fetch(e.url, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body,
+                signal: AbortSignal.timeout(15_000),
+              });
+              if (res.status === 429) {
+                if (isHelius) helius429Hit();
+                throw new Error(`RPC 429 rate-limited (${e.label})`);
+              }
+              if (!res.ok) throw new Error(`RPC ${res.status}: ${e.label}`);
+              const data = await res.json();
+              if (data.error) throw new Error(data.error.message || `RPC error (${e.label})`);
+              // Map common return shapes to match solana/web3.js return values
+              if (method === "getRecentPrioritizationFees") return data.result;
+              if (method === "getLatestBlockhash") return { blockhash: data.result.value.blockhash, lastValidBlockHeight: data.result.value.lastValidBlockHeight };
+              if (method === "getAccountInfo") return data.result?.value ?? null;
+              if (method === "getBalance") return data.result?.value ?? 0;
+              return data.result;
             },
           };
         });
@@ -3190,11 +3391,123 @@ export function startCronJobs() {
     }
   }));
 
-  // Management (setiap N menit, mulai dari :00)
-  tasks.push(cron.schedule(`*/${config.schedule.managementIntervalMin} * * * *`, runManagementCycle));
+  // Helper: wrap async work with a hard timeout so no single cycle can block the scheduler
+  function withTimeout(promise, ms, label) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+    ]);
+  }
+
+  // Management — Full cycle (N menit): deterministic exits + LLM review
+  tasks.push(cron.schedule(`*/${config.schedule.managementIntervalMin} * * * *`, async () => {
+    try {
+      await withTimeout(runManagementCycle(), CYCLE_RPC_TIMEOUT_MS, "mgmt");
+      agentBus.emit("management:full_cycle_complete", { timestamp: Date.now() });
+    } catch (e) { log("mgmt_cron_error", e.message); }
+  }));
+
+  // Management Heartbeat — every 30s: ultra-fast position monitoring
+  // Only checks rug monitor flags + emergency price drops. No LLM, no API calls.
+  // Keeps Management Agent always watching positions between full cycles.
+  tasks.push(cron.schedule("*/30 * * * * *", async () => {
+    try {
+      const balance = await getPortfolioSnapshot();
+      const tokens = (balance.tokens || []).filter(t => t.usd >= 0.1 && t.symbol !== "SOL");
+      if (tokens.length === 0) return;
+
+      let heartbeatActions = 0;
+      for (const token of tokens) {
+        const tracked = getTrackedPosition(token.position_key || token.mint, token.wallet_address || null);
+        if (!tracked) continue;
+
+        // Check rug monitor force-exit flag (HIGH severity signal)
+        if (tracked.rug_force_exit) {
+          agentBus.emit("management:emergency_exit", {
+            mint: token.mint,
+            symbol: token.symbol,
+            reason: tracked.rug_force_exit_reason || "rug_force_exit",
+            type: "rug_emergency",
+            timestamp: Date.now(),
+          });
+          heartbeatActions++;
+        }
+
+        // Check emergency price drop (>30% from entry in <10 min)
+        const ageMin = (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000;
+        if (ageMin < 10 && tracked.initial_value_usd > 0) {
+          const pnlPct = ((token.usd - tracked.initial_value_usd) / tracked.initial_value_usd) * 100;
+          if (pnlPct <= -30) {
+            agentBus.emit("management:emergency_exit", {
+              mint: token.mint,
+              symbol: token.symbol,
+              pnl_pct: pnlPct,
+              reason: `emergency_price_crash: ${pnlPct.toFixed(1)}% in ${ageMin.toFixed(0)}min`,
+              type: "price_crash",
+              timestamp: Date.now(),
+            });
+            heartbeatActions++;
+          }
+        }
+      }
+
+      if (heartbeatActions > 0) {
+        log("mgmt_heartbeat", `${heartbeatActions} emergency signals detected`);
+      }
+      agentBus.emit("management:heartbeat", {
+        positions: tokens.length,
+        emergencySignals: heartbeatActions,
+        timestamp: Date.now(),
+      });
+    } catch (e) { /* silent — heartbeat must never crash */ }
+  }));
 
   // Screening (offset +1 menit dari management agar tidak tabrakan — :01,:31 bukan :00,:30)
-  tasks.push(cron.schedule(screeningCronPattern(config.schedule.screeningIntervalMin), runScreeningCycle));
+  tasks.push(cron.schedule(screeningCronPattern(config.schedule.screeningIntervalMin), async () => {
+    try {
+      await withTimeout(runScreeningCycle(), CYCLE_RPC_TIMEOUT_MS, "screening");
+    } catch (e) { log("screening_cron_error", e.message); }
+  }));
+
+  // Orchestrator — Full automation cycle (every 2 min, offset +1 from mgmt)
+  // Coordinates: market check → strategy selection → pipeline adaptation
+  tasks.push(cron.schedule("1,16,31,46 * * * *", async () => {
+    try {
+      await runOrchestratorCycle({
+        getStrategyFn: (id, opts) => getStrategy(id, opts),
+        getMarketIntelFn: () => getMarketIntelligence(),
+      });
+    } catch (e) { log("orchestrator_cron_error", e.message); }
+  }));
+
+  // Automation Qualification Check — every 30 min
+  // Checks if bot has enough experience to enable full automation.
+  // When qualified: sends proposal to Telegram for user approval.
+  tasks.push(cron.schedule("7,37 * * * *", async () => {
+    try {
+      const result = runAutomationQualification({
+        telegramSendFn: telegramEnabled() ? sendHTML : null,
+      });
+      if (result.qualified) {
+        log("automation", `QUALIFIED (${result.progressPct}%) — proposal sent to Telegram`);
+      }
+    } catch (e) { log("automation_cron_error", e.message); }
+  }));
+
+  // Hunters Agent — runs every 4 min.
+  // Gate-LAYER: check kill-switch + rug-breaker BEFORE hunting.
+  // Market DEAD/EXTREME is handled inside the Hunters agent (HUNTER_SCHEDULE).
+  tasks.push(cron.schedule("3,7,11,15,19,23,27,31,35,39,43,47,51,55,59 * * * *", async () => {
+    try {
+      const gate = await checkAllGates("hunters");
+      if (gate.blocked) {
+        agentBus.emit("hunters:gate_blocked", { reason: gate.reason, timestamp: Date.now() });
+        return;
+      }
+      const strategy = getStrategy(null, { regime: getMarketIntelligence().condition });
+      await runHuntersExpedition({ strategy });
+    } catch (e) { log("hunters_cron_error", e.message); }
+  }));
 
   // Continuous Learning (setiap 30 menit, offset +2 agar tidak tabrakan)
   tasks.push(cron.schedule("2,32 * * * *", runContinuousLearningCycle));
@@ -3572,6 +3885,73 @@ export async function handleIncomingTelegramMessage(msg) {
       `Daily Guard · ${htmlEscape(dailyGuard)}`,
     ].join("\n");
     await sendHTML(message);
+    return;
+  }
+
+  // ── Automation Commands ──────────────────────────
+  if (text === "/approve_automation") {
+    const state = getAutomationState();
+    if (!state.qualified) {
+      await sendHTML("Automation not qualified yet. Requirements not met.");
+      return;
+    }
+    const result = approveAutomation();
+    await sendHTML(
+      result.ok
+        ? "<b>AUTOMATION ACTIVATED</b>\nFull auto strategy selection + BUY/SELL now enabled.\nRevoke: /revoke_automation"
+        : `Cannot activate: ${result.reason}`
+    );
+    return;
+  }
+
+  if (text === "/reject_automation") {
+    rejectAutomation("User rejected via Telegram");
+    await sendHTML("Automation proposal rejected. Will re-check qualifications later.");
+    return;
+  }
+
+  if (text === "/revoke_automation") {
+    revokeAutomation("User revoked via Telegram");
+    await sendHTML("<b>Automation REVOKED</b>\nBack to manual mode — agent follows user rules only.");
+    return;
+  }
+
+  if (text === "/automation_status") {
+    const state = getAutomationState();
+    const qual = checkAutomationQualification();
+    await sendHTML(
+      `<b>Automation Status</b>\n` +
+      `Qualified: ${state.qualified ? "YES" : "NO"} (${qual.progressPct}%)\n` +
+      `Proposal: ${state.proposalSent ? "Sent" : "Not sent"}\n` +
+      `Approved: ${state.proposalApproved ? "YES" : "NO"}\n` +
+      `Active: ${state.automationActive ? "🟢 ON" : "🔴 OFF"}\n` +
+      `Requirements: ${qual.passed.length}/${qual.passed.length + qual.failed.length} passed\n` +
+      (qual.failed.length > 0 ? `\nMissing:\n${qual.failed.map(f => `- ${f}`).join("\n")}` : "")
+    );
+    return;
+  }
+
+  if (text === "/wallets" || text === "/wallet_tiers") {
+    const stats = getWalletTierStats();
+    const lines = [
+      `<b>Wallet Tiers</b> (${stats.totalWallets} tracked)`,
+      ...Object.entries(stats.tiers)
+        .filter(([, t]) => t.count > 0)
+        .map(([tier, t]) =>
+          `  ${TIER_CONFIG?.[tier]?.icon || ""} ${t.label}: ${t.count} wallets | signal: ${t.signalOnBuy}`
+        ),
+    ];
+    await sendHTML(lines.join("\n"));
+    return;
+  }
+
+  if (text === "/qualification") {
+    const qual = checkAutomationQualification();
+    await sendHTML(
+      `<b>Automation Qualification</b> (${qual.progressPct}%)\n\n` +
+      `<b>PASSED (${qual.passed.length}):</b>\n${qual.passed.map(p => `  ${p}`).join("\n")}\n\n` +
+      `<b>FAILED (${qual.failed.length}):</b>\n${qual.failed.map(f => `  ${f}`).join("\n")}`
+    );
     return;
   }
 

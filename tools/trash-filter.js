@@ -1006,12 +1006,6 @@ export function preScreenBatch(tokens, opts = {}) {
     if (!p._trash_score) p._trash_score = 0;
   }
 
-  // Log in the old format
-  if (result.stats.blocked > 0) {
-    const samples = result.blocked.slice(0, 10).map(b => `${b.symbol || b.mint?.slice(0, 6)}(${b._trash_reasons?.[0] || "?"})`).join(", ");
-    log("trash_filter", `Blocked ${result.stats.blocked}/${result.stats.total}: ${samples}`);
-  }
-
   return {
     passed,
     blocked: result.blocked.map(b => ({ mint: b.mint, symbol: b.symbol, reason: b._trash_reasons?.[0] || "blocked" })),

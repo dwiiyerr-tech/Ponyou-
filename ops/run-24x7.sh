@@ -60,13 +60,31 @@ run_readiness() {
   ) >>"${SUPERVISOR_LOG}" 2>&1
 }
 
+AGENT_PID_FILE="${ROOT_DIR}/logs/supervisor/agent-${MODE}.pid"
+
 start_agent() {
   log "Starting Ponyou in ${MODE} mode"
+
+  # ─── Kill stale agent from OUR previous session (PID-file scoped) ────
+  # Uses a dedicated PID file so we never kill agents belonging to another
+  # supervisor instance (avoids cross-supervisor kill loops).
+  if [ -f "${AGENT_PID_FILE}" ]; then
+    local old_pid
+    old_pid=$(cat "${AGENT_PID_FILE}" 2>/dev/null || true)
+    if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
+      log "Killing stale agent from previous session pid=${old_pid}"
+      kill -TERM "${old_pid}" 2>/dev/null || true
+      sleep 1
+    fi
+    rm -f "${AGENT_PID_FILE}"
+  fi
+
   (
     cd "${ROOT_DIR}"
     exec "${START_CMD[@]}"
   ) >>"${AGENT_LOG}" 2>&1 &
   AGENT_PID=$!
+  printf '%s' "${AGENT_PID}" > "${AGENT_PID_FILE}"
   write_supervisor_state 1 "${AGENT_PID}" "spawn"
 }
 
@@ -77,6 +95,7 @@ stop_agent() {
     wait "${AGENT_PID}" 2>/dev/null || true
   fi
   AGENT_PID=""
+  rm -f "${AGENT_PID_FILE}"
   write_supervisor_state 0 "" "stop"
 }
 
