@@ -19,7 +19,7 @@
  */
 
 import { log } from "../logger.js";
-import { rugCheckBatchScreen } from "./rugcheck.js";
+import { rugCheckBatchScreen, getRugCheckReport } from "./rugcheck.js";
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -80,6 +80,7 @@ const SCORING = {
   priceAction: { max: 20, weight: 1.0, label: "price action" },
   nameHygiene: { max: 10, weight: 1.0, label: "name hygiene" },
   feeIntegrity: { max: 15, weight: 1.0, label: "fee integrity (wash detection)" },
+  distribution: { max: 15, weight: 1.0, label: "distribution / boost-ad risk" },
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -398,6 +399,86 @@ function scoreVolume(token) {
   return { score: Math.min(15, score), reasons };
 }
 
+// ─── Dimension 7: Distribution / Boost-Ad Risk (0-15 pts) ───────
+//
+// Key insight from on-chain pattern analysis:
+//   Boost/Ads BEFORE pump + organic community = dev committed long-term
+//   Boost/Ads AFTER pump (>300%) + whale concentration = DISTRIBUTION TRAP
+//
+// When a token pumps hard and THEN suddenly appears in paid promotions,
+// it's devs/whales using visibility to attract exit liquidity. They dump
+// once enough new buyers enter at the top.
+
+function scoreDistribution(token) {
+  let score = 0;
+  const reasons = [];
+  const priceChange1h = Number(token.price_change_1h || 0);
+  const priceChange5m = Number(token.price_change_5m || 0);
+  const swaps = Number(token.swaps || 0);
+  const mcap = Number(token.mcap || 0);
+  const ageSec = computeAgeSeconds(token.created_at);
+
+  // ─── Pattern 1: Pump + bounce pattern (classic distribution) ─
+  // Token pumped 300%+ then dropped 20%+ = whales distributing
+  if (priceChange1h > 300 && priceChange5m < -20) {
+    score += 12;
+    reasons.push(`+${priceChange1h.toFixed(0)}% 1h then ${priceChange5m.toFixed(0)}% 5m — pump & dump distribution`);
+  } else if (priceChange1h > 200 && priceChange5m < -10) {
+    score += 8;
+    reasons.push(`+${priceChange1h.toFixed(0)}% 1h then dropping — likely distribution phase`);
+  } else if (priceChange1h > 500) {
+    // Extreme pump — regardless of current direction, late entry risk
+    score += 6;
+    reasons.push(`+${priceChange1h.toFixed(0)}% 1h — extreme pump, likely late`);
+  }
+
+  // ─── Pattern 2: Boost/Ads visibility spike ────────────────
+  // DexScreener "boosts" field indicates paid promotion
+  if (token.boosts && token.boosts > 0) {
+    if (priceChange1h > 100) {
+      // Boost + pump = distribution signal
+      score += 10;
+      reasons.push(`${token.boosts}x Boost AFTER +${priceChange1h.toFixed(0)}% pump — distribution signal`);
+    } else if (ageSec !== null && ageSec < 600 && priceChange1h < 50) {
+      // Boost + new token + no pump = dev committed (bullish)
+      score -= 3; // reward early organic promotion
+      reasons.push("Boost di awal launch — sinyal komitmen developer");
+    }
+  }
+
+  // ─── Pattern 3: High holder growth + falling price ─────────
+  const txns = token.txns || {};
+  const h1Buys = Number(txns.h1?.buys || 0);
+  const h1Sells = Number(txns.h1?.sells || 0);
+
+  if (h1Buys > 50 && priceChange1h < -30) {
+    // Many buyers but price falling = whales selling into buy pressure
+    score += 10;
+    reasons.push(`${h1Buys} buys but price ${priceChange1h.toFixed(0)}% — whales distributing into buyers`);
+  }
+
+  if (h1Sells > h1Buys * 3 && h1Buys > 10) {
+    // 3x more sells than buys = clear distribution
+    score += 8;
+    reasons.push(`${h1Sells} sells vs ${h1Buys} buys — heavy distribution`);
+  }
+
+  // ─── Pattern 4: MCAP / swap ratio → distribution check ─────
+  // Large MCAP with few swaps = low organic interest after pump
+  if (mcap > 500000 && swaps < 50 && priceChange1h > 200) {
+    score += 8;
+    reasons.push(`$${(mcap/1000).toFixed(0)}k MCAP, ${swaps} swaps — low organic, pump may be engineered`);
+  }
+
+  // ─── Pattern 5: Fresh copycat after pump ────────────────────
+  if (priceChange1h > 200 && ageSec !== null && ageSec < 1800 && swaps < 100) {
+    score += 5;
+    reasons.push("Fresh token, extreme pump, low swaps — classic rug setup");
+  }
+
+  return { score: Math.min(15, score), reasons };
+}
+
 // ─── Hard-block gates (pre-scoring, instant rejection) ────────────
 
 function checkHardBlocks(token, rugMemory) {
@@ -486,6 +567,7 @@ export function scoreTrash(token, ctx = {}) {
     priceAction: scorePriceAction(token),
     nameHygiene: scoreNameHygiene(token, recentRugs),
     feeIntegrity: scoreVolume(token),
+    distribution: scoreDistribution(token),
   };
 
   // Raw score = sum of dimension scores (each already clamped to its max)
@@ -609,9 +691,77 @@ export function scoreBatch(tokens, ctx = {}) {
 
 // ─── Layer 0: RugCheck.xyz integration (outermost shield) ──────
 
-const RUGC_HARD_BLOCK_SCORE = 60;    // rugcheck score >= 60 → instant block
-const RUGC_CRITICAL_BLOCK = 1;       // >= 1 critical risk → instant block
-const RUGC_DIMENSION_MAX = 25;       // max points rugcheck can contribute
+const RUGC_HARD_BLOCK_SCORE = 60;
+const RUGC_CRITICAL_BLOCK = 1;
+const RUGC_DIMENSION_MAX = 25;
+
+// ─── Token-2022 Extension Check ────────────────────────────────
+// Token-2022 adds program-level features that can be abused:
+//   Freeze Authority    → deployer can freeze your holdings → BLOCK
+//   Mint Authority      → deployer can mint unlimited supply → WARN
+//   Transfer Hook       → contract can block transfers → BLOCK
+//   Permanent Delegate  → can confiscate tokens → BLOCK
+//   Transfer Fee >10%   → extraction tax → BLOCK
+// RugCheck.xyz detects these for free in the full report.
+
+function checkTokenExtensions(rugReport) {
+  if (!rugReport?.indexed) return { block: false, score: 0, reasons: [] };
+
+  const reasons = [];
+  let score = 0;
+  let block = false;
+
+  // Freeze Authority — instant block
+  if (rugReport.freeze_authority) {
+    block = true;
+    reasons.push(`Freeze Authority AKTIF — token bisa dibekukan kapan saja`);
+  }
+
+  // Mint Authority — heavy penalty (dilution risk)
+  if (rugReport.mint_authority) {
+    score += 15;
+    reasons.push(`Mint Authority AKTIF — supply bisa ditambah tanpa batas (dilution)`);
+  }
+
+  // Permanent Delegate — instant block
+  for (const risk of (rugReport.risks || [])) {
+    const name = (risk.name || "").toLowerCase();
+    const desc = (risk.description || "").toLowerCase();
+
+    if (name.includes("permanent_delegate") || desc.includes("permanent delegate")) {
+      block = true;
+      reasons.push("Permanent Delegate — bisa sita token dari wallet manapun");
+    }
+    if (name.includes("transfer_hook") || desc.includes("transfer hook")) {
+      block = true;
+      reasons.push("Transfer Hook — kontrak bisa blokir transfer (honeypot)");
+    }
+    if (name.includes("non_transferable") || desc.includes("non-transferable") || desc.includes("soulbound")) {
+      block = true;
+      reasons.push("Token non-transferable — tidak bisa dijual");
+    }
+    if ((name.includes("transfer_fee") || desc.includes("transfer fee")) && (risk.level === "critical" || risk.level === "danger")) {
+      block = true;
+      reasons.push(`Transfer Fee tinggi: ${desc.slice(0, 80)}`);
+    }
+    if (name.includes("default_frozen") || desc.includes("default frozen")) {
+      score += 10;
+      reasons.push("Default frozen — perlu unfreeze manual untuk transfer");
+    }
+    if ((name.includes("transfer_fee") || desc.includes("transfer fee")) && risk.level === "warn") {
+      score += 8;
+      reasons.push(`Transfer Fee moderat: ${desc.slice(0, 60)}`);
+    }
+  }
+
+  // Unverified metadata
+  if (rugReport.verified === false) {
+    score += 3;
+    reasons.push("Metadata tidak terverifikasi oleh RugCheck");
+  }
+
+  return { block, score: Math.min(25, score), reasons };
+}
 
 /**
  * Score a single token's rugcheck result → trash-filter points.
@@ -656,9 +806,10 @@ function scoreRugCheck(rugResult) {
  * Flow:
  *   1. Batch RugCheck summary on all token mints (parallel, capped)
  *   2. Hard-block tokens with critical RugCheck risks or score >= 60
- *   3. Run standard 6-dimension trash scoring on survivors
- *   4. Add RugCheck dimension to overall score
- *   5. Return tiered partition
+ *   3. Token-2022 extension check (freeze/mint authority, transfer hook, etc)
+ *   4. Run standard 6-dimension trash scoring on survivors
+ *   5. Add RugCheck + extension dimensions to overall score
+ *   6. Return tiered partition
  *
  * @param {Array} tokens — raw DexScreener tokens
  * @param {Object} ctx   — { marketCondition, rugMemory, recentRugs }
@@ -669,7 +820,7 @@ export async function outerShieldScreen(tokens, ctx = {}) {
   // Step 1: RugCheck batch (outermost layer)
   const rugResults = await rugCheckBatchScreen(tokens);
 
-  // Step 2: First pass — hard-block via RugCheck
+  // Step 2: First pass — hard-block via RugCheck summary
   const survivors = [];
   const rugBlocked = [];
   for (const token of tokens) {
@@ -691,7 +842,6 @@ export async function outerShieldScreen(tokens, ctx = {}) {
         _trash_reasons: [rug.critical > 0 ? `${rug.critical} critical RugCheck risks` : `RugCheck score ${rug.score}`],
       });
     } else {
-      // Attach rugcheck metadata for scoring
       survivors.push({ ...token, _rugcheck: rug });
     }
   }
@@ -699,6 +849,50 @@ export async function outerShieldScreen(tokens, ctx = {}) {
   if (rugBlocked.length > 0) {
     const samples = rugBlocked.slice(0, 5).map(b => `${b.symbol}(${b.reason})`).join(", ");
     log("trash_filter", `RugCheck BLOCKED ${rugBlocked.length}: ${samples}`);
+  }
+
+  // Step 3: Token-2022 Extension Check on survivors via RugCheck reports
+  // Fetch full reports in parallel for indexed tokens to check freeze/mint authority
+  const extBlocked = [];
+  const extensionReports = new Map();
+  if (survivors.length > 0) {
+    const indexedTokens = survivors.filter(t => t._rugcheck?.indexed);
+    if (indexedTokens.length > 0) {
+      const reports = await Promise.all(
+        indexedTokens.map(async (t) => {
+          const report = await getRugCheckReport(t.mint);
+          return { mint: t.mint, symbol: t.symbol, report };
+        })
+      );
+      for (const { mint, symbol, report } of reports) {
+        extensionReports.set(mint, report);
+        const ext = checkTokenExtensions(report);
+        if (ext.block) {
+          extBlocked.push({
+            mint, symbol,
+            reason: `token_ext: ${ext.reasons[0]}`,
+            _trash_score: 100,
+            _trash_tier: "BLOCK",
+            _trash_reasons: ext.reasons,
+          });
+        }
+        // Attach extension score to the token's rugcheck metadata
+        const survivor = survivors.find(s => s.mint === mint);
+        if (survivor && !ext.block) {
+          survivor._rugext = ext;
+        }
+      }
+    }
+
+    // Remove extension-blocked tokens from survivors
+    if (extBlocked.length > 0) {
+      const blockedMints = new Set(extBlocked.map(b => b.mint));
+      for (let i = survivors.length - 1; i >= 0; i--) {
+        if (blockedMints.has(survivors[i].mint)) survivors.splice(i, 1);
+      }
+      const samples = extBlocked.slice(0, 5).map(b => `${b.symbol}(${b.reason})`).join(", ");
+      log("trash_filter", `Token-2022 Ext BLOCKED ${extBlocked.length}: ${samples}`);
+    }
   }
 
   // Step 3: Standard trash scoring on survivors
