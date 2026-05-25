@@ -38,31 +38,35 @@ export function createFeeOracle({ rpcQuorum, config, heliusRpcUrl, log = () => {
         getHeliusPriorityFee(heliusRpcUrl),
       ]);
       const fees = (result || []).map(f => f.prioritizationFee).filter(n => Number.isFinite(n)).sort((a, b) => a - b);
-      cache = { samples: fees, heliusFee: heliusFee ?? null, sampled_at: Date.now() };
+      if (fees.length > 0 || heliusFee != null) {
+        cache = { samples: fees, heliusFee: heliusFee ?? null, sampled_at: Date.now() };
+      }
     } catch (e) {
-      log("fee_oracle", `sample failed: ${e.message}`);
+      log("fee_oracle", `sample failed: ${e.message} — using ${cache ? "stale cache" : "defaults"}`);
     }
   }
 
+  const FALLBACK_PRIORITY_FEE = 50_000; // 0.00005 SOL — sane default when oracle is cold
+
   function _getSamples() {
-    if (!cache) return [];
-    return cache.samples;
+    if (!cache) return [FALLBACK_PRIORITY_FEE];
+    return cache.samples.length > 0 ? cache.samples : [FALLBACK_PRIORITY_FEE];
   }
 
   function getPriorityFeeMicroLamports(p = 75) {
     if (cache?.heliusFee != null) return Math.min(cache.heliusFee, cfg.maxPriorityFeeMicroLamports);
     const s = _getSamples();
     const v = percentile(s, p);
-    return Math.min(v, cfg.maxPriorityFeeMicroLamports);
+    return Math.min(v || FALLBACK_PRIORITY_FEE, cfg.maxPriorityFeeMicroLamports);
   }
 
   function getTip(urgency = "normal") {
-    const base = cfg.baseTipLamports;
+    const base = cfg.baseTipLamports || 100_000;
     const mult = { normal: 1, urgent: 2, critical: 4 }[urgency] || 1;
-    const p75 = getPriorityFeeMicroLamports(75);
+    const p75 = getPriorityFeeMicroLamports(75) || FALLBACK_PRIORITY_FEE;
     const congestion = Math.max(1, Math.min(50, p75 / 50_000));
     const tip = Math.floor(base * mult * congestion);
-    return Math.min(tip, cfg.maxTipLamports);
+    return Math.min(tip, cfg.maxTipLamports || 5_000_000);
   }
 
   function getMempoolSnapshot() {

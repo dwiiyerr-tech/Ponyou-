@@ -80,7 +80,36 @@ export function createDashboardServer({ port = 3000 } = {}) {
     app,
     server,
     wss,
-    start: () => new Promise(r => server.listen(port, "127.0.0.1", r)),
+    start: () => new Promise((resolve, reject) => {
+      const onError = async (err) => {
+        if (err.code === "EADDRINUSE") {
+          // Try to free the port by killing the old owner (best-effort)
+          try {
+            const { execSync } = await import("child_process");
+            const out = execSync(`fuser ${port}/tcp 2>/dev/null || lsof -ti:${port} 2>/dev/null`, { timeout: 3000 }).toString().trim();
+            const pid = out.split("\n")[0]?.trim();
+            if (pid && pid !== String(process.pid)) {
+              console.warn(`[dashboard] Port ${port} held by pid ${pid} — killing stale process`);
+              execSync(`kill -TERM ${pid} 2>/dev/null`, { timeout: 2000 });
+            }
+          } catch (_) { /* best-effort cleanup */ }
+          // Retry once after a short delay
+          setTimeout(() => {
+            server.listen(port, "127.0.0.1", () => resolve()).once("error", (e2) => {
+              if (e2.code === "EADDRINUSE") {
+                console.warn(`[dashboard] Port ${port} still in use — dashboard disabled`);
+                resolve();
+              } else {
+                reject(e2);
+              }
+            });
+          }, 500);
+        } else {
+          reject(err);
+        }
+      };
+      server.listen(port, "127.0.0.1", () => resolve()).once("error", onError);
+    }),
     shutdown: () => {
       clearInterval(broadcastTimer);
       for (const client of wss.clients) {
