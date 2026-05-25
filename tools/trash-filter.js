@@ -13,10 +13,13 @@
  *   6. Volume / trade pattern  — 10 pts  (wash detection, dust, avg trade size)
  *
  * Market-condition multiplier adjusts thresholds per-regime.
- * Zero Helius cost — runs on raw DexScreener data only.
+ *
+ * Layer 0 (outermost): RugCheck.xyz API — external risk verification
+ * Layer 1-6: DexScreener-based scoring dimensions
  */
 
 import { log } from "../logger.js";
+import { rugCheckBatchScreen } from "./rugcheck.js";
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -544,6 +547,155 @@ export function scoreBatch(tokens, ctx = {}) {
       ...stats,
       topFlags: Object.entries(flagCounts).sort((a, b) => b[1] - a[1]).slice(0, 10),
       topReasons: Object.entries(reasonCounts).sort((a, b) => b[1] - a[1]).slice(0, 10),
+    },
+  };
+}
+
+// ─── Layer 0: RugCheck.xyz integration (outermost shield) ──────
+
+const RUGC_HARD_BLOCK_SCORE = 60;    // rugcheck score >= 60 → instant block
+const RUGC_CRITICAL_BLOCK = 1;       // >= 1 critical risk → instant block
+const RUGC_DIMENSION_MAX = 25;       // max points rugcheck can contribute
+
+/**
+ * Score a single token's rugcheck result → trash-filter points.
+ * Called by the combined pre-screener.
+ */
+function scoreRugCheck(rugResult) {
+  if (!rugResult?.indexed) return { score: 0, reasons: [] };
+
+  let score = 0;
+  const reasons = [];
+
+  if (rugResult.critical > 0) {
+    score += 25;
+    reasons.push(`RugCheck: ${rugResult.critical} critical risk(s)`);
+  } else if (rugResult.score >= 60) {
+    score += 20;
+    reasons.push(`RugCheck score ${rugResult.score}/100 — high risk`);
+  } else if (rugResult.score >= 40) {
+    score += 12;
+    reasons.push(`RugCheck score ${rugResult.score}/100 — moderate risk`);
+  } else if (rugResult.score >= 20) {
+    score += 6;
+    reasons.push(`RugCheck score ${rugResult.score}/100 — caution`);
+  } else if (rugResult.score > 0) {
+    score += 2;
+    reasons.push(`RugCheck score ${rugResult.score}/100 — low risk`);
+  }
+
+  if (rugResult.risks >= 5) {
+    score += 8;
+    reasons.push(`RugCheck: ${rugResult.risks} total risk factors`);
+  }
+
+  return { score: Math.min(RUGC_DIMENSION_MAX, score), reasons };
+}
+
+// ─── Combined pre-screener (RugCheck + Trash scoring) ───────────
+
+/**
+ * Outer shield: RugCheck summary → instant block → fall through to trash scoring.
+ *
+ * Flow:
+ *   1. Batch RugCheck summary on all token mints (parallel, capped)
+ *   2. Hard-block tokens with critical RugCheck risks or score >= 60
+ *   3. Run standard 6-dimension trash scoring on survivors
+ *   4. Add RugCheck dimension to overall score
+ *   5. Return tiered partition
+ *
+ * @param {Array} tokens — raw DexScreener tokens
+ * @param {Object} ctx   — { marketCondition, rugMemory, recentRugs }
+ */
+export async function outerShieldScreen(tokens, ctx = {}) {
+  const { marketCondition = "NORMAL", rugMemory, recentRugs } = ctx;
+
+  // Step 1: RugCheck batch (outermost layer)
+  const rugResults = await rugCheckBatchScreen(tokens);
+
+  // Step 2: First pass — hard-block via RugCheck
+  const survivors = [];
+  const rugBlocked = [];
+  for (const token of tokens) {
+    const rug = rugResults.get(token.mint);
+    if (!rug) {
+      survivors.push(token);
+      continue;
+    }
+
+    if (rug.critical >= RUGC_CRITICAL_BLOCK || rug.score >= RUGC_HARD_BLOCK_SCORE) {
+      rugBlocked.push({
+        mint: token.mint,
+        symbol: token.symbol,
+        reason: rug.critical > 0
+          ? `rugcheck_critical: ${rug.critical} critical risks, score ${rug.score}`
+          : `rugcheck_score: ${rug.score}/100`,
+        _trash_score: 100,
+        _trash_tier: "BLOCK",
+        _trash_reasons: [rug.critical > 0 ? `${rug.critical} critical RugCheck risks` : `RugCheck score ${rug.score}`],
+      });
+    } else {
+      // Attach rugcheck metadata for scoring
+      survivors.push({ ...token, _rugcheck: rug });
+    }
+  }
+
+  if (rugBlocked.length > 0) {
+    const samples = rugBlocked.slice(0, 5).map(b => `${b.symbol}(${b.reason})`).join(", ");
+    log("trash_filter", `RugCheck BLOCKED ${rugBlocked.length}: ${samples}`);
+  }
+
+  // Step 3: Standard trash scoring on survivors
+  const tiers = { ALLOW: [], FLAG: [], WARN: [], BLOCK: [] };
+  const stats = { total: tokens.length, passed: 0, flagged: 0, warned: 0, blocked: rugBlocked.length, rugBlocked: rugBlocked.length };
+
+  for (const token of survivors) {
+    const result = scoreTrash(token, { marketCondition, rugMemory, recentRugs });
+
+    // Step 4: Add RugCheck dimension if available
+    let finalScore = result.score;
+    if (token._rugcheck?.indexed) {
+      const rugDim = scoreRugCheck(token._rugcheck);
+      finalScore = clamp(Math.round(finalScore + rugDim.score), 0, 100);
+      result.breakdown.rugcheck = { score: rugDim.score, max: RUGC_DIMENSION_MAX, reasons: rugDim.reasons };
+      result.reasons.unshift(...rugDim.reasons);
+      result._rugcheck_score = token._rugcheck.score;
+    }
+
+    // Recompute tier with rugcheck boost
+    const tier = tierFor(finalScore);
+    result.score = finalScore;
+    result.tier = tier.label;
+    result.tierAction = tier.action;
+    result.block = tier.action === "block";
+
+    if (result.block) {
+      stats.blocked++;
+      tiers.BLOCK.push({ ...token, _trash_score: finalScore, _trash_tier: tier.label, _trash_reasons: result.reasons });
+    } else {
+      const enriched = { ...token, _trash_score: finalScore, _trash_flags: result.flags, _trash_tier: tier.label, _trash_reasons: result.reasons };
+      if (tier.label === "WARN")  { stats.warned++;  tiers.WARN.push(enriched); }
+      else if (tier.label === "FLAG") { stats.flagged++; tiers.FLAG.push(enriched); }
+      else { stats.passed++; tiers.ALLOW.push(enriched); }
+    }
+  }
+
+  // Log summary
+  if (stats.blocked > 0) {
+    const blockedSamples = tiers.BLOCK.slice(0, 3).map(t => `${t.symbol || t.mint?.slice(0, 6)}(${t._trash_reasons?.[0] || "?"})`).join(", ");
+    log("trash_filter", `FINAL: ${stats.blocked}/${stats.total} BLOCKED (${stats.rugBlocked} via RugCheck)${blockedSamples ? ` — ${blockedSamples}` : ""}`);
+  }
+  if (stats.warned > 0) log("trash_filter", `WARNED ${stats.warned} tokens — proceed with caution`);
+  if (stats.passed > 0 || stats.flagged > 0) log("trash_filter", `PASSED ${stats.passed + stats.flagged}/${stats.total} — ${stats.passed} clean, ${stats.flagged} flagged`);
+
+  return {
+    passed: tiers.ALLOW,
+    flagged: tiers.FLAG,
+    warned: tiers.WARN,
+    blocked: tiers.BLOCK,
+    stats: {
+      ...stats,
+      rugBlocked: rugBlocked.length,
     },
   };
 }
