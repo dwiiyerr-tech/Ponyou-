@@ -74,12 +74,12 @@ const MARKET_MULTIPLIERS = {
 // ─── Scoring dimension configs ─────────────────────────────────────
 
 const SCORING = {
-  liquidity:   { max: 25, weight: 1.0 },
-  supply:      { max: 20, weight: 1.0 },
-  age:         { max: 15, weight: 1.0 },
-  priceAction: { max: 20, weight: 1.0 },
-  nameHygiene: { max: 10, weight: 1.0 },
-  volume:      { max: 10, weight: 1.0 },
+  liquidity:   { max: 25, weight: 1.0, label: "LP quality" },
+  supply:      { max: 20, weight: 1.0, label: "supply integrity" },
+  age:         { max: 15, weight: 1.0, label: "age/velocity" },
+  priceAction: { max: 20, weight: 1.0, label: "price action" },
+  nameHygiene: { max: 10, weight: 1.0, label: "name hygiene" },
+  feeIntegrity: { max: 15, weight: 1.0, label: "fee integrity (wash detection)" },
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -308,38 +308,94 @@ function scoreNameHygiene(token, recentRugs) {
   return { score: Math.min(10, score), reasons };
 }
 
-// ─── Dimension 6: Volume / trade pattern (0-10 pts) ───────────────
+// ─── Dimension 6: Fee integrity / Volume pattern (0-15 pts) ──────
+//
+// Uses LP fee economics to detect fake volume. The 0.25% LP fee on
+// every DEX swap is a cryptographic receipt — you can't fake fees
+// paid to liquidity pools without actually spending SOL.
+//
+// Key insight: volume-to-fee ratio reveals wash trading:
+//   Organic:     avg trade $10-500, expected fees ≈ 0.25% of volume
+//   Wash trade:  avg trade < $1, swap/vol ratio > 0.05
+//   Bot pump:    few giant trades, swap/vol ratio < 0.001
 
 function scoreVolume(token) {
   let score = 0;
   const reasons = [];
   const swaps = Number(token.swaps || 0);
   const vol = Number(token.volume || 0);
+  const mcap = Number(token.mcap || 0);
 
   if (swaps > 0 && vol > 0) {
     const avgTrade = vol / swaps;
+    const swapVolRatio = swaps / Math.max(vol, 1);
 
-    // Wash trade detection
-    if (avgTrade > 500000)       { score += 8; reasons.push("avg trade >$500k — wash/manipulation"); }
-    else if (avgTrade > 100000)  { score += 5; reasons.push("avg trade >$100k — suspicious"); }
-    else if (avgTrade > 50000)   { score += 3; reasons.push("avg trade >$50k — elevated"); }
+    // ─── LP Fee Economics ──────────────────────────
+    // Expected LP fees = volume * 0.0025
+    // If avg trade < $4, LP fee < $0.01 per trade — economically irrational
+    const expectedFee = avgTrade * 0.0025;
+    const totalExpectedFees = vol * 0.0025;
 
-    // Dust trading
-    if (avgTrade < 0.01)         { score += 6; reasons.push("dust trades — no real volume"); }
-    else if (avgTrade < 0.5)     { score += 4; reasons.push("micro trades < $0.50"); }
-    else if (avgTrade < 2)       { score += 2; reasons.push("very small trades < $2"); }
+    if (expectedFee < 0.001) {
+      score += 12;
+      reasons.push(`avg fee $${expectedFee.toFixed(4)}/trade — dust, impossible to be organic`);
+    } else if (expectedFee < 0.01) {
+      score += 7;
+      reasons.push(`avg fee $${expectedFee.toFixed(3)}/trade — likely wash`);
+    } else if (expectedFee < 0.05) {
+      score += 3;
+      reasons.push(`avg fee $${expectedFee.toFixed(2)}/trade — low LP compensation`);
+    }
+
+    // ─── Wash trade: swap storm with tiny volume ────
+    if (swapVolRatio > 0.1) {
+      score += 10;
+      reasons.push(`${swaps} swaps / $${vol.toFixed(0)} vol — swap storm (${swapVolRatio.toFixed(3)}), wash`);
+    } else if (swapVolRatio > 0.05) {
+      score += 6;
+      reasons.push(`high swap/vol ratio ${swapVolRatio.toFixed(3)} — suspicious`);
+    } else if (swapVolRatio > 0.02) {
+      score += 2;
+      reasons.push(`elevated swap/vol ratio ${swapVolRatio.toFixed(3)}`);
+    }
+
+    // ─── Bot pump: few giant trades ────────────────
+    if (swapVolRatio < 0.0005 && swaps < 10 && vol > 50000) {
+      score += 10;
+      reasons.push(`${swaps} swaps for $${(vol/1000).toFixed(0)}k vol — bot pump signature`);
+    }
+
+    // ─── Avg trade size sanity ─────────────────────
+    if (avgTrade > 500000) {
+      score += 10; reasons.push(`avg trade $${(avgTrade/1000).toFixed(0)}k — whale manipulation`);
+    } else if (avgTrade > 100000) {
+      score += 6; reasons.push(`avg trade $${(avgTrade/1000).toFixed(0)}k — suspicious`);
+    } else if (avgTrade < 0.5) {
+      score += 6; reasons.push(`avg trade $${avgTrade.toFixed(2)} — dust`);
+    }
+
+    // ─── Total fee sanity check ────────────────────
+    // $100k volume should generate ~$250 in LP fees
+    // If total expected fees < $1 on high volume, it's wash
+    if (vol > 50000 && totalExpectedFees < 1) {
+      score += 8;
+      reasons.push(`$${(vol/1000).toFixed(0)}k vol but only $${totalExpectedFees.toFixed(2)} expected fees — wash`);
+    }
   }
 
   // Volume-to-mcap ratio
-  const mcap = Number(token.mcap || 0);
   if (vol > 0 && mcap > 0) {
     const volRatio = vol / mcap;
-    if (volRatio > 10)           { score += 6; reasons.push("volume ${volRatio.toFixed(0)}x MCAP — wash trading"); }
-    else if (volRatio > 5)       { score += 4; reasons.push("volume ${volRatio.toFixed(0)}x MCAP — suspicious"); }
-    else if (volRatio > 2)       { score += 2; reasons.push("volume ${volRatio.toFixed(0)}x MCAP — elevated"); }
+    if (volRatio > 10) {
+      score += 8; reasons.push(`volume ${volRatio.toFixed(0)}x MCAP — manufactured`);
+    } else if (volRatio > 5) {
+      score += 5; reasons.push(`volume ${volRatio.toFixed(0)}x MCAP — suspicious`);
+    } else if (volRatio > 2) {
+      score += 2; reasons.push(`volume ${volRatio.toFixed(0)}x MCAP — elevated`);
+    }
   }
 
-  return { score: Math.min(10, score), reasons };
+  return { score: Math.min(15, score), reasons };
 }
 
 // ─── Hard-block gates (pre-scoring, instant rejection) ────────────
@@ -429,7 +485,7 @@ export function scoreTrash(token, ctx = {}) {
     age:         scoreAge(token),
     priceAction: scorePriceAction(token),
     nameHygiene: scoreNameHygiene(token, recentRugs),
-    volume:      scoreVolume(token),
+    feeIntegrity: scoreVolume(token),
   };
 
   // Raw score = sum of dimension scores (each already clamped to its max)
