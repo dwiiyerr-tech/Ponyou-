@@ -7,7 +7,7 @@ export class StrategyEvolutionEngine {
   #degradationThreshold;
   #running = false;
 
-  constructor({ bus, registry, gate, proposal, degradationThreshold = 0.75 }) {
+  constructor({ bus, registry, gate, proposal, degradationThreshold = 0.75 } = {}) {
     this.#bus = bus;
     this.#registry = registry;
     this.#gate = gate;
@@ -50,7 +50,7 @@ export class StrategyEvolutionEngine {
     try {
       gateResult = await this.#gate.evaluate(id);
     } catch (e) {
-      try { this.#registry.reject(id, `gate threw: ${e?.message || e}`); } catch {}
+      try { this.#registry.reject(id, `gate threw: ${e?.message || e}`); } catch (re) { this.#bus.emit("evolution_error", { stage: "registry_reject", id, error: re?.message || String(re) }); }
       this.#bus.emit("evolution_error", { stage: "gate", id, error: e?.message || String(e) });
       return;
     }
@@ -78,7 +78,7 @@ export class StrategyEvolutionEngine {
         evidence: mergedEvidence,
       });
     } catch (e) {
-      try { this.#registry.reject(id, `proposal threw: ${e?.message || e}`); } catch {}
+      try { this.#registry.reject(id, `proposal threw: ${e?.message || e}`); } catch (re) { this.#bus.emit("evolution_error", { stage: "registry_reject", id, error: re?.message || String(re) }); }
       this.#bus.emit("evolution_error", { stage: "proposal", id, error: e?.message || String(e) });
       return;
     }
@@ -100,4 +100,36 @@ export class StrategyEvolutionEngine {
     }
     return false;
   }
+
+  /**
+   * Scan ALL active strategies for degradation. Called periodically
+   * (daily cron) so degraded strategies auto-deactivate without
+   * operator intervention.
+   */
+  async scanAllDegradations({ getTradeAttribution = null } = {}) {
+    const active = (this.#registry.getAll() || []).filter(s => s.status === "active");
+    const degraded = [];
+    for (const strategy of active) {
+      const liveWinRate = normalizeRate(strategy.scores?.live);
+      if (liveWinRate == null) continue;
+      const liveTrades = Number(strategy.evidence?.live?.trades ?? strategy.scores?.liveTrades ?? 0);
+      // Only evaluate strategies with enough live data — ignore small samples
+      if (liveTrades < 25) continue;
+      if (liveWinRate < this.#degradationThreshold) {
+        this.#registry.deactivate(strategy.id, `auto-degraded: live WR ${(liveWinRate*100).toFixed(0)}% < ${(this.#degradationThreshold*100).toFixed(0)}% (${liveTrades} trades)`);
+        this.#bus.emit("strategy_degraded", { id: strategy.id, liveWinRate, liveTrades });
+        degraded.push({ id: strategy.id, name: strategy.name, liveWinRate, liveTrades });
+      }
+    }
+    if (degraded.length > 0) {
+      this.#bus.emit("degradation_scan", { degraded, scanned: active.length });
+    }
+    return degraded;
+  }
+}
+
+function normalizeRate(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return n >= 1 ? n / 100 : n;
 }

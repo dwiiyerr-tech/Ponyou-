@@ -45,6 +45,9 @@
             <option>scalp</option>
             <option>conservative</option>
             <option>aggressive</option>
+            <option>sniper</option>
+            <option>recovery</option>
+            <option>day_phase_swing</option>
           </select>
           <button class="btn" onclick="setStrategy()">Set</button>
         </div>
@@ -67,6 +70,26 @@
         <div class="toggle-row">
           <span>Confirm mode</span>
           <label class="toggle"><input type="checkbox" id="toggle-confirm" onchange="sendCmd(this.checked?'/confirm on':'/confirm off')"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span>Trash Filter</span>
+          <label class="toggle"><input type="checkbox" id="toggle-trashFilter" onchange="toggleFeature('trashFilter',this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span>Dev Blacklist</span>
+          <label class="toggle"><input type="checkbox" id="toggle-devBlacklist" onchange="toggleFeature('devBlacklist',this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span>Staged Entry</span>
+          <label class="toggle"><input type="checkbox" id="toggle-stagedEntry" onchange="toggleFeature('stagedEntry',this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span>Day Phase Screener</span>
+          <label class="toggle"><input type="checkbox" id="toggle-dayPhaseScreener" onchange="toggleFeature('dayPhaseScreener',this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span>Strategy Evolution</span>
+          <label class="toggle"><input type="checkbox" id="toggle-strategyEvolution" onchange="toggleFeature('strategyEvolution',this.checked)"><span class="slider"></span></label>
         </div>
       </div>
 
@@ -112,6 +135,12 @@
         <button class="btn" onclick="sendCmd('/metrics')">Metrics</button>
         <button class="btn" onclick="sendCmd('/wallets')">Wallets</button>
       </div>
+      <div class="btn-row">
+        <button class="btn" onclick="sendCmd('/health')">Health</button>
+        <button class="btn" onclick="sendCmd('/feature')">Features</button>
+        <button class="btn" onclick="sendCmd('/devcheck')">Dev BL</button>
+        <button class="btn" onclick="sendCmd('/dayphase')">Day Phase</button>
+      </div>
     </div>
 
     <div class="cmd-section">
@@ -134,6 +163,9 @@
           <option>scalp</option>
           <option>conservative</option>
           <option>aggressive</option>
+          <option>sniper</option>
+          <option>recovery</option>
+          <option>day_phase_swing</option>
         </select>
         <button class="btn primary" onclick="setStrategy2()">Set</button>
       </div>
@@ -169,7 +201,7 @@
 
 <!-- TAB: SETTINGS -->
 <div class="tab-pane" id="tab-settings">
-  <div style="max-width:480px;margin:2rem auto;padding:0 1rem">
+  <div style="max-width:720px;margin:2rem auto;padding:0 1rem">
     <div class="panel">
       <h3>Setup Wizard</h3>
       <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Full 13-step configuration walkthrough</p>
@@ -179,6 +211,118 @@
       <h3>Quick Config</h3>
       <div id="quickConfig">Loading…</div>
       <button class="btn primary" onclick="saveQuickConfig()" style="margin-top:1rem">💾 Save</button>
+    </div>
+
+    <!-- Smart Money Wallets -->
+    <div class="panel" style="margin-top:1rem">
+      <h3>Smart Money Wallets</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Wallet yang profitable untuk di-copy trading. Bot akan pantau dan ikuti sinyal beli dari wallet ini.</p>
+      <div id="smartWalletsList" style="margin-bottom:.5rem;max-height:300px;overflow-y:auto">Loading…</div>
+      <div style="display:flex;gap:.5rem;margin-top:.75rem">
+        <input type="text" id="newSmartWallet" placeholder="Solana wallet address…" style="flex:1;font-family:monospace;font-size:12px">
+        <input type="text" id="newSmartWalletLabel" placeholder="Label (optional)" style="flex:0 0 130px;font-size:12px">
+        <button class="btn primary" onclick="addSmartWalletUI()">+ Add</button>
+      </div>
+    </div>
+
+    <!-- Priority Wallets (WR >= 70%) -->
+    <div class="panel" style="margin-top:1rem">
+      <h3>Priority Wallets (Win Rate >= 70%)</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Wallet auto-detected dengan win rate tinggi. Sinyal dari wallet ini diprioritaskan untuk copy-trade.</p>
+      <div id="priorityWalletsList" style="margin-bottom:.5rem;max-height:300px;overflow-y:auto">Loading…</div>
+      <div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem">
+        <span style="font-size:12px;color:var(--muted)">Min Win Rate:</span>
+        <input type="number" id="priorityMinWr" value="0.70" min="0" max="1" step="0.05" style="width:70px;font-size:12px" onchange="loadPriorityWallets()">
+        <button class="btn" onclick="loadPriorityWallets()">Refresh</button>
+      </div>
+    </div>
+
+    <!-- Per-Strategy Stop Loss / Take Profit -->
+    <div class="panel" style="margin-top:1rem">
+      <h3>Stop Loss & Take Profit — Per Strategy</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Atur SL, TP (ROI), Trailing Stop, dan Partial TP untuk setiap strategi. Override preset bawaan.</p>
+      <div id="strategySLTPPanel">Loading…</div>
+      <div style="display:flex;gap:.5rem;margin-top:.75rem">
+        <button class="btn primary" onclick="saveStrategyOverrides()">💾 Save All</button>
+        <button class="btn" onclick="resetStrategyOverrides()">Reset to Defaults</button>
+      </div>
+    </div>
+
+    <!-- Per-Strategy Position Limits -->
+    <div class="panel" style="margin-top:1rem">
+      <h3>Position Limits — Per Strategy (Manual / Kelly)</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Atur max open positions per strategi. Manual = set angka sendiri. Kelly = auto kalkulasi dari win rate historis.</p>
+      <div id="positionLimitsPanel">Loading…</div>
+      <button class="btn primary" onclick="savePositionLimits()" style="margin-top:.75rem">💾 Save Position Limits</button>
+    </div>
+
+    <!-- Wallet Signals (Smart Money + Rug Dev) -->
+    <div class="panel" style="margin-top:1rem">
+      <h3>Wallet Signals — Screening Injection</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Smart money wallet BUY → langsung masuk screening pipeline. Rug developer CREATE → auto-warn → block token.</p>
+      <div id="walletSignalsPanel">Loading…</div>
+      <button class="btn" onclick="loadWalletSignals()" style="margin-top:.5rem">Refresh Signals</button>
+    </div>
+
+    <!-- Copy Trade Settings -->
+    <div class="panel" style="margin-top:1rem">
+      <h3>Copy Trade Settings</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Konfigurasi sinyal copy-trade dari priority wallet. Pilih mode: sinyal saja, konfirmasi dulu, atau auto-copy.</p>
+      <div id="copyTradeForm">Loading…</div>
+      <button class="btn primary" onclick="saveCopyTradeConfig()" style="margin-top:.75rem">💾 Save Copy Trade Config</button>
+      <div id="copyTradeSignals" style="margin-top:1rem"></div>
+    </div>
+
+    <!-- Rug Developer Wallets -->
+    <div class="panel" style="margin-top:1rem">
+      <h3>Rug Developer Wallets</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Wallet deployer yang dikenal membuat scam/rug coin. Token dari wallet ini akan otomatis difilter.</p>
+      <div id="devWalletsList" style="margin-bottom:.5rem;max-height:300px;overflow-y:auto">Loading…</div>
+      <div style="display:flex;gap:.5rem;margin-top:.75rem">
+        <input type="text" id="newDevWallet" placeholder="Dev wallet address…" style="flex:1;font-family:monospace;font-size:12px">
+        <input type="text" id="newDevWalletReason" placeholder="Reason (optional)" style="flex:0 0 130px;font-size:12px">
+        <button class="btn primary" onclick="addDevWalletUI()">+ Add</button>
+      </div>
+    </div>
+
+    <!-- Token Blacklist -->
+    <div class="panel" style="margin-top:1rem">
+      <h3>Token Blacklist (Trash Coins)</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Daftar token/mint address yang di-blacklist. Token ini tidak akan pernah dibeli bot.</p>
+      <div id="tokenBlacklistList" style="margin-bottom:.5rem;max-height:300px;overflow-y:auto">Loading…</div>
+      <div style="display:flex;gap:.5rem;margin-top:.75rem">
+        <input type="text" id="newTokenBlacklist" placeholder="Token mint address…" style="flex:1;font-family:monospace;font-size:12px">
+        <input type="text" id="newTokenBlacklistReason" placeholder="Reason (optional)" style="flex:0 0 130px;font-size:12px">
+        <button class="btn primary" onclick="addTokenBlacklistUI()">+ Add</button>
+      </div>
+    </div>
+
+    <!-- Fee Tracker -->
+    <div class="panel" style="margin-top:1rem">
+      <h3>Fee Tracker — DEX, Platform, Rent, MEV, RPC</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Transparansi semua fee per trade. True PnL = gross PnL - semua fee di bawah.</p>
+      <div id="feeTrackerPanel">Loading…</div>
+      <button class="btn" onclick="loadFeeTracker()" style="margin-top:.5rem">Refresh Fees</button>
+    </div>
+
+    <!-- Hunter Agent Config -->
+    <div class="panel" style="margin-top:1rem">
+      <h3>Hunter Agent Settings</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Konfigurasi sub-agent hunter — tentukan sumber dan kriteria pencarian coin.</p>
+      <div id="hunterConfigForm">Loading…</div>
+      <button class="btn primary" onclick="saveHunterConfig()" style="margin-top:1rem">💾 Save Hunter Config</button>
+    </div>
+
+    <!-- Trash Wallets (legacy user-config) -->
+    <div class="panel" style="margin-top:1rem">
+      <h3>Trash Coin Wallets (Config)</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Tambahan wallet trash di user-config.json. Untuk dev blacklist permanen gunakan panel Rug Developer Wallets di atas.</p>
+      <div id="trashWalletsList" style="margin-bottom:.5rem">Loading…</div>
+      <div style="display:flex;gap:.5rem;margin-top:.75rem">
+        <input type="text" id="newTrashWallet" placeholder="Solana wallet address…" style="flex:1;font-family:monospace;font-size:12px">
+        <input type="text" id="newTrashWalletLabel" placeholder="Label (optional)" style="flex:1;font-size:12px">
+        <button class="btn primary" onclick="addTrashWallet()">+ Add</button>
+      </div>
     </div>
   </div>
 </div>

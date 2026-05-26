@@ -16,9 +16,10 @@
   "gasReserve": 0.2,
   "positionSizePct": 0.35,
 
-  "strategy": "instant_scalping",
+  "strategy": "scalp",
 
-  "_comment_v4_strategy_presets": "Active strategy preset: scalping (default), sniper, dip_buy, smart_money, degen. Switched live via Telegram /strategy <id> — persisted in active-strategy.json (auto-created).",
+  "_comment_v5_strategy_presets": "Available: scalp (default), conservative, aggressive, sniper, recovery, day_phase_swing. Switch via Telegram /strategy <id> or dashboard. Persisted in active-strategy.json.",
+  "_comment_strategy_evolution": "When strategyEvolutionEnabled=true, the engine auto-produces and gates new strategy variants based on backtest+paper+live evidence. runtimeSelectorMode=shadow logs diffs only; =live applies evolved overrides.",
 
   "_comment_v4_confirm_mode": "When true, every BUY needs Telegram /yes <id> approval. confirmTtlMin = how long a pending intent stays valid (default 5 min).",
   "confirmMode": true,
@@ -86,6 +87,27 @@
     { "label": "main",  "env_ref": "WALLET_KEY_1", "capital_pct": 60 },
     { "label": "scout", "env_ref": "WALLET_KEY_2", "capital_pct": 40 }
   ],
+
+  "_comment_l0_security": "Layer 0 tools — all zero or near-zero cost. Recommended: all enabled.",
+  "trashFilterEnabled": true,
+  "devBlacklistEnabled": true,
+  "rugCheckEnabled": true,
+  "sellSimEnabled": true,
+  "rugAnomalyEnabled": true,
+  "rugLLMEnabled": false,
+  "_comment_rugLLMEnabled": "LLM rug analysis costs API credits. Enable only after accumulating 10+ known rugs.",
+
+  "_comment_day_phase": "Weekend swing trade screener for 3-7 day holds. Requires >=1 SOL wallet balance.",
+  "dayPhaseScreenerEnabled": false,
+
+  "_comment_staged_entry": "DCA multi-buy instead of single-shot. trigger: price=dip-based, time=interval-based.",
+  "stagedEntryEnabled": false,
+  "stagedEntryStages": 3,
+  "stagedEntryTrigger": "price",
+
+  "_comment_strategy_evolution_settings": "Runtime selector mode: shadow (log only) or live (apply evolved rules).",
+  "strategyEvolutionEnabled": false,
+  "runtimeSelectorMode": "shadow",
 
   "chartIndicators": {
     "enabled": false,

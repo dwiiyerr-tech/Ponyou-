@@ -65,8 +65,8 @@ describe("setSessionBaseline + reportBalance", () => {
 
 describe("recordSwapOutcome — consecutive errors trip", () => {
   it("trips after N consecutive failures", () => {
-    // default limit = 5
-    for (let i = 0; i < 4; i++) {
+    // default limit = 3
+    for (let i = 0; i < 2; i++) {
       expect(recordSwapOutcome({ success: false })).toBe(false);
     }
     expect(recordSwapOutcome({ success: false })).toBe(true);
@@ -74,10 +74,10 @@ describe("recordSwapOutcome — consecutive errors trip", () => {
   });
 
   it("resets consecutive counter on a success", () => {
-    for (let i = 0; i < 4; i++) recordSwapOutcome({ success: false });
+    for (let i = 0; i < 2; i++) recordSwapOutcome({ success: false });
     recordSwapOutcome({ success: true });
-    // Now we can fail 4 more times without tripping
-    for (let i = 0; i < 4; i++) {
+    // Now we can fail 2 more times without tripping
+    for (let i = 0; i < 2; i++) {
       expect(recordSwapOutcome({ success: false })).toBe(false);
     }
     expect(isKilled()).toBe(false);

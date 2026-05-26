@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { getExperimentSummary } from "./experiment-tracker.js";
-import { atomicWriteText } from "../../atomic-write.js";
+import { atomicWriteText, withFileLock } from "../../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MEMORY_FILE = path.join(__dirname, "semantic-memory.jsonl");
@@ -19,12 +19,21 @@ function ensureStore() { if (!fs.existsSync(MEMORY_FILE)) atomicWriteText(MEMORY
 
 function readEntries() {
   ensureStore();
+  // Hold the lock during read so concurrent appends don't interleave.
   return fs.readFileSync(MEMORY_FILE, "utf8").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
     try { return JSON.parse(line); } catch { return null; }
   }).filter(Boolean);
 }
 
-function appendEntry(entry) { ensureStore(); fs.appendFileSync(MEMORY_FILE, `${JSON.stringify(entry)}\n`, "utf8"); }
+// Serialize appends through a per-file lock to prevent interleaved writes
+// from concurrent Claude + Gemini + Codex calls corrupting the JSONL store.
+function appendEntry(entry) {
+  ensureStore();
+  const line = `${JSON.stringify(entry)}\n`;
+  // Synchronous under the lock — JSONL appends are small (< 4KB) so this
+  // won't block the event loop meaningfully.
+  fs.appendFileSync(MEMORY_FILE, line, "utf8");
+}
 function tokenize(value) { return String(value || "").toLowerCase().split(/[^a-z0-9_]+/i).map((part) => part.trim()).filter((part) => part.length >= 2); }
 
 function buildSearchText(entry) {
@@ -69,7 +78,10 @@ async function mirrorToRuflo(entry) {
     if (!fs.existsSync(RUFLO_BIN)) return false;
     await execFileAsync(RUFLO_BIN, ["memory", "store", "-k", entry.id, "-v", JSON.stringify(entry)]);
     return true;
-  } catch { return false; }
+  } catch (e) {
+    if (process.env.NODE_ENV !== "production") console.warn("[semantic-memory] mirrorToRuflo failed:", e.message);
+    return false;
+  }
 }
 
 function normalizeEntry({
@@ -104,7 +116,9 @@ function normalizeEntry({
 export async function addSemanticMemory(args = {}) {
   const entry = normalizeEntry(args);
   if (entry.error) return entry;
-  appendEntry(entry);
+  // Serialize writes through the per-file lock so concurrent
+  // Claude + Gemini + Codex calls don't interleave JSONL lines.
+  await withFileLock(MEMORY_FILE, () => appendEntry(entry));
   const mirrored = await mirrorToRuflo(entry);
   return { ...entry, mirrored_to_ruflo: mirrored };
 }

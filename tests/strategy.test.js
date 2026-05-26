@@ -127,10 +127,23 @@ describe("getMcapTier", () => {
 });
 
 describe("getTierExecutionProfile", () => {
-  it("uses sell-only mode for high-cap tokens", () => {
+  it("uses sell-only mode for high-cap tokens (scalping strategies)", () => {
     const profile = getTierExecutionProfile(60_000_000);
     expect(profile.sell_only).toBe(true);
-    expect(profile.use_technicals).toBe(false);
+    // HIGH_CAP for non-swing: still blocks entry
+    expect(profile.size_multiplier).toBe(0);
+  });
+
+  it("allows high-cap entry for swing strategies", () => {
+    const profile = getTierExecutionProfile(60_000_000, "day_phase_trading");
+    expect(profile.sell_only).toBe(false);
+    expect(profile.size_multiplier).toBe(1.0);
+    expect(profile.use_technicals).toBe(true);
+  });
+
+  it("always sell-only for CEX_LEVEL regardless of strategy", () => {
+    const profile = getTierExecutionProfile(250_000_000, "day_phase_trading");
+    expect(profile.sell_only).toBe(true);
   });
 
   it("uses technicals for micro caps", () => {

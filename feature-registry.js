@@ -24,6 +24,7 @@ function healthOf(name) {
     _health.set(name, {
       calls: 0,
       errors: 0,
+      consecutive_errors: 0, // per-feature, not shared
       latencyMs: [],
       breaker_trips: 0,
       breaker_tripped: false,
@@ -66,6 +67,7 @@ export function enableFeature(name) {
   h.enabled = true;
   h.breaker_tripped = false;
   h.breaker_tripped_at = null;
+  h.consecutive_errors = 0;
   return true;
 }
 
@@ -104,7 +106,6 @@ export function runAllFeatures(ctx = {}) {
   let totalWeight = 0;
   let weightedSum = 0;
   let allGatesPassed = true;
-  let consecutiveErrors = 0;
 
   for (const f of _features) {
     const h = healthOf(f.name);
@@ -147,9 +148,9 @@ export function runAllFeatures(ctx = {}) {
 
     if (errored) {
       h.errors++;
-      consecutiveErrors++;
-      // Circuit breaker: trip after N consecutive errors
-      if (consecutiveErrors >= BREAKER_MAX_CONSECUTIVE_ERRORS && !h.breaker_tripped) {
+      h.consecutive_errors++;
+      // Circuit breaker: trip after N consecutive errors (per-feature, not shared)
+      if (h.consecutive_errors >= BREAKER_MAX_CONSECUTIVE_ERRORS && !h.breaker_tripped) {
         h.breaker_tripped = true;
         h.breaker_tripped_at = new Date().toISOString();
         h.breaker_trips++;
@@ -157,7 +158,7 @@ export function runAllFeatures(ctx = {}) {
         continue;
       }
     } else {
-      consecutiveErrors = 0;
+      h.consecutive_errors = 0;
     }
 
     scores[f.name] = s;
@@ -242,6 +243,7 @@ export function autoResetBreakers({ maxAgeMs = 10 * 60 * 1000 } = {}) {
       if (age > maxAgeMs) {
         h.breaker_tripped = false;
         h.breaker_tripped_at = null;
+        h.consecutive_errors = 0;
       }
     }
   }
@@ -340,8 +342,8 @@ export function registerDefaultFeatures() {
 
   registerFeature({
     name: "rug_risk",
-    weight: 0.08,
-    note: "Inverse rug risk — 100 means zero risk",
+    weight: 0.15,
+    note: "Inverse rug risk — 100 means zero risk. Elevated weight to prevent trending narrative override",
     score: (ctx) => {
       const rs = Number(ctx.token?.rug_score || 0);
       return clamp(100 - rs, 0, 100);
@@ -364,8 +366,8 @@ export function registerDefaultFeatures() {
 
   registerFeature({
     name: "cabal_risk",
-    weight: 0.08,
-    note: "Inverse cabal score — 100 means clean, 0 means confirmed cabal",
+    weight: 0.10,
+    note: "Inverse cabal score — 100 means clean, 0 means confirmed cabal. Elevated for coordinated-wallet awareness",
     score: (ctx) => {
       const cabal = ctx.cabal || {};
       if (cabal.action === "BLOCK_ENTRY") return 0;

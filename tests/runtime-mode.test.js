@@ -8,7 +8,7 @@ describe("resolveExecutionMode", () => {
       userConfig: { executionMode: "demo" },
     });
     expect(result.isDemo).toBe(true);
-    expect(result.label).toBe("DEMO");
+    expect(result.label).toBe("DEMO (paper trade)");
   });
 
   it("keeps backward compatibility with dryRun config", () => {
@@ -34,6 +34,6 @@ describe("resolveExecutionMode", () => {
       userConfig: {},
     });
     expect(result.isLive).toBe(true);
-    expect(result.label).toBe("LIVE");
+    expect(result.label).toBe("LIVE (mainnet)");
   });
 });

@@ -10,17 +10,17 @@ const RUFLO_BIN = "./node_modules/.bin/ruflo";
 const VALID_AGENTS = new Set(["claude", "gemini", "codex"]);
 
 const KEYWORDS = {
-  gemini: [
-    "market", "trend", "research", "news", "search", "analyze", "sentiment",
-    "what is", "explain", "compare", "outlook", "narrative", "hype",
-    "community", "social", "twitter", "telegram", "reddit", "viral",
-    "momentum", "catalyst",
-  ],
+  // Gemini disabled — all research routes to Claude
+  gemini: [],
   codex: [
     "write code", "implement", "function", "class", "algorithm",
     "debug", "refactor", "generate code", "create module", "unit test", "fix bug",
   ],
   claude: [
+    "market", "trend", "research", "news", "search", "analyze", "sentiment",
+    "what is", "explain", "compare", "outlook", "narrative", "hype",
+    "community", "social", "twitter", "telegram", "reddit", "viral",
+    "momentum", "catalyst",
     "buy", "sell", "trade", "position", "entry", "exit", "signal", "should i",
     "conviction", "decide", "risk", "kelly", "size", "exposure",
     "wallet", "portfolio", "drawdown",
@@ -52,13 +52,30 @@ function classifyTask(prompt) {
   return { agent: "claude", confidence: 0.55, reason: "default" };
 }
 
+const MAX_CONSECUTIVE_FAILURES = 3;
+const BREAKER_RESET_MS = 30 * 60 * 1000; // 30 min
+
 class AgentRouter {
+  #callLLM;
+  #geminiBin;
+  #rufloEnabled;
+  #stats;
+  #breaker;
+
   constructor({ callLLM, geminiBin, rufloEnabled = true } = {}) {
-    this.callLLM = typeof callLLM === "function" ? callLLM : null;
-    this.geminiBin = geminiBin || GEMINI_BIN;
-    this.rufloEnabled = Boolean(rufloEnabled);
-    this.stats = { calls: {}, errors: {}, avgDurationMs: {} };
+    this.#callLLM = typeof callLLM === "function" ? callLLM : null;
+    this.#geminiBin = geminiBin || GEMINI_BIN;
+    this.#rufloEnabled = Boolean(rufloEnabled);
+    this.#stats = { calls: {}, errors: {}, avgDurationMs: {} };
+    this.#breaker = new Map(); // agent → { failures, trippedAt }
   }
+
+  // Legacy accessors for backward compat
+  get callLLM() { return this.#callLLM; }
+  set callLLM(v) { this.#callLLM = v; }
+  get geminiBin() { return this.#geminiBin; }
+  get rufloEnabled() { return this.#rufloEnabled; }
+  get stats() { return this.#stats; }
 
   classify(prompt) {
     return classifyTask(prompt);
@@ -74,7 +91,14 @@ class AgentRouter {
     let reason = cls.reason;
     let confidence = cls.confidence;
 
-    if ((safetySensitive || cls.confidence < minConfidence) && cls.agent !== "claude") {
+    // Circuit breaker: if agent has tripped, skip it
+    if (this.#isTripped(agent)) {
+      reason = `breaker_tripped:${agent}`;
+      agent = "claude";
+      confidence = 0.90;
+    }
+
+    if ((safetySensitive || cls.confidence < minConfidence) && agent !== "claude") {
       agent = "claude";
       reason = safetySensitive ? "safety_sensitive" : "low_confidence_escalation";
       confidence = Math.max(confidence, minConfidence);
@@ -83,34 +107,67 @@ class AgentRouter {
     return { agent, confidence, reason, classified: cls };
   }
 
-  _updateStats(agent, durationMs, hadError) {
-    const n = (this.stats.calls[agent] || 0) + 1;
-    const prev = this.stats.avgDurationMs[agent] || 0;
-    this.stats.calls[agent] = n;
-    this.stats.avgDurationMs[agent] = Math.round((prev * (n - 1) + durationMs) / n);
-    if (hadError) this.stats.errors[agent] = (this.stats.errors[agent] || 0) + 1;
+  #updateStats(agent, durationMs, hadError) {
+    const n = (this.#stats.calls[agent] || 0) + 1;
+    const prev = this.#stats.avgDurationMs[agent] || 0;
+    this.#stats.calls[agent] = n;
+    this.#stats.avgDurationMs[agent] = Math.round((prev * (n - 1) + durationMs) / n);
+    if (hadError) this.#stats.errors[agent] = (this.#stats.errors[agent] || 0) + 1;
   }
 
-  async _callClaude(prompt, systemPrompt) {
-    if (!this.callLLM) throw new Error("callLLM not injected");
+  #isTripped(agent) {
+    const b = this.#breaker.get(agent);
+    if (!b) return false;
+    if (Date.now() - b.trippedAt > BREAKER_RESET_MS) {
+      this.#breaker.delete(agent);
+      return false;
+    }
+    return true;
+  }
+
+  #recordFailure(agent) {
+    let b = this.#breaker.get(agent);
+    if (!b) b = { failures: 0, trippedAt: 0 };
+    b.failures++;
+    if (b.failures >= MAX_CONSECUTIVE_FAILURES) {
+      b.trippedAt = Date.now();
+      console.warn(`[Router] Circuit breaker TRIPPED for ${agent} after ${MAX_CONSECUTIVE_FAILURES} consecutive failures. Blocking ${agent} for ${BREAKER_RESET_MS / 60000}min.`);
+    }
+    this.#breaker.set(agent, b);
+  }
+
+  #recordSuccess(agent) {
+    this.#breaker.delete(agent);
+  }
+
+  async #callClaude(prompt, systemPrompt) {
+    if (!this.#callLLM) throw new Error("callLLM not injected");
     const messages = [];
     if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
     messages.push({ role: "user", content: prompt });
-    const r = await this.callLLM(messages);
+    const r = await this.#callLLM(messages);
     return typeof r === "string" ? r.trim() : String(r ?? "").trim();
   }
 
-  async _callGemini(prompt, timeoutMs = 60_000) {
-    const { stdout } = await execFile(this.geminiBin, ["-p", prompt], {
+  async #callGemini(prompt, timeoutMs = 60_000) {
+    const { stdout, stderr } = await execFile(this.#geminiBin, ["-p", prompt], {
       timeout: timeoutMs,
       maxBuffer: 2 * 1024 * 1024,
     });
+    // Log stderr for diagnostics — Gemini CLI errors appear here
+    if (stderr && String(stderr).trim()) {
+      const stderrTrimmed = String(stderr).slice(0, 300);
+      // Only log real errors, skip quota messages + unactionable noise
+      if (!stderrTrimmed.includes("quota") && !stderrTrimmed.includes("QUOTA") && !stderrTrimmed.includes("429") && !stderrTrimmed.includes("[object Object]")) {
+        console.warn(`[Router] Gemini stderr: ${stderrTrimmed}`);
+      }
+    }
     const result = String(stdout || "").trim();
     if (!result) throw new Error("Empty response from agent");
     return result;
   }
 
-  async _callCodex(prompt, timeoutMs = 90_000) {
+  async #callCodex(prompt, timeoutMs = 90_000) {
     const bins = ["/home/ubuntu/.npm-global/bin/codex", "codex"].filter(Boolean);
     let lastErr;
     for (const bin of bins) {
@@ -135,41 +192,53 @@ class AgentRouter {
     try {
       let result = "";
       let lastError = null;
-      for (let attempt = 0; attempt < 2; attempt++) {
+      let terminalError = false;
+      for (let attempt = 0; attempt < 2 && !terminalError; attempt++) {
         try {
           if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
-          if (agent === "gemini") result = await this._callGemini(prompt, timeoutMs);
-          else if (agent === "codex") result = await this._callCodex(prompt, timeoutMs);
-          else result = await this._callClaude(prompt, systemPrompt);
+          if (agent === "gemini") result = await this.#callGemini(prompt, timeoutMs);
+          else if (agent === "codex") result = await this.#callCodex(prompt, timeoutMs);
+          else result = await this.#callClaude(prompt, systemPrompt);
           lastError = null;
           break;
         } catch (err) {
           lastError = err;
+          const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+          // Don't retry on quota/limit errors — they won't resolve in 2 seconds
+          if (msg.includes("quota") || msg.includes("exhausted") || msg.includes("capacity")) {
+            terminalError = true;
+          }
         }
       }
       // Jika retry fail dan agent bukan claude, coba fallback ke claude
-      if (lastError && agent !== "claude" && this.callLLM) {
+      if (lastError && agent !== "claude" && this.#callLLM) {
         try {
-          result = await this._callClaude(prompt, systemPrompt);
-          console.warn(`[Router] Fallback to claude after ${agent} failed: ${lastError.message}`);
+          result = await this.#callClaude(prompt, systemPrompt);
+          const errMsg = lastError instanceof Error ? lastError.message : String(lastError);
+          console.warn(`[Router] Fallback to claude after ${agent} failed: ${errMsg.slice(0, 120)}`);
           lastError = null;
         } catch (fallbackErr) {
           lastError = fallbackErr;
         }
-      } else if (lastError && agent !== "claude" && !this.callLLM) {
+      } else if (lastError && agent !== "claude" && !this.#callLLM) {
         console.warn("[Router] Fallback to claude skipped: callLLM not injected");
       }
-      if (lastError) throw lastError;
+      if (lastError) {
+        this.#recordFailure(agent);
+        throw lastError;
+      }
 
+      this.#recordSuccess(agent);
       const durationMs = Date.now() - t0;
-      this._updateStats(agent, durationMs, false);
+      this.#updateStats(agent, durationMs, false);
       console.log(`[Router] → ${agent} (${reason}: ${confidence}) [${durationMs}ms]`);
       return { result, agent, durationMs, error: null, classified: selection.classified, selected: selection };
     } catch (err) {
       const durationMs = Date.now() - t0;
       const message = err instanceof Error ? err.message : String(err);
-      this._updateStats(agent, durationMs, true);
-      console.error(`[Router] → ${agent} ERROR: ${message}`);
+      this.#updateStats(agent, durationMs, true);
+      // Truncate error message to avoid log spam
+      console.error(`[Router] → ${agent} ERROR: ${message.slice(0, 200)}`);
       return { result: "", agent, durationMs, error: message };
     }
   }

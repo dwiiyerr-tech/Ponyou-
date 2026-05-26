@@ -57,59 +57,67 @@ export function assessTradeAttribution({
   let executionScore = 0;
   const factors = [];
 
+  // ─── PnL magnitude multiplier ─────────────────────────────────
+  // A -50% loss carries more signal than -1%. Scale factor scores
+  // by magnitude so bigger outcomes sharpen attribution.
+  const absPnl = Math.abs(pnlPct);
+  const magMult = pnlPct < 0
+    ? clamp(0.6 + absPnl / 60, 0.6, 2.0)  // loss: 0.6x at 0% → 2.0x at -84%+
+    : clamp(0.5 + absPnl / 100, 0.5, 1.5); // win: 0.5x at 0% → 1.5x at +100%
+
   if (/rug/i.test(exitReason)) {
-    pickScore += 45;
+    pickScore += Math.round(45 * magMult);
     factors.push("rug_exit");
   }
   if (rugScore >= 30) {
-    pickScore += 20;
+    pickScore += Math.round(20 * magMult);
     factors.push("high_rug_score");
   }
   if ((workflow.caution_score || 0) >= 28) {
-    pickScore += 16;
+    pickScore += Math.round(16 * magMult);
     factors.push("high_caution_entry");
   }
   if ((conviction.conviction_score || 0) < 40) {
-    pickScore += 18;
+    pickScore += Math.round(18 * magMult);
     factors.push("weak_conviction_entry");
   }
   if ((regime.regime_score || 0) < 40 && (regime.confidence_score || 0) >= 20) {
-    pickScore += 15;
+    pickScore += Math.round(15 * magMult);
     factors.push("weak_regime_entry");
   }
   if (kelly.should_skip) {
-    pickScore += 25;
+    pickScore += Math.round(25 * magMult);
     factors.push("ignored_negative_kelly");
   }
 
   if (holdMinutes <= 10 && pnlPct < 0 && (conviction.conviction_score || 0) >= 60 && (regime.regime_score || 0) >= 50) {
-    timingScore += 28;
+    timingScore += Math.round(28 * magMult);
     factors.push("strong_setup_failed_fast");
   }
   if (holdMinutes <= 5 && /stop loss/i.test(exitReason)) {
-    timingScore += 16;
+    timingScore += Math.round(16 * magMult);
     factors.push("early_stopout");
   }
   if ((workflow.verdict || "") === "probe" && pnlPct < 0 && holdMinutes <= 15) {
-    timingScore += 10;
+    timingScore += Math.round(10 * magMult);
     factors.push("probe_entry_failed");
   }
 
   const execution = executionQuality || snapshot.execution_quality || {};
   if ((execution.quality_score || 50) < 40) {
-    executionScore += 28;
+    executionScore += Math.round(28 * magMult);
     factors.push("low_execution_quality");
   }
   if ((execution.avg_slippage || snapshot.execution_context?.slippage || 0) >= 1.5) {
-    executionScore += 14;
+    executionScore += Math.round(14 * magMult);
     factors.push("high_slippage");
   }
   if ((execution.avg_latency_ms || 0) >= 4000) {
-    executionScore += 12;
+    executionScore += Math.round(12 * magMult);
     factors.push("slow_execution");
   }
   if (holdMinutes <= 3 && pnlPct < 0 && (execution.quality_score || 50) < 55) {
-    executionScore += 12;
+    executionScore += Math.round(12 * magMult);
     factors.push("immediate_post_fill_damage");
   }
 
@@ -141,6 +149,10 @@ export async function recordTradeAttribution(entry = {}) {
     const store = loadStore();
     store.trades.push({
       ts: new Date().toISOString(),
+      mint: entry.mint || null,
+      symbol: entry.symbol || null,
+      pnl_pct: Number.isFinite(Number(entry.pnl_pct)) ? Number(entry.pnl_pct) : null,
+      win: entry.win ?? (Number.isFinite(Number(entry.pnl_pct)) ? Number(entry.pnl_pct) > 0 : null),
       ...entry,
     });
     if (store.trades.length > 500) store.trades = store.trades.slice(-500);

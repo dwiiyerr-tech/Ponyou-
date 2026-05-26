@@ -1,6 +1,6 @@
 {
   "_note": "Curated rug/honeypot fingerprints seeded for Ponyou. Each pattern requires ALL listed features to be true to match. Weight adds to rug score (0-100, clamped). Higher weight = more dangerous.",
-  "_version": "1.0",
+  "_version": "2.0",
   "patterns": [
     {
       "pattern_id": "seed_honeypot_transfer_hook",
@@ -73,6 +73,48 @@
       "features": ["lp_unlocked", "creator_heavy"],
       "weight": 55,
       "note": "LP not locked + dev holds heavy — can pull liquidity any second"
+    },
+    {
+      "pattern_id": "seed_pumpfun_rapid_rug",
+      "features": ["high_top10", "fresh_holders", "bundled_launch"],
+      "weight": 55,
+      "note": "Pump.fun classic: top10 heavy + fresh wallets + bundled launch — rug within minutes"
+    },
+    {
+      "pattern_id": "seed_supply_manipulation",
+      "features": ["has_mint", "creator_heavy", "high_top10"],
+      "weight": 50,
+      "note": "Dev can mint more + holds large bag + top-heavy — supply manipulation rug"
+    },
+    {
+      "pattern_id": "seed_ghost_chain",
+      "features": ["dust_holders", "lp_unlocked", "wash_trade"],
+      "weight": 40,
+      "note": "Top holders broke + LP unlocked + wash trades — engineered exit liquidity"
+    },
+    {
+      "pattern_id": "seed_smart_wallet_avoidance",
+      "features": ["bundle_buy", "fresh_holders", "top20_concentrated"],
+      "weight": 45,
+      "note": "Bundled launch + all fresh wallets + concentrated supply — no organic interest"
+    },
+    {
+      "pattern_id": "seed_instant_rug_setup",
+      "features": ["high_top10", "creator_heavy", "fresh_holders", "same_funder"],
+      "weight": 60,
+      "note": "All four red flags simultaneously — near-certain instant rug"
+    },
+    {
+      "pattern_id": "seed_extraction_tax_trap",
+      "features": ["transfer_fee_high", "creator_heavy"],
+      "weight": 65,
+      "note": "High transfer tax + dev holds heavy — extraction scheme, not a trade"
+    },
+    {
+      "pattern_id": "seed_frozen_sell_trap",
+      "features": ["default_frozen", "has_freeze"],
+      "weight": 75,
+      "note": "Default frozen + freeze authority — double-locked, cannot sell without dev permission"
     }
   ]
 }

@@ -1,34 +1,35 @@
 import { normalizeRegime } from "./market-regime.js";
+import { log } from "./logger.js";
 
 const DEFAULT_POLICY = Object.freeze({
   entry: {
-    hardBlockRugScore: 35,
-    shadowConfidenceFloor: 20,
-    probeConfidenceFloor: 35,
-    probeCautionThreshold: 22,
-    activeConfidenceFloor: 45,
+    hardBlockRugScore: 30,
+    shadowConfidenceFloor: 25,
+    probeConfidenceFloor: 40,
+    probeCautionThreshold: 25,
+    activeConfidenceFloor: 50,
     flagTolerance: 0,
   },
   sizing: {
     minFraction: 0,
     maxFraction: 1,
     probeSizeFraction: 0.05,
-    hotBoost: 0.1,
-    coldPenalty: 0.1,
+    hotBoost: 0.10,
+    coldPenalty: 0.10,
   },
   exit: {
-    hardStopLossPct: -15,
-    hardCutLossPct: -25,
+    hardStopLossPct: -12,
+    hardCutLossPct: -22,
     immediateTakeProfitPct: null,
     trailingTriggerPct: 5,
-    trailingDropPct: 6,
+    trailingDropPct: 5,
     trailingDropMode: "absolute",
-    profitSweepPct: 40,
+    profitSweepPct: 35,
   },
   rug: {
     seedHardBlock: true,
     learnedSoftByDefault: true,
-    learnedConfidenceFloor: 0.8,
+    learnedConfidenceFloor: 0.85,
     learnedReviewRequired: true,
   },
 });
@@ -53,35 +54,38 @@ function normalizeMarketCondition(value = "NORMAL") {
 function adjustByMarket(policy, marketCondition) {
   const condition = normalizeMarketCondition(marketCondition);
   if (condition === "HOT") {
+    // HOT: pumps are fast, dumps are faster. Tighten exits, cap sizing.
     policy.entry.probeCautionThreshold = 28;
-    policy.entry.probeConfidenceFloor = 30;
-    policy.entry.activeConfidenceFloor = 40;
-    policy.sizing.probeSizeFraction = 0.45;
-    policy.sizing.hotBoost = 0.15;
-    policy.exit.hardStopLossPct = -18;
-    policy.exit.hardCutLossPct = -28;
-    policy.exit.trailingTriggerPct = 6;
-    policy.exit.trailingDropPct = 8;
-    policy.exit.profitSweepPct = 50;
+    policy.entry.probeConfidenceFloor = 32;
+    policy.entry.activeConfidenceFloor = 45;
+    policy.sizing.probeSizeFraction = 0.20;
+    policy.sizing.hotBoost = 0.10;
+    policy.exit.hardStopLossPct = -22;
+    policy.exit.hardCutLossPct = -30;
+    policy.exit.trailingTriggerPct = 7;
+    policy.exit.trailingDropPct = 10;
+    policy.exit.profitSweepPct = 55;
   } else if (condition === "COLD") {
-    policy.entry.probeCautionThreshold = 18;
-    policy.entry.probeConfidenceFloor = 40;
+    // COLD: volume thin, spreads wide. Be MORE restrictive, not less.
+    // Higher conviction floor, smaller sizing, tighter stops.
+    policy.entry.probeCautionThreshold = 28;
+    policy.entry.probeConfidenceFloor = 42;
     policy.entry.activeConfidenceFloor = 55;
-    policy.sizing.probeSizeFraction = 0.25;
-    policy.sizing.coldPenalty = 0.15;
+    policy.sizing.probeSizeFraction = 0.15;
+    policy.sizing.coldPenalty = 0.20;
     policy.exit.hardStopLossPct = -10;
-    policy.exit.hardCutLossPct = -18;
+    policy.exit.hardCutLossPct = -16;
     policy.exit.trailingTriggerPct = 4;
     policy.exit.trailingDropPct = 5;
-    policy.exit.profitSweepPct = 30;
+    policy.exit.profitSweepPct = 25;
   } else if (condition === "DEAD") {
     policy.entry.probeCautionThreshold = 0;
     policy.entry.probeConfidenceFloor = 100;
     policy.entry.activeConfidenceFloor = 100;
     policy.sizing.probeSizeFraction = 0;
     policy.sizing.minFraction = 0;
-    policy.exit.hardStopLossPct = -5;
-    policy.exit.hardCutLossPct = -10;
+    policy.exit.hardStopLossPct = -3;
+    policy.exit.hardCutLossPct = -5;
     policy.exit.trailingTriggerPct = 0;
     policy.exit.trailingDropPct = 0;
     policy.exit.profitSweepPct = 0;
@@ -89,10 +93,40 @@ function adjustByMarket(policy, marketCondition) {
   return policy;
 }
 
-export function buildRiskPolicy({ marketCondition = "NORMAL", conviction = {}, token = {}, config = {} } = {}) {
+export function buildRiskPolicy({ marketCondition = "NORMAL", conviction = {}, token = {}, config = {}, strategyParams = null } = {}) {
   const condition = normalizeMarketCondition(marketCondition);
   const policy = clonePolicy();
   adjustByMarket(policy, condition);
+
+  // ── Strategy-aware exit parameters ──────────────────────────
+  // Active strategy presets define stoploss, trailing, partial TP.
+  // These override the risk-policy defaults so each strategy's
+  // risk profile is actually enforced at exit time.
+  if (strategyParams) {
+    // Stoploss from strategy (e.g., -0.15 = -15%, -0.30 = -30%)
+    const stratSl = Number(strategyParams.stoploss);
+    if (Number.isFinite(stratSl) && stratSl <= -0.01 && stratSl >= -0.50) {
+      policy.exit.hardStopLossPct = stratSl * 100; // convert decimal to pct
+    }
+    // Hard cut loss = stoploss * 1.5x (strategy's intended floor below stop)
+    policy.exit.hardCutLossPct = Math.max(policy.exit.hardStopLossPct * 1.6, -30);
+
+    // Trailing stop from strategy
+    if (strategyParams.trailing_stop?.enabled) {
+      const offsetPct = Number(strategyParams.trailing_stop.positive_offset);
+      const distPct = Number(strategyParams.trailing_stop.positive_distance);
+      if (Number.isFinite(offsetPct) && offsetPct > 0) {
+        policy.exit.trailingTriggerPct = offsetPct * 100;
+      }
+      if (Number.isFinite(distPct) && distPct > 0) {
+        policy.exit.trailingDropPct = distPct * 100;
+      }
+    } else if (strategyParams.trailing_stop?.enabled === false) {
+      // Strategy explicitly disables trailing
+      policy.exit.trailingTriggerPct = 0;
+      policy.exit.trailingDropPct = 0;
+    }
+  }
 
   const convictionScore = Number(conviction.conviction_score || 0);
   const convictionConfidence = Number(conviction.confidence_score || 0);
@@ -120,7 +154,7 @@ export function buildRiskPolicy({ marketCondition = "NORMAL", conviction = {}, t
     : policy.exit.hardStopLossPct;
   const stopLossPct = rawStop >= -50 && rawStop <= -1
     ? rawStop
-    : (console.warn(`[risk-policy] stopLossPct ${rawStop} out of valid range, using default`), policy.exit.hardStopLossPct);
+    : (log("risk_policy_warn", `stopLossPct ${rawStop} out of valid range, using default`), policy.exit.hardStopLossPct);
   const takeProfitPct = Number.isFinite(config?.management?.takeProfitPct)
     ? config.management.takeProfitPct
     : Number.isFinite(config?.management?.autoTakeProfitPct)

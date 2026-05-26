@@ -48,6 +48,7 @@ describe("detectBundledLaunch", () => {
   it("adds bundled launch signals to rug risk scoring", () => {
     const result = scoreRugRisk({
       mint: "bundled-launch-mint",
+      mcap: 5_000_000, // MID_CAP — baseline multipliers (1.0x)
       rug_signals: {
         bundled: true,
         bundled_score: 6,
@@ -59,5 +60,41 @@ describe("detectBundledLaunch", () => {
     expect(result.score).toBeGreaterThanOrEqual(40);
     expect(result.reasons.join(" ")).toMatch(/bundled/i);
     expect(result.reasons.join(" ")).toMatch(/top20/i);
+  });
+
+  it("applies lower bundle weight for NEW_PAIR tier", () => {
+    const result = scoreRugRisk({
+      mint: "new-pair-bundle",
+      mcap: 1000, // NEW_PAIR — bundled launches are expected, 0.7x multiplier
+      rug_signals: {
+        bundled: true,
+        bundled_score: 6,
+        supply_concentrated: true,
+        top20_pct: 80,
+      },
+    });
+
+    // NEW_PAIR: bundled(25*0.7=18) + supply(20*0.8=16) = 34
+    expect(result.score).toBeGreaterThanOrEqual(30);
+    expect(result.score).toBeLessThan(40);
+    expect(result.reasons.some(r => r.includes("NEW_PAIR"))).toBe(true);
+  });
+
+  it("applies higher bundle weight for HIGH_CAP tier", () => {
+    const result = scoreRugRisk({
+      mint: "high-cap-bundle",
+      mcap: 60_000_000, // HIGH_CAP — bundled is very suspicious, 1.5x multiplier
+      rug_signals: {
+        bundled: true,
+        bundled_score: 6,
+        supply_concentrated: true,
+        top20_pct: 80,
+        hidden_wallet_control_score: 80,
+      },
+    });
+
+    // HIGH_CAP: bundled(25*1.5=38) + supply(20*1.5=30) + hidden(22*1.8=40) = 108 → clamp 100
+    expect(result.score).toBeGreaterThanOrEqual(70);
+    expect(result.reasons.some(r => r.includes("HIGH_CAP"))).toBe(true);
   });
 });

@@ -4,12 +4,22 @@ import { writeAutomationCommand } from "../command-writer.js";
 import { readConfig, writeConfig } from "../config-writer.js";
 import { sendBotCommand } from "../ipc.js";
 import { resetTradingPlan } from "../../trading-plan-30.js";
+import { addSmartWallet, removeSmartWallet, listSmartWallets } from "../../smart-wallets.js";
+import { blockDev, unblockDev, listBlockedDevs } from "../../dev-blocklist.js";
+import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../../token-blacklist.js";
+import { getPriorityWallets, getCopyTradeConfig, getCopyTradeStats, getRecentSignals, confirmCopySignal, rejectCopySignal } from "../../tools/wallet-copy-trade.js";
+import { getSmartMoneyCandidates, getRugDevAlerts, getWalletSignalStats, checkRugDevDeployer, autoBlockRugDevToken } from "../../tools/wallet-signal-injector.js";
+import { getPositionLimitsConfig, getPositionLimitDashboard, computeKellyPositions } from "../../tools/position-limits.js";
+import { getFeeTrackerDashboard, DEX_FEE_BPS, PLATFORM_FEE_BPS, getRentStats, getRpcCostStats } from "../../tools/fee-tracker.js";
+import { getPerformanceSummary } from "../../lessons.js";
+import { PRESETS, getStrategy, setStrategyOverride, clearStrategyOverrides } from "../../strategies.js";
 
 const ALLOWED_LIFECYCLE_CMDS = new Set(["start", "stop"]);
 const ALLOWED_SLASH_CMDS = new Set([
   "/menu", "/strategies", "/strategy", "/stratset", "/agent", "/auto",
   "/confirm", "/dailyguard", "/continue", "/resetplan", "/plan", "/stoptrade",
-  "/pending", "/no", "/yes", "/metrics", "/kill", "/unkill", "/killstate", "/wallets", "/pnl", "/status",
+  "/pending", "/no", "/yes", "/metrics", "/kill", "/unkill", "/killstate",
+  "/wallets", "/pnl", "/status", "/health", "/feature", "/devcheck", "/dayphase",
 ]);
 
 export function createApiRouter() {
@@ -40,6 +50,15 @@ export function createApiRouter() {
       vault: "vault.sweep.enabled",
       tradingPlan: "tradingPlan.enabled",
       dailyGuard: "dailyTradeGuard.enabled",
+      trashFilter: "trashFilterEnabled",
+      devBlacklist: "devBlacklistEnabled",
+      stagedEntry: "stagedEntryEnabled",
+      dayPhaseScreener: "dayPhaseScreenerEnabled",
+      strategyEvolution: "strategyEvolutionEnabled",
+      rugCheck: "rugCheckEnabled",
+      sellSim: "sellSimEnabled",
+      rugAnomaly: "rugAnomalyEnabled",
+      darwin: "darwinEnabled",
     };
     if (!FEATURES[feature]) return res.status(400).json({ error: "Unknown feature" });
     const current = readConfig();
@@ -59,6 +78,357 @@ export function createApiRouter() {
   router.post("/resetplan", (req, res) => {
     const s = resetTradingPlan();
     res.json({ ok: true, status: s });
+  });
+
+  router.post("/trash-wallets", (req, res) => {
+    const { action, wallets, address } = req.body || {};
+    if (action === "set") {
+      if (!Array.isArray(wallets)) return res.status(400).json({ error: "wallets must be an array" });
+      writeConfig({ trashWallets: wallets });
+      return res.json({ ok: true, count: wallets.length });
+    }
+    if (action === "add") {
+      if (typeof address !== "string" || address.length < 32) return res.status(400).json({ error: "Invalid address" });
+      const current = readConfig();
+      const list = (current.trashWallets || []).map(w => typeof w === "string" ? { address: w } : w);
+      list.push({ address: address.trim() });
+      writeConfig({ trashWallets: list });
+      return res.json({ ok: true, count: list.length });
+    }
+    if (action === "remove") {
+      if (typeof address !== "string") return res.status(400).json({ error: "Invalid address" });
+      const current = readConfig();
+      const list = (current.trashWallets || []).map(w => typeof w === "string" ? { address: w } : w);
+      const addrLower = address.trim().toLowerCase();
+      const filtered = list.filter(w => (w.address || w).toLowerCase() !== addrLower);
+      writeConfig({ trashWallets: filtered });
+      return res.json({ ok: true, removed: list.length - filtered.length });
+    }
+    return res.status(400).json({ error: "Unknown action. Use: set, add, remove" });
+  });
+
+  // ─── Smart Wallets (copy-trading signals) ──────────────
+  router.get("/smart-wallets", async (req, res) => {
+    try {
+      res.json({ ok: true, wallets: listSmartWallets() });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post("/smart-wallets", async (req, res) => {
+    try {
+      const { action, address, label, notes } = req.body || {};
+      if (action === "add") {
+        if (typeof address !== "string" || address.length < 32) return res.status(400).json({ error: "Invalid address" });
+        const result = await addSmartWallet({ address: address.trim(), label: label || "", notes: notes || "" });
+        return res.json(result);
+      }
+      if (action === "remove") {
+        if (typeof address !== "string") return res.status(400).json({ error: "Invalid address" });
+        const result = await removeSmartWallet({ address: address.trim() });
+        return res.json(result);
+      }
+      return res.status(400).json({ error: "Unknown action. Use: add, remove" });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── Dev / Rug Wallets (scam deployers) ─────────────────
+  router.get("/dev-wallets", (req, res) => {
+    try {
+      res.json({ ok: true, devs: listBlockedDevs() });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post("/dev-wallets", async (req, res) => {
+    try {
+      const { action, address, reason } = req.body || {};
+      if (action === "add") {
+        if (typeof address !== "string" || address.length < 32) return res.status(400).json({ error: "Invalid address" });
+        const result = await blockDev({ address: address.trim(), reason: reason || "" });
+        return res.json(result);
+      }
+      if (action === "remove") {
+        if (typeof address !== "string") return res.status(400).json({ error: "Invalid address" });
+        const result = await unblockDev({ address: address.trim() });
+        return res.json(result);
+      }
+      return res.status(400).json({ error: "Unknown action. Use: add, remove" });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── Token Blacklist (trash coins) ──────────────────────
+  router.get("/token-blacklist", (req, res) => {
+    try {
+      res.json({ ok: true, tokens: listBlacklist() });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post("/token-blacklist", async (req, res) => {
+    try {
+      const { action, mint, reason } = req.body || {};
+      if (action === "add") {
+        if (typeof mint !== "string" || mint.length < 32) return res.status(400).json({ error: "Invalid mint" });
+        const result = await addToBlacklist({ mint: mint.trim(), reason: reason || "" });
+        return res.json(result);
+      }
+      if (action === "remove") {
+        if (typeof mint !== "string") return res.status(400).json({ error: "Invalid mint" });
+        const result = await removeFromBlacklist({ mint: mint.trim() });
+        return res.json(result);
+      }
+      return res.status(400).json({ error: "Unknown action. Use: add, remove" });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── Hunter Agent Config ────────────────────────────────
+  router.get("/hunter-config", (req, res) => {
+    const cfg = readConfig();
+    res.json({
+      ok: true,
+      hunter: cfg.hunter || {
+        enabled: true,
+        sources: ["search", "pumpfun", "gainers", "newest", "geckoterminal", "smart_money", "jupiter"],
+        minLiquidity: 500,
+        minSwaps: 5,
+        minMcap: 5000,
+        maxAgeHours: 168,
+        minAgeMinutes: 5,
+        customQueries: [],
+      },
+    });
+  });
+
+  router.post("/hunter-config", (req, res) => {
+    try {
+      const { hunter } = req.body || {};
+      if (!hunter || typeof hunter !== "object") return res.status(400).json({ error: "hunter object required" });
+      writeConfig({ hunter });
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── Priority Wallets (win rate >= 70%) ─────────────────
+  router.get("/priority-wallets", (req, res) => {
+    try {
+      const minWr = req.query.min_win_rate ? parseFloat(req.query.min_win_rate) : undefined;
+      const wallets = getPriorityWallets(Number.isFinite(minWr) ? minWr : undefined);
+      res.json({ ok: true, count: wallets.length, wallets });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── Copy Trade Config & Signals ───────────────────────
+  router.get("/copy-trade", (req, res) => {
+    try {
+      const cfg = getCopyTradeConfig();
+      const stats = getCopyTradeStats();
+      const signals = getRecentSignals(20);
+      res.json({ ok: true, config: cfg, stats, signals });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post("/copy-trade", (req, res) => {
+    try {
+      const { action, signalIndex } = req.body || {};
+      if (action === "config") {
+        const { copyTrade } = req.body;
+        if (!copyTrade || typeof copyTrade !== "object") return res.status(400).json({ error: "copyTrade object required" });
+        writeConfig({ copyTrade });
+        return res.json({ ok: true });
+      }
+      if (action === "confirm") {
+        const result = confirmCopySignal(signalIndex ?? 0);
+        return res.json(result);
+      }
+      if (action === "reject") {
+        const result = rejectCopySignal(signalIndex ?? 0);
+        return res.json(result);
+      }
+      if (action === "enable") {
+        const cfg = getCopyTradeConfig();
+        writeConfig({ copyTrade: { ...cfg, enabled: true } });
+        return res.json({ ok: true, enabled: true });
+      }
+      if (action === "disable") {
+        const cfg = getCopyTradeConfig();
+        writeConfig({ copyTrade: { ...cfg, enabled: false } });
+        return res.json({ ok: true, enabled: false });
+      }
+      return res.status(400).json({ error: "Unknown action. Use: config, confirm, reject, enable, disable" });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── Wallet Signal Injector ───────────────────────────
+  router.get("/wallet-signals", (req, res) => {
+    try {
+      const minWr = parseFloat(req.query.min_win_rate) || 0.60;
+      const smSignals = getSmartMoneyCandidates({ minWinRate: Number.isFinite(minWr) ? minWr : 0.60 });
+      const rugAlerts = getRugDevAlerts(20);
+      const stats = getWalletSignalStats();
+      res.json({ ok: true, smartMoneySignals: smSignals, rugAlerts, stats });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post("/wallet-signals", async (req, res) => {
+    try {
+      const { action, creatorWallet, tokenMint, tokenSymbol } = req.body || {};
+      if (action === "check_rug_dev") {
+        const alert = checkRugDevDeployer({ creatorWallet, tokenMint, tokenSymbol });
+        return res.json({ ok: true, alert });
+      }
+      if (action === "block_rug_token") {
+        const result = await autoBlockRugDevToken({ creatorWallet, tokenMint, tokenSymbol });
+        return res.json(result);
+      }
+      return res.status(400).json({ error: "Unknown action. Use: check_rug_dev, block_rug_token" });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── Position Limits (per-strategy, manual/kelly) ──────
+  router.get("/position-limits", (req, res) => {
+    try {
+      const dashboard = getPositionLimitDashboard();
+      res.json({ ok: true, ...dashboard });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post("/position-limits", (req, res) => {
+    try {
+      const { action, positionLimits, kellyFraction, strategyId } = req.body || {};
+      if (action === "config") {
+        if (!positionLimits || typeof positionLimits !== "object") return res.status(400).json({ error: "positionLimits object required" });
+        writeConfig({ positionLimits });
+        return res.json({ ok: true });
+      }
+      if (action === "set_strategy") {
+        const cfg = getPositionLimitsConfig();
+        const limit = Number(req.body.limit);
+        if (!strategyId || !Number.isFinite(limit) || limit < 1 || limit > 20) {
+          return res.status(400).json({ error: "Invalid strategyId or limit (1-20)" });
+        }
+        cfg.perStrategy = cfg.perStrategy || {};
+        cfg.perStrategy[strategyId] = Math.round(limit);
+        writeConfig({ positionLimits: cfg });
+        return res.json({ ok: true, strategyId, limit: Math.round(limit) });
+      }
+      if (action === "set_mode") {
+        const mode = req.body.mode;
+        if (mode !== "manual" && mode !== "kelly") return res.status(400).json({ error: "mode must be manual or kelly" });
+        const cfg = getPositionLimitsConfig();
+        cfg.mode = mode;
+        writeConfig({ positionLimits: cfg });
+        return res.json({ ok: true, mode });
+      }
+      if (action === "kelly_calc") {
+        const kelly = computeKellyPositions({ kellyFraction: kellyFraction || 0.5 });
+        return res.json({ ok: true, kelly });
+      }
+      return res.status(400).json({ error: "Unknown action. Use: config, set_strategy, set_mode, kelly_calc" });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── Strategy Overrides (per-strategy SL/TP) ──────────
+  router.get("/strategy-overrides", (req, res) => {
+    try {
+      const strategies = Object.keys(PRESETS).map(id => {
+        const strat = getStrategy(id);
+        const preset = PRESETS[id];
+        return {
+          id,
+          name: preset.name,
+          stoploss: strat.stoploss,
+          minimal_roi: strat.minimal_roi,
+          trailing_stop: strat.trailing_stop,
+          partial_tp: strat.partial_tp,
+          _source: strat._runtime_source || "preset",
+        };
+      });
+      res.json({ ok: true, strategies });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post("/strategy-overrides", (req, res) => {
+    try {
+      const { action, strategyId, key, value } = req.body || {};
+      if (action === "set") {
+        if (!strategyId || !key) return res.status(400).json({ error: "strategyId and key required" });
+        const result = setStrategyOverride(strategyId, key, value);
+        if (result === null) return res.status(400).json({ error: `Invalid value for ${key}` });
+        return res.json({ ok: true, strategyId, key, value: result });
+      }
+      if (action === "reset") {
+        clearStrategyOverrides(strategyId || null);
+        return res.json({ ok: true });
+      }
+      if (action === "set_bulk") {
+        const { overrides } = req.body || {};
+        if (!overrides || typeof overrides !== "object") return res.status(400).json({ error: "overrides object required" });
+        for (const [sid, fields] of Object.entries(overrides)) {
+          if (!PRESETS[sid]) continue;
+          for (const [k, v] of Object.entries(fields)) {
+            setStrategyOverride(sid, k, v);
+          }
+        }
+        return res.json({ ok: true });
+      }
+      return res.status(400).json({ error: "Unknown action. Use: set, reset, set_bulk" });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ─── Fee Tracker Dashboard ────────────────────────────
+  router.get("/fee-tracker", (req, res) => {
+    try {
+      const dashboard = getFeeTrackerDashboard();
+      const perfSummary = (() => {
+        try {
+          return getPerformanceSummary();
+        } catch { return null; }
+      })();
+      res.json({
+        ok: true,
+        dexRegistry: Object.entries(DEX_FEE_BPS).map(([name, bps]) => ({ name, fee_pct: (bps / 100).toFixed(2) + "%", bps })),
+        platformFees: Object.entries(PLATFORM_FEE_BPS).filter(([, bps]) => bps > 0).map(([name, bps]) => ({ name, fee_pct: (bps / 100).toFixed(2) + "%", bps })),
+        rent: getRentStats(),
+        rpc: getRpcCostStats(),
+        performance: perfSummary ? {
+          totalTrades: perfSummary.total_trades || 0,
+          winRate: perfSummary.win_rate || 0,
+          totalPnlSol: perfSummary.total_pnl_sol || 0,
+        } : null,
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   router.post("/cmd", async (req, res) => {

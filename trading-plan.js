@@ -161,6 +161,14 @@ export function updateSessionCapital(currentCapitalUsd) {
 
   const session = plan.session;
 
+  // B3: Force recalibration if session date differs from today (crash restart)
+  // Tanpa ini, P&L dihitung dari baseline sebelum crash — bisa sangat meleset.
+  const today = new Date().toISOString().slice(0, 10);
+  if (session.date && session.date !== today && session.calibrated) {
+    log("plan", `Session date mismatch (${session.date} vs ${today}) — forcing recalibration after restart`);
+    session.calibrated = false;
+  }
+
   // Kalibrasi pertama: set startCapitalUsd dari nilai wallet aktual.
   // Plan.initialCapitalUsd = target tracker (compound 30d),
   // session.startCapitalUsd = baseline real untuk P&L hari ini.
@@ -268,7 +276,7 @@ export function pauseSession(reason = "MANUAL", durationMin = null) {
   plan.session.pausedUntil = new Date(Date.now() + dur).toISOString();
   plan.session.pauseReason = reason;
   savePlan(plan);
-  log("plan", `Session dijeda manual: min`);
+  log("plan", `Session dijeda manual: ${dur / 60000}min`);
   return true;
 }
 
@@ -284,17 +292,27 @@ export function resumeSession() {
 
 /**
  * Advance ke hari berikutnya.
+ * Idempotent: hanya bisa dijalankan sekali per UTC date.
+ * Schedule targets direcompute dari actual balance agar tidak divergen.
  */
-export function advanceDay(actualCapitalUsd) {
+export function advanceDay(actualCapitalUsd, activeStrategyId = null) {
   const plan = loadPlan();
   if (!plan) return null;
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  // B2: Idempotent guard — hanya bisa advance sekali per UTC date
+  if (plan._lastAdvancedAt === today) {
+    log("plan", `advanceDay skipped — already advanced today (${today})`);
+    return null;
+  }
 
   const dayIdx = plan.currentDay - 1;
   const daySchedule = plan.schedule[dayIdx] || null;
 
   const result = {
     day: plan.currentDay,
-    date: new Date().toISOString().slice(0, 10),
+    date: today,
     start_usd: plan.session.startCapitalUsd,
     target_usd: daySchedule?.target_usd,
     actual_usd: actualCapitalUsd,
@@ -306,13 +324,38 @@ export function advanceDay(actualCapitalUsd) {
     trades: plan.session.tradesCount,
     wins: plan.session.winCount || 0,
     losses: plan.session.lossCount || 0,
+    strategy_id: activeStrategyId || null,
   };
 
+  // B4: Recompute remaining schedule from actual balance
+  // Prevent compound schedule from diverging indefinitely from reality
+  if (Number.isFinite(actualCapitalUsd) && actualCapitalUsd > 0) {
+    const remainingDays = plan.days - plan.currentDay;
+    let capital = actualCapitalUsd;
+    for (let i = plan.currentDay; i < plan.days; i++) {
+      const target = capital * (1 + plan.dailyTargetPct / 100);
+      plan.schedule[i] = {
+        day: i + 1,
+        start_usd: parseFloat(capital.toFixed(4)),
+        target_usd: parseFloat(target.toFixed(4)),
+        profit_needed_usd: parseFloat((target - capital).toFixed(4)),
+        profit_pct: plan.dailyTargetPct,
+      };
+      capital = target;
+    }
+  }
+
   plan.dailyResults.push(result);
+  // B6: Cap dailyResults at 60 entries
+  if (plan.dailyResults.length > 60) {
+    plan.dailyResults = plan.dailyResults.slice(-60);
+  }
+
   plan.currentDay = Math.min(plan.currentDay + 1, plan.days);
+  plan._lastAdvancedAt = today; // B2: idempotent guard
 
   plan.session = {
-    date: new Date().toISOString().slice(0, 10),
+    date: today,
     dayNumber: plan.currentDay,
     startCapitalUsd: Number.isFinite(actualCapitalUsd) && actualCapitalUsd > 0 ? actualCapitalUsd : null,
     currentCapitalUsd: Number.isFinite(actualCapitalUsd) && actualCapitalUsd > 0 ? actualCapitalUsd : null,
@@ -331,7 +374,7 @@ export function advanceDay(actualCapitalUsd) {
 
   savePlan(plan);
   const nextSchedule = plan.schedule[plan.currentDay - 1];
-  log("plan", `Day ${result.day} selesai. P&L: ${result.pnl_pct}%. Day ${plan.currentDay} target: $${nextSchedule?.target_usd}`);
+  log("plan", `Day ${result.day} selesai. P&L: ${result.pnl_pct}%. Day ${plan.currentDay} target: $${nextSchedule?.target_usd?.toFixed(2) || "?"}`);
   return result;
 }
 

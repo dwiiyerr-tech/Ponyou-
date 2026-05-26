@@ -11,7 +11,10 @@
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { log } from "../logger.js";
 
-const DEVNET_RPC = process.env.DEVNET_RPC_URL || "https://api.devnet.solana.com";
+// Use current RPC_URL — works for devnet, localhost, or any custom endpoint
+function getRpcUrl() {
+  return process.env.RPC_URL || process.env.DEVNET_RPC_URL || "https://api.devnet.solana.com";
+}
 const FAUCET_AMOUNT_SOL = 2;
 const FAUCET_COOLDOWN_MS = 60_000; // max 1 airdrop per minute
 let _lastAirdrop = 0;
@@ -21,7 +24,7 @@ let _lastAirdrop = 0;
  * Rate-limited to 1 request per 60 seconds (network limit).
  */
 async function requestAirdrop(publicKey, amountSol = FAUCET_AMOUNT_SOL) {
-  const conn = new Connection(DEVNET_RPC, "confirmed");
+  const conn = new Connection(getRpcUrl(), "confirmed");
   const lamports = Math.floor(amountSol * LAMPORTS_PER_SOL);
 
   try {
@@ -54,7 +57,7 @@ export async function ensureDevnetBalance(walletPublicKey, minBalanceSol = 0.5) 
   }
 
   try {
-    const conn = new Connection(DEVNET_RPC, "confirmed");
+    const conn = new Connection(getRpcUrl(), "confirmed");
     const pubkey = typeof walletPublicKey === "string" ? new PublicKey(walletPublicKey) : walletPublicKey;
     const balance = await conn.getBalance(pubkey);
     const balanceSol = balance / LAMPORTS_PER_SOL;
@@ -78,13 +81,13 @@ export async function ensureDevnetBalance(walletPublicKey, minBalanceSol = 0.5) 
 export async function getDevnetBalance(walletPublicKey) {
   if (!walletPublicKey) return null;
   try {
-    const conn = new Connection(DEVNET_RPC, "confirmed");
+    const conn = new Connection(getRpcUrl(), "confirmed");
     const pubkey = typeof walletPublicKey === "string" ? new PublicKey(walletPublicKey) : walletPublicKey;
     const balance = await conn.getBalance(pubkey);
     return {
       sol: balance / LAMPORTS_PER_SOL,
       lamports: balance,
-      rpc: DEVNET_RPC,
+      rpc: getRpcUrl(),
     };
   } catch (e) {
     return { error: e.message };

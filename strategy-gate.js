@@ -25,7 +25,7 @@ function finiteNumber(value, fallback = 0) {
 
 function normalizeWinRate(value) {
   const winRate = finiteNumber(value, 0);
-  return winRate > 1 ? winRate / 100 : winRate;
+  return winRate >= 1 ? winRate / 100 : winRate;
 }
 
 function isWinTrade(trade = {}) {
@@ -85,26 +85,22 @@ function candidateEvidence(candidate = {}, key) {
 }
 
 function filterTradesForStrategy(trades = [], strategyId, candidate = {}) {
+  // Build the match set from precise identifiers (IDs) only, not names
   const ids = new Set([
     strategyId,
     candidate?.id,
-    candidate?.name,
     candidate?.strategyId,
     candidate?.strategy_id,
   ].filter(Boolean).map(String));
 
   return trades.filter(trade => {
+    // Prefer exact ID match on the most specific fields
     const values = [
       trade.strategyId,
       trade.strategy_id,
-      trade.strategy,
-      trade.strategyName,
-      trade.strategy_name,
       trade?.signal_snapshot?.strategyId,
       trade?.signal_snapshot?.strategy_id,
-      trade?.signal_snapshot?.strategy,
       trade?.signal_snapshot?.strategy?.id,
-      trade?.signal_snapshot?.strategy?.name,
     ].filter(Boolean).map(String);
     return values.some(value => ids.has(value));
   });
@@ -206,9 +202,12 @@ export class StrategyGate {
 
   constructor({
     minWinRate = 0.80,
-    minBacktestTrades = 100,
-    minPaperTrades = 30,
-    minLiveTrades = 20,
+    minBacktestTrades = 200,
+    minPaperTrades = 75,
+    minLiveTrades = 60,
+    minLiveProfitFactor = 1.15,
+    provisionalMinConviction = 0.80,
+    provisionalMinFundamentalScore = 70,
     backtestRunner = defaultBacktestRunner,
     paperTradeReader = defaultPaperTradeReader,
     liveTradeReader = null,
@@ -220,6 +219,9 @@ export class StrategyGate {
       minBacktestTrades,
       minPaperTrades,
       minLiveTrades,
+      minLiveProfitFactor,
+      provisionalMinConviction,
+      provisionalMinFundamentalScore,
     };
     this.#backtestRunner = backtestRunner;
     this.#paperTradeReader = paperTradeReader;
@@ -234,10 +236,82 @@ export class StrategyGate {
       : { ...maybeCandidate, id: strategyOrId };
     const strategyId = candidate.id ?? candidate.strategyId ?? candidate.strategy_id;
 
-    const backtestEvidence = normalizeEvidence(
-      await this.#backtestRunner(candidate, { strategyId }),
-      { requireProfitFactor: true }
+    // ── Provisional path for fundamental-produced candidates ────────
+    // These candidates lack trade evidence (no backtest/paper/live data)
+    // because they're produced from memory signals, not historical runs.
+    // Accept them provisionally based on fundamental conviction scores,
+    // then auto-promote once live trades accumulate.
+    const isFundamentalCandidate = candidate.source === "evolution"
+      || candidate.source === "fundamental"
+      || candidate._provisional === true;
+
+    if (isFundamentalCandidate) {
+      return this.#evaluateProvisional(candidate, strategyId);
+    }
+
+    return this.#evaluateStandard(candidate, strategyId);
+  }
+
+  async #evaluateProvisional(candidate, strategyId) {
+    const fundamentalScores = candidate.fundamental_scores || candidate.evidence?.fundamental || {};
+    const conviction = finiteNumber(
+      fundamentalScores.conviction
+      ?? fundamentalScores.coin_conviction
+      ?? (candidate.fundamentalScores?.conviction || 0),
+      0
     );
+    const aggregate = finiteNumber(
+      fundamentalScores.aggregate
+      ?? fundamentalScores.fundamental_score
+      ?? (candidate.fundamentalScores?.score || 0),
+      0
+    );
+
+    if (conviction < this.#cfg.provisionalMinConviction) {
+      return failResult({
+        layer: "PROVISIONAL",
+        reason: `provisional conviction ${conviction.toFixed(2)} < ${this.#cfg.provisionalMinConviction}`,
+        evidence: { fundamental: { conviction, aggregate } },
+        scores: { provisional: conviction },
+      });
+    }
+    if (aggregate < this.#cfg.provisionalMinFundamentalScore) {
+      return failResult({
+        layer: "PROVISIONAL",
+        reason: `provisional fundamental score ${aggregate} < ${this.#cfg.provisionalMinFundamentalScore}`,
+        evidence: { fundamental: { conviction, aggregate } },
+        scores: { provisional: aggregate },
+      });
+    }
+
+    return {
+      passed: true,
+      layer: "PROVISIONAL",
+      failedLayer: null,
+      winRate: null,
+      trades: 0,
+      rejectReason: null,
+      provisional: true,
+      scores: { provisional: aggregate, conviction },
+      evidence: { fundamental: { conviction, aggregate } },
+    };
+  }
+
+  async #evaluateStandard(candidate, strategyId) {
+    let backtestEvidence;
+    try {
+      backtestEvidence = normalizeEvidence(
+        await this.#backtestRunner(candidate, { strategyId }),
+        { requireProfitFactor: true }
+      );
+    } catch (e) {
+      return failResult({
+        layer: STRATEGY_GATE_LAYERS.BACKTEST,
+        reason: `backtest runner threw: ${e?.message || e}`,
+        evidence: {},
+        scores: {},
+      });
+    }
     const backtestFailure = this.#backtestFailure(backtestEvidence);
     if (backtestFailure) {
       return failResult({
@@ -248,7 +322,17 @@ export class StrategyGate {
       });
     }
 
-    const paperEvidence = normalizeEvidence(await this.#paperTradeReader(candidate, { strategyId }));
+    let paperEvidence;
+    try {
+      paperEvidence = normalizeEvidence(await this.#paperTradeReader(candidate, { strategyId }));
+    } catch (e) {
+      return failResult({
+        layer: STRATEGY_GATE_LAYERS.PAPER,
+        reason: `paper reader threw: ${e?.message || e}`,
+        evidence: { backtest: backtestEvidence },
+        scores: { backtest: backtestEvidence.winRate },
+      });
+    }
     const paperFailure = this.#paperFailure(paperEvidence);
     if (paperFailure) {
       return failResult({
@@ -265,7 +349,8 @@ export class StrategyGate {
         : await defaultLiveTradeReader(strategyId, candidate, {
             attributionPath: this.#attributionPath,
             convictionReader: this.#convictionReader,
-          })
+          }),
+      { requireProfitFactor: true }
     );
     const liveFailure = this.#liveFailure(liveEvidence);
     if (liveFailure) {
@@ -313,6 +398,12 @@ export class StrategyGate {
     }
     if (evidence.winRate < this.#cfg.minWinRate) {
       return `live win rate ${evidence.winRate} < ${this.#cfg.minWinRate}`;
+    }
+    // Profit factor check: even if win rate is high, live trades must show
+    // meaningful profit per loss. Prevents strategies that win tiny amounts
+    // but lose big from passing the gate.
+    if (evidence.profitFactor != null && evidence.profitFactor < this.#cfg.minLiveProfitFactor) {
+      return `live profit factor ${evidence.profitFactor.toFixed(2)} < ${this.#cfg.minLiveProfitFactor}`;
     }
     return null;
   }

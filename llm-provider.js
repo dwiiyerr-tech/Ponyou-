@@ -15,7 +15,7 @@ const PROVIDER_CONFIGS = {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: false,
+      toolChoice: true,
       vision: true,
       streaming: true,
     },
@@ -30,7 +30,7 @@ const PROVIDER_CONFIGS = {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: false,
+      toolChoice: true,
       vision: true,
       streaming: true,
     },
@@ -90,7 +90,7 @@ const PROVIDER_CONFIGS = {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: false,
+      toolChoice: true,
       vision: false,
       streaming: true,
     },
@@ -105,7 +105,7 @@ const PROVIDER_CONFIGS = {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: false,
+      toolChoice: true,
       vision: false,
       streaming: true,
     },
@@ -120,7 +120,7 @@ const PROVIDER_CONFIGS = {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: false,
+      toolChoice: true,
       vision: false,
       streaming: true,
     },
@@ -135,7 +135,7 @@ const PROVIDER_CONFIGS = {
     type: "openai-compatible",
     features: {
       systemRole: true,
-      toolChoice: false,
+      toolChoice: true,
       vision: false,
       streaming: true,
     },

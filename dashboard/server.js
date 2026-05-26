@@ -9,7 +9,7 @@ import { readBotState } from "./state-reader.js";
 import { globalLogBuffer } from "./log-buffer.js";
 import { createApiRouter } from "./routes/api.js";
 import { createWizardRouter } from "./routes/wizard.js";
-import { generateToken, authMiddleware } from "./auth.js";
+import { generateToken, authMiddleware, validateTokenWs } from "./auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -52,12 +52,34 @@ export function createDashboardServer({ port = 3000 } = {}) {
   const server = createServer(app);
   const wss = new WebSocketServer({ server });
 
+  // Sensitive fields that must never be broadcast to dashboard clients
+  const SENSITIVE_FIELDS = new Set([
+    "walletKey", "privateKey", "keypair", "secretKey", "seedPhrase",
+    "mnemonic", "vaultPrivateKey", "vault_key", "apiKey", "api_key",
+    "rpcToken", "heliusApiKey", "helius_api_key", "authToken", "auth_token",
+    "password", "passphrase", "signer", "_keypair", "_privateKey",
+  ]);
+
+  function stripSensitive(obj, seen = new WeakSet()) {
+    if (obj == null || typeof obj !== "object") return obj;
+    if (seen.has(obj)) return "[Circular]";
+    seen.add(obj);
+    if (Array.isArray(obj)) return obj.map(v => stripSensitive(v, seen));
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (SENSITIVE_FIELDS.has(k)) { out[k] = "[REDACTED]"; continue; }
+      out[k] = stripSensitive(v, seen);
+    }
+    return out;
+  }
+
   // Broadcast state every 2s
   const broadcastTimer = setInterval(async () => {
     if (wss.clients.size === 0) return;
     try {
       const state = await readBotState();
-      const msg = JSON.stringify({ type: "state", data: state });
+      const safe = stripSensitive(state);
+      const msg = JSON.stringify({ type: "state", data: safe });
       for (const client of wss.clients) {
         if (client.readyState === 1) client.send(msg);
       }
@@ -65,7 +87,14 @@ export function createDashboardServer({ port = 3000 } = {}) {
   }, 2000);
 
   // Send buffered logs on connect, then stream new ones
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
+    // Authenticate WebSocket connections
+    if (!validateTokenWs(req)) {
+      ws.send(JSON.stringify({ type: "error", data: "Unauthorized — provide ?token= or dashtoken cookie" }));
+      ws.close(4001, "Unauthorized");
+      return;
+    }
+
     const lines = globalLogBuffer.lines();
     for (const line of lines) {
       ws.send(JSON.stringify({ type: "log", data: line }));

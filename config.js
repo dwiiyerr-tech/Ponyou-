@@ -208,8 +208,8 @@ export const config = {
 
   // ─── Risk Limits ─────────────────────────
   risk: {
-    maxPositions:    u.maxPositions    ?? 3,
-    maxDeployAmount: u.maxDeployAmount ?? 50,
+    maxPositions:    u.maxPositions    ?? 2,
+    maxDeployAmount: u.maxDeployAmount ?? 35,
   },
 
   kelly: {
@@ -217,7 +217,7 @@ export const config = {
     fraction:        u.kellyFraction ?? 0.5,
     minFraction:     u.kellyMinFraction ?? 0.1,
     maxFraction:     u.kellyMaxFraction ?? 0.8,
-    minSampleTrades: u.kellyMinSampleTrades ?? 5,
+    minSampleTrades: u.kellyMinSampleTrades ?? 15,
   },
 
   capitalSizing: {
@@ -233,11 +233,11 @@ export const config = {
 
   decisionWorkflow: {
     enabled: u.decisionWorkflowEnabled ?? true,
-    probeSizeFraction: u.probeSizeFraction ?? 0.35,
-    minConvictionScore: u.minConvictionScore ?? 35,
-    minConvictionConfidence: u.minConvictionConfidence ?? 20,
+    probeSizeFraction: u.probeSizeFraction ?? 0.25,
+    minConvictionScore: u.minConvictionScore ?? 45,
+    minConvictionConfidence: u.minConvictionConfidence ?? 25,
     activeConvictionScore: u.activeConvictionScore ?? 65,
-    activeConvictionConfidence: u.activeConvictionConfidence ?? 45,
+    activeConvictionConfidence: u.activeConvictionConfidence ?? 50,
   },
 
   regimeMemory: {
@@ -283,6 +283,10 @@ export const config = {
     athFilterPct:       u.athFilterPct       ?? null, // e.g. -20 = only deploy if price is >= 20% below ATH
   },
 
+
+  // --- Pipeline Test Mode (DEMO only) ---
+  // Forces tokens through the full pipeline for testing. Safe: sell simulator is final gate.
+  pipelineTestMode:     u.pipelineTestMode       ?? false,
   // ─── Position Management ────────────────
   management: {
     minClaimAmount:        u.minClaimAmount        ?? 5,
@@ -300,7 +304,7 @@ export const config = {
     minSolToOpen:          u.minSolToOpen          ?? 0.55,
     deployAmountSol:       u.deployAmountSol       ?? 0.5,
     gasReserve:            u.gasReserve            ?? 0.2,
-    positionSizePct:       u.positionSizePct       ?? 0.35,
+    positionSizePct:       u.positionSizePct       ?? 0.25,
     // Trailing take-profit
     trailingTakeProfit:    u.trailingTakeProfit    ?? true,
     trailingTriggerPct:    u.trailingTriggerPct    ?? 5,    // activate trailing at X% PnL
@@ -348,7 +352,7 @@ export const config = {
   // the LLM. See fast-buy.js for the gate logic.
   fastTrack: {
     enabled:           u.fastTrackEnabled        ?? false,
-    maxRugScore:       u.fastTrackMaxRugScore    ?? 20,
+    maxRugScore:       u.fastTrackMaxRugScore    ?? 10,
     minMcap:           u.fastTrackMinMcap        ?? 150_000,
     maxMcap:           u.fastTrackMaxMcap        ?? 5_000_000,
     minVolumeUsd:      u.fastTrackMinVolume      ?? 50_000,
@@ -510,13 +514,13 @@ jupiter: {
  */
 export function computeDeployAmount(walletSol, opts = {}) {
   const reserve  = config.management.gasReserve      ?? 0.2;
-  const pct      = config.management.positionSizePct ?? 0.35;
+  const pct      = config.management.positionSizePct != null ? config.management.positionSizePct : 0.35;
   let   floor    = config.management.deployAmountSol;
   let   ceil     = config.risk.maxDeployAmount;
 
   // Pilot cap: deploy per trade tidak boleh > pilotCapitalUsd / maxPositions
   if (config.pilot.enabled && opts.solPriceUsd && opts.solPriceUsd > 0) {
-    const slots = Math.max(1, config.risk.maxPositions || 3);
+    const slots = Math.max(1, config.risk.maxPositions ?? 3);
     const perTradeUsd = config.pilot.initialCapitalUsd / slots;
     const pilotCapSol = perTradeUsd / opts.solPriceUsd;
     ceil  = Math.min(ceil, pilotCapSol);
@@ -591,5 +595,5 @@ export function reloadScreeningThresholds() {
     if (fresh.maxBotHoldersPct  != null) s.maxBotHoldersPct = fresh.maxBotHoldersPct;
     if (fresh.allowedLaunchpads !== undefined) s.allowedLaunchpads = fresh.allowedLaunchpads;
     if (fresh.blockedLaunchpads !== undefined) s.blockedLaunchpads = fresh.blockedLaunchpads;
-  } catch { /* ignore */ }
+  } catch (e) { console.warn("[config] reloadScreeningThresholds failed:", e.message); }
 }

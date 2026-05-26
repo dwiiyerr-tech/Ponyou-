@@ -206,19 +206,58 @@ export function recordTradeOutcome({
   exit_reason,
   rug_detected = false,
   attribution = null,
+  entry_sol = null,
+  exit_sol = null,
+  swap_fee_sol = null,
+  actual_realized_pct = null,
 }) {
   const perf = loadPerf();
+
+  // ─── PnL reconciliation ──────────────────────────────────────
+  // Cross-check recorded pnl_pct against (exit_usd - entry_usd) / entry_usd.
+  // Log warning if discrepancy > 5% — this signals feed/timing skew.
+  let reconciled_pnl_pct = parseFloat((pnl_pct || 0).toFixed(2));
+  if (entry_usd > 0 && Number.isFinite(exit_usd) && exit_usd > 0) {
+    const derivedPnl = ((exit_usd - entry_usd) / entry_usd) * 100;
+    const drift = Math.abs(reconciled_pnl_pct - derivedPnl);
+    if (drift > 5) {
+      console.warn(`[pnl_reconciliation] DRIFT ${drift.toFixed(1)}%: recorded=${reconciled_pnl_pct.toFixed(1)}% derived=${derivedPnl.toFixed(1)}% for ${symbol || mint?.slice(0, 8)}`);
+      // Persist reconciliation warnings for diagnostics
+      if (!perf._reconciliation_warnings) perf._reconciliation_warnings = [];
+      perf._reconciliation_warnings.push({
+        ts: new Date().toISOString(),
+        mint,
+        symbol,
+        recorded_pnl: reconciled_pnl_pct,
+        derived_pnl: parseFloat(derivedPnl.toFixed(2)),
+        drift_pct: parseFloat(drift.toFixed(2)),
+      });
+      if (perf._reconciliation_warnings.length > 50) perf._reconciliation_warnings = perf._reconciliation_warnings.slice(-50);
+    }
+  }
+
+  // ─── SOL-in / SOL-out tracking ───────────────────────────────
+  let sol_pnl_pct = null;
+  if (entry_sol > 0 && exit_sol != null && Number.isFinite(exit_sol)) {
+    sol_pnl_pct = parseFloat((((exit_sol - entry_sol) / entry_sol) * 100).toFixed(2));
+  }
+
   perf.trades.push({
     ts: new Date().toISOString(),
     mint,
     symbol,
     entry_usd,
     exit_usd,
-    pnl_pct: parseFloat((pnl_pct || 0).toFixed(2)),
+    pnl_pct: reconciled_pnl_pct,
+    sol_pnl_pct,
+    entry_sol: entry_sol != null ? parseFloat(entry_sol.toFixed(6)) : null,
+    exit_sol: exit_sol != null ? parseFloat(exit_sol.toFixed(6)) : null,
+    swap_fee_sol: swap_fee_sol != null ? parseFloat(swap_fee_sol.toFixed(6)) : null,
+    actual_realized_pct: actual_realized_pct != null ? parseFloat(actual_realized_pct.toFixed(2)) : null,
     hold_minutes: Math.floor(hold_minutes || 0),
     exit_reason,
     rug_detected,
-    win: (pnl_pct || 0) > 0,
+    win: (reconciled_pnl_pct || 0) > 0,
     attribution,
   });
   // Keep last 500 trades
@@ -254,18 +293,25 @@ export function getPerformanceSummary() {
   const recentWins = recent.filter(t => t.win);
   const avgPnl = trades.reduce((s, t) => s + (t.pnl_pct || 0), 0) / trades.length;
   const avgHold = trades.reduce((s, t) => s + (t.hold_minutes || 0), 0) / trades.length;
+  const totalUsdPnl = trades.reduce((s, t) => s + ((t.entry_usd || 0) * (t.pnl_pct || 0) / 100), 0);
+  const reconciliationWarnings = perf._reconciliation_warnings?.length || 0;
 
   return [
     `Trades: ${trades.length} | Win Rate: ${wins.length}/${trades.length} (${((wins.length/trades.length)*100).toFixed(0)}%)`,
     `Recent (last 20): ${recentWins.length}/20 wins`,
-    `Avg PnL: ${avgPnl.toFixed(1)}% | Avg Hold: ${Math.floor(avgHold)}min`,
-    `Rugs Detected: ${rugs.length}`,
+    `Avg PnL: ${avgPnl.toFixed(1)}% | Avg Hold: ${Math.floor(avgHold)}min | Cumul. PnL: ${totalUsdPnl >= 0 ? '+' : ''}$${totalUsdPnl.toFixed(2)}`,
+    `Rugs Detected: ${rugs.length}` + (reconciliationWarnings > 0 ? ` | PnL Drift Warnings: ${reconciliationWarnings}` : ''),
   ].join("\n");
 }
 
 export function getPerformanceHistory({ limit = 20 } = {}) {
   const perf = loadPerf();
   return perf.trades.slice(-limit);
+}
+
+export function getReconciliationWarnings() {
+  const perf = loadPerf();
+  return perf._reconciliation_warnings || [];
 }
 
 export function clearPerformance() {
@@ -352,48 +398,138 @@ function _learnedPatternCount() {
  * Score a token against known rug patterns (0=safe, 100=certain rug).
  * Higher score = more suspicious.
  */
-export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {} }) {
+export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {}, mcap = null }) {
   const mem = loadRugMemory();
   let score = 0;
   const reasons = [];
 
+  // ─── Market cap tier awareness ────────────────────────────
+  // Rug patterns differ by FDV. A signal that's normal at $10K
+  // is highly suspicious at $10M. Apply per-tier multipliers.
+  const mcapVal = Number(mcap || 0);
+  const tier = mcapVal >= 50_000_000 ? "HIGH_CAP"
+    : mcapVal >= 5_000_000  ? "MID_CAP"
+    : mcapVal >= 100_000    ? "MICRO_CAP"
+    : "NEW_PAIR";
+
+  // Per-tier signal weight multipliers (>1.0 = more suspicious at this tier)
+  const tierMultipliers = {
+    NEW_PAIR: {
+      bundle_buy: 0.7,       // expected on new pairs — less suspicious
+      supply_conc: 0.8,       // normal for fresh launches
+      same_funder: 0.8,       // common at micro scale
+      creator_heavy: 1.0,     // neutral — dev bag matters at any tier
+      lp_unlocked: 1.3,       // VERY dangerous on new pairs
+      transfer_hook: 1.2,     // honeypot is honeypot
+      wash_trade: 0.6,        // low volume makes this less reliable
+      hidden_control: 0.7,    // less relevant at micro scale
+    },
+    MICRO_CAP: {
+      bundle_buy: 1.0,        // baseline
+      supply_conc: 1.0,
+      same_funder: 1.0,
+      creator_heavy: 1.0,
+      lp_unlocked: 1.1,
+      transfer_hook: 1.0,
+      wash_trade: 0.8,
+      hidden_control: 1.0,
+    },
+    MID_CAP: {
+      bundle_buy: 1.3,        // more suspicious — organic demand expected
+      supply_conc: 1.2,       // concentration at $5M+ is concerning
+      same_funder: 1.4,       // coordinated wallets at mid cap = cabal
+      creator_heavy: 1.1,
+      lp_unlocked: 0.9,       // deeper liquidity, less instant-rug risk
+      transfer_hook: 1.0,
+      wash_trade: 1.3,        // wash trading to simulate volume
+      hidden_control: 1.4,    // hidden coordination is key mid-cap risk
+    },
+    HIGH_CAP: {
+      bundle_buy: 1.5,        // bundle at $50M+ = almost certainly insider
+      supply_conc: 1.5,       // concentrated supply at high cap = whale trap
+      same_funder: 1.6,       // coordinated wallets at high cap = institutional rug
+      creator_heavy: 1.2,
+      lp_unlocked: 0.7,       // high cap has deeper LP, less rug risk
+      transfer_hook: 0.8,     // rare at high cap
+      wash_trade: 1.5,        // engineered volume for exit liquidity
+      hidden_control: 1.8,    // the #1 high-cap rug pattern
+    },
+  };
+
+  const multipliers = tierMultipliers[tier] || tierMultipliers.MICRO_CAP;
+
   // Hard blocks
   if (mint && mem.blacklisted_tokens.includes(mint)) {
-    return { score: 100, reasons: ["Token is blacklisted (known rug)"] };
+    return { score: 100, risk_level: "HIGH", reasons: ["Token is blacklisted (known rug)"], matched_patterns: [] };
   }
   if (creator && mem.blacklisted_devs.includes(creator)) {
     score += 70;
     reasons.push(`Dev ${creator.slice(0, 12)} has rug history`);
   }
 
-  // Check launchpad patterns
-  const rugLaunchpads = mem.patterns
-    .filter(p => p.launchpad)
-    .reduce((acc, p) => { acc[p.launchpad] = (acc[p.launchpad] || 0) + 1; return acc; }, {});
-  if (launchpad && rugLaunchpads[launchpad] >= 3) {
-    score += 20;
-    reasons.push(`Launchpad ${launchpad} had ${rugLaunchpads[launchpad]} rugs`);
+  // ─── Launchpad reputation ──────────────────────────────────
+  // Launchpads with high historical rug rates get a baseline penalty.
+  // This is DexScreener-level data (free) — no Helius cost.
+  if (launchpad) {
+    const HIGH_RISK_LAUNCHPADS = new Set(["pump.fun"]);
+    const launchpadLower = launchpad.toLowerCase();
+    if (HIGH_RISK_LAUNCHPADS.has(launchpadLower)) {
+      score += 10;
+      reasons.push(`Launchpad ${launchpad} has elevated rug history — baseline caution applied`);
+    }
+    const rugLaunchpads = mem.patterns
+      .filter(p => p.launchpad)
+      .reduce((acc, p) => { acc[p.launchpad] = (acc[p.launchpad] || 0) + 1; return acc; }, {});
+    if (launchpad && rugLaunchpads[launchpad] >= 3) {
+      score += 20;
+      reasons.push(`Launchpad ${launchpad} had ${rugLaunchpads[launchpad]} rugs`);
+    }
+  }
+
+  // ─── Wire trash-filter flags into scoring ─────────────────
+  if (rug_signals._trash_flags?.length > 0) {
+    for (const flag of rug_signals._trash_flags) {
+      switch (flag) {
+        case "very_young":          score += 10; reasons.push("Token <2min old — insufficient data"); break;
+        case "already_pumping":     score += 18; reasons.push("Already pumped >500% — extremely high risk of late entry"); break;
+        case "dumping_hard":        score += 15; reasons.push("Dumping >60% in 5min"); break;
+        case "suspicious_avg_trade_size": score += 10; reasons.push("Suspicious avg trade size"); break;
+        case "dust_trading":        score += 10; reasons.push("Dust-level avg trade — no real volume"); break;
+        case "long_symbol":         score += 3;  reasons.push("Unusually long ticker symbol"); break;
+        case "fresh_copycat":       score += 20; reasons.push("Symbol matches recently rugged token"); break;
+        case "suspicious_buy_pattern": score += 18; reasons.push("Suspicious buy pattern — likely self-trading"); break;
+        case "heavy_selling":       score += 12; reasons.push("Heavy selling pressure at discovery"); break;
+        case "mcap_zero_or_nan":    score += 12; reasons.push("Market cap data unavailable — unknown valuation"); break;
+        default:
+          if (flag.startsWith("high_risk_launchpad:")) {
+            const lp = flag.split(":")[1];
+            score += 8;
+            reasons.push(`High-risk launchpad: ${lp}`);
+          }
+          break;
+      }
+    }
   }
 
   // ─── Layer 1: Token-2022 hard blocks ──────────────────────
   const rs = rug_signals;
   if (rs._collector_error) {
-    return { score: 100, reasons: [`Security collector failed: ${rs._collector_error}`] };
+    return { score: 100, risk_level: "HIGH", reasons: [`Security collector failed: ${rs._collector_error}`], matched_patterns: [] };
   }
   if (rs._helius_expected && rs._helius_degraded) {
-    return { score: 100, reasons: [`Helius enrichment unavailable: ${rs._helius_reason || "critical rug telemetry missing"}`] };
+    return { score: 100, risk_level: "HIGH", reasons: [`Helius enrichment unavailable: ${rs._helius_reason || "critical rug telemetry missing"}`], matched_patterns: [] };
   }
   if (rs.non_transferable) {
-    return { score: 100, reasons: ["Token is non-transferable (soulbound) — cannot sell"] };
+    return { score: 100, risk_level: "HIGH", reasons: ["Token is non-transferable (soulbound) — cannot sell"], matched_patterns: [] };
   }
   if (rs.transfer_hook) {
-    return { score: 100, reasons: [`Transfer hook program ${rs.transfer_hook.slice(0, 12)} — almost certainly honeypot`] };
+    return { score: 100, risk_level: "HIGH", reasons: [`Transfer hook program ${rs.transfer_hook.slice(0, 12)} — almost certainly honeypot`], matched_patterns: [] };
   }
   if (rs.permanent_delegate) {
-    return { score: 100, reasons: [`Permanent delegate ${rs.permanent_delegate.slice(0, 12)} can confiscate holdings`] };
+    return { score: 100, risk_level: "HIGH", reasons: [`Permanent delegate ${rs.permanent_delegate.slice(0, 12)} can confiscate holdings`], matched_patterns: [] };
   }
   if (rs.transfer_fee_bps >= 1000) {
-    return { score: 100, reasons: [`Transfer fee ${rs.transfer_fee_bps / 100}% — extraction tax`] };
+    return { score: 100, risk_level: "HIGH", reasons: [`Transfer fee ${rs.transfer_fee_bps / 100}% — extraction tax`], matched_patterns: [] };
   }
   if (rs.default_frozen) {
     score += 70; reasons.push("Default account state = frozen (sell needs unfreeze)");
@@ -403,11 +539,15 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {} }) {
   }
 
   // ─── Standard rug signals ────────────────────────────────
+  // Apply per-tier multipliers: what's normal at $10K is suspicious at $10M
+  const M = (key, baseScore) => Math.round(baseScore * (multipliers[key] ?? 1.0));
+  const Mnote = (key) => multipliers[key] !== 1.0 ? ` [${tier} ×${multipliers[key].toFixed(1)}]` : "";
+
   if (rs.top10_concentration_pct > 70) {
     if (rs.context_allows_concentration) {
-      score += 8; reasons.push(`Top10 holds ${rs.top10_concentration_pct}% but context is strong enough that this is caution, not auto-rug`);
+      score += M("supply_conc", 8); reasons.push(`Top10 holds ${rs.top10_concentration_pct}% but context is strong enough that this is caution, not auto-rug`);
     } else {
-      score += 20; reasons.push(`Top10 holds ${rs.top10_concentration_pct}%`);
+      score += M("supply_conc", 20); reasons.push(`Top10 holds ${rs.top10_concentration_pct}%${Mnote("supply_conc")}`);
     }
   }
   if (rs.fresh_funded_holders >= 5)    { score += 15; reasons.push(`${rs.fresh_funded_holders} holders funded <24h`); }
@@ -415,26 +555,26 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {} }) {
   if (rs.freeze_authority)             { score += 15; reasons.push("Freeze authority active"); }
   if (rs.mint_authority)               { score += 15; reasons.push("Mint authority active"); }
   if (rs.is_honeypot)                  { score += 40; reasons.push("Is honeypot"); }
-  if (rs.creator_pct > 20)             { score += 20; reasons.push(`Creator holds ${rs.creator_pct}%`); }
+  if (rs.creator_pct > 20)             { score += M("creator_heavy", 20); reasons.push(`Creator holds ${rs.creator_pct}%${Mnote("creator_heavy")}`); }
   if (rs.max_holder_pct > 10 && !rs.context_allows_concentration) {
     score += 10; reasons.push(`Single holder controls ${rs.max_holder_pct}% in weak context`);
   }
 
   // ─── Layer 2: Helius behavioural signals ─────────────────
   if (rs.bundled) {
-    score += 25; reasons.push(`Bundled launch: ${rs.bundled_score || 0} holders funded by same wallet within launch window`);
+    score += M("bundle_buy", 25); reasons.push(`Bundled launch: ${rs.bundled_score || 0} holders funded by same wallet within launch window${Mnote("bundle_buy")}`);
   }
   if (rs.supply_concentrated) {
-    score += 20; reasons.push(`Top20 holders control ${rs.top20_pct || 0}% supply`);
+    score += M("supply_conc", 20); reasons.push(`Top20 holders control ${rs.top20_pct || 0}% supply${Mnote("supply_conc")}`);
   }
-  if (rs.bundle_buyers_pct > 30)       { score += 25; reasons.push(`${rs.bundle_buyers_pct}% bought in launch window — bundle snipers`); }
-  if (rs.same_funder_holders >= 3)     { score += 20; reasons.push(`${rs.same_funder_holders} top holders share funder ${rs.common_funder?.slice(0, 8)} — sybil cluster`); }
-  if (rs.lp_locked === false)          { score += 15; reasons.push("LP not locked"); }
-  if (rs.wash_score >= 30)             { score += 10; reasons.push(`Wash trade pattern (ratio ${rs.buy_sell_ratio})`); }
+  if (rs.bundle_buyers_pct > 30)       { score += M("bundle_buy", 25); reasons.push(`${rs.bundle_buyers_pct}% bought in launch window — bundle snipers${Mnote("bundle_buy")}`); }
+  if (rs.same_funder_holders >= 3)     { score += M("same_funder", 20); reasons.push(`${rs.same_funder_holders} top holders share funder ${rs.common_funder?.slice(0, 8)} — sybil cluster${Mnote("same_funder")}`); }
+  if (rs.lp_locked === false)          { score += M("lp_unlocked", 15); reasons.push(`LP not locked${Mnote("lp_unlocked")}`); }
+  if (rs.wash_score >= 30)             { score += M("wash_trade", 10); reasons.push(`Wash trade pattern (ratio ${rs.buy_sell_ratio})${Mnote("wash_trade")}`); }
   if (rs.hidden_wallet_control_score >= 70) {
-    score += 22; reasons.push(`Hidden wallet control score ${rs.hidden_wallet_control_score}/100 — concentration may be disguised across wallets`);
+    score += M("hidden_control", 22); reasons.push(`Hidden wallet control score ${rs.hidden_wallet_control_score}/100 — concentration may be disguised across wallets${Mnote("hidden_control")}`);
   } else if (rs.hidden_wallet_control_score >= 40) {
-    score += 12; reasons.push(`Hidden wallet control score ${rs.hidden_wallet_control_score}/100`);
+    score += M("hidden_control", 12); reasons.push(`Hidden wallet control score ${rs.hidden_wallet_control_score}/100${Mnote("hidden_control")}`);
   }
   if (rs.holder_structure_risk === "HIGH") {
     score += 15; reasons.push(rs.holder_context_note || "Holder structure looks coordinated");
@@ -467,6 +607,10 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {} }) {
     reasons,
     matched_patterns: matchedPatternIds,
   };
+}
+
+export function getRugMemory() {
+  return loadRugMemory();
 }
 
 export function getRugMemorySummary() {

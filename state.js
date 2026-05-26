@@ -79,27 +79,46 @@ export function cleanStaleTestPositions() {
       cleaned++;
     }
   }
-  if (cleaned > 0) {
-    save({ ...state, positions });
-    log("state", `Cleaned ${cleaned} stale/test positions from state`);
+  // Also clean stale test events from recentEvents
+  let eventsCleaned = 0;
+  const events = state.recentEvents || [];
+  if (events.length > 0) {
+    const testMintPattern = /^(mintSell|SMOKE_TEST|TEST_)/i;
+    state.recentEvents = events.filter(e => {
+      const isTest = testMintPattern.test(e.position || "") || testMintPattern.test(e.position_key || "");
+      if (isTest) eventsCleaned++;
+      return !isTest;
+    });
+  }
+  if (cleaned > 0 || eventsCleaned > 0) {
+    save({ ...state, positions, recentEvents: state.recentEvents });
+    log("state", `Cleaned ${cleaned} stale/test positions + ${eventsCleaned} events from state`);
   }
   return cleaned;
 }
 
+let _lastWriteFailed = false;
+
 async function save(state) {
-  // Only update the in-memory cache AFTER the disk write succeeds. Otherwise
-  // a failed write leaves us with cache that doesn't match disk.
+  // Queue writes so concurrent trackPosition/recordClose calls don't race.
+  // Returns a promise that resolves when the write completes. Callers can
+  // check _lastWriteFailed immediately after await to detect durability loss.
   _writeQueue = _writeQueue.then(async () => {
     state.lastUpdated = new Date().toISOString();
     try {
-      // Atomic write: temp file + rename, so partial writes can't corrupt state.
       await atomicWriteJsonAsync(STATE_FILE, state);
       _stateCache = state;
+      _lastWriteFailed = false;
     } catch (err) {
       log("state_error", `Failed to write state.json: ${err.message}`);
+      _lastWriteFailed = true;
     }
-  });
+  }).catch(() => {}); // keep queue alive even if a prev write failed
   return _writeQueue;
+}
+
+export function wasLastWriteFailed() {
+  return _lastWriteFailed;
 }
 
 /**
@@ -113,6 +132,17 @@ export async function flushState() {
   } catch (_) {
     // errors already logged in save()
   }
+}
+
+/**
+ * Replace the in-memory state with a new object and persist it.
+ * Prefer this over direct atomicWriteJson to state.json — it serialises
+ * through the write queue and avoids races with concurrent trackPosition()
+ * or recordClose() calls.
+ */
+export function saveState(state) {
+  _stateCache = state;
+  return save(state);
 }
 
 // ─── Position Registry ─────────────────────────────────────────
@@ -136,14 +166,27 @@ export function trackPosition({
 }) {
   const state = load();
   const position_key = buildPositionKey(position, wallet_address);
+
+  // Guard: initial_value_usd must be meaningful. A zero here means future
+  // PnL calculations for this position will always read 0%, poisoning
+  // performance metrics and conviction memory.
+  const usd = Number(initial_value_usd);
+  if (!Number.isFinite(usd) || usd <= 0) {
+    log("state_warn", `trackPosition: initial_value_usd=${initial_value_usd} for ${position_key} — PnL will be 0% until manually corrected`);
+  }
+
   state.positions[position_key] = {
     position_key,
     position,
     pool,
     pool_name,
     amount_sol,
-    initial_value_usd,
-    signal_snapshot: signal_snapshot || null,
+    initial_value_usd: usd > 0 ? usd : (Number(amount_sol) > 0 ? Number(amount_sol) : 0),
+    signal_snapshot: signal_snapshot || {
+      mint: position,
+      recorded_at: new Date().toISOString(),
+      _fallback: true,
+    },
     active_lessons: active_lessons || [],
     active_signals: active_signals || [],
     wallet_address,
@@ -355,7 +398,7 @@ export function syncOpenPositions(active_addresses) {
     log("state", `Position ${normalizedKey} auto-closed (missing from on-chain data)`);
   }
 
-  if (changed) save(state);
+  if (changed) save(state); // fire-and-forget — the write queue persists, no need to block
 }
 
 export function _resetStateForTests() {

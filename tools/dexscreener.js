@@ -14,6 +14,14 @@ import { discoverBirdeyeTokens, enrichTokensWithBirdeye, isBirdeyeEnabled } from
 
 const DS_BASE = "https://api.dexscreener.com";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
+const JUPITER_TOKEN_API = "https://token.jup.ag/strict";
+const JUPITER_QUOTE_API = "https://quote-api.jup.ag/v6";
+
+// Quality floor for discovery pre-filter — rejects obvious dust/scams
+// before they reach the trash filter, saving API calls and cycles.
+const MIN_DISCOVERY_LIQUIDITY = 500;   // $500 minimum pool liquidity
+const MIN_DISCOVERY_SWAPS = 1;         // at least 1 swap
+const MIN_DISCOVERY_MCAP = 1000;       // $1,000 minimum market cap
 
 let _connection = null;
 function getSolanaConnection() {
@@ -157,36 +165,59 @@ function mergeTokenLists(primary = [], secondary = []) {
 
 export async function discoverTokens({ timeframe = "1m", limit = 20 } = {}) {
   try {
-    // Step 1: Get trending tokens (boosted) + latest new profiles on Solana
-    const [boostData, profileData] = await Promise.allSettled([
+    // Step 1: Discovery sources — prioritize NEW tokens over BOOSTED tokens.
+    // token-profiles/latest = real new tokens (organic), includes pump.fun launches
+    // token-boosts/top = paid promotion (mostly garbage), use as supplement only
+    const [boostData, profileData, pumpFunData] = await Promise.allSettled([
       fetchDS(`${DS_BASE}/token-boosts/top/v1`),
       fetchDS(`${DS_BASE}/token-profiles/latest/v1`),
+      discoverPumpFunTokens(), // pump.fun ecosystem via DexScreener
     ]);
 
-    const boostMap = new Map();
+    const tokenSet = new Map(); // mint → { boostAmount, source }
 
-    if (boostData.status === "fulfilled") {
-      const boosts = Array.isArray(boostData.value) ? boostData.value : [];
-      for (const b of boosts.filter(b => b.chainId === "solana").slice(0, 30)) {
-        boostMap.set(b.tokenAddress, b.totalAmount || b.amount || 0);
-      }
-    }
-
+    // Priority 1: New token profiles (organic, includes pump.fun launches)
     if (profileData.status === "fulfilled") {
       const profiles = Array.isArray(profileData.value) ? profileData.value : [];
-      for (const p of profiles.filter(p => p.chainId === "solana").slice(0, 20)) {
-        if (!boostMap.has(p.tokenAddress)) boostMap.set(p.tokenAddress, 0);
+      for (const p of profiles.filter(p => p.chainId === "solana").slice(0, 30)) {
+        if (!tokenSet.has(p.tokenAddress)) {
+          tokenSet.set(p.tokenAddress, { boost: 0, source: "profile" });
+        }
       }
     }
 
-    if (boostMap.size === 0) {
-      log("discovery_error", "DexScreener: no tokens from boosts/profiles");
+    // Priority 2: pump.fun ecosystem tokens
+    if (pumpFunData.status === "fulfilled" && Array.isArray(pumpFunData.value)) {
+      for (const pf of pumpFunData.value.slice(0, 15)) {
+        if (!tokenSet.has(pf.mint)) {
+          tokenSet.set(pf.mint, { boost: 50, source: "pumpfun" }); // pump.fun tokens get priority boost
+        } else {
+          // Already in list — mark as pump.fun and boost priority
+          const existing = tokenSet.get(pf.mint);
+          existing.boost = Math.max(existing.boost, 50);
+          existing.source = "pumpfun+" + existing.source;
+        }
+      }
+    }
+
+    // Priority 3: Boosted tokens (paid promotion — supplement only)
+    if (boostData.status === "fulfilled") {
+      const boosts = Array.isArray(boostData.value) ? boostData.value : [];
+      for (const b of boosts.filter(b => b.chainId === "solana").slice(0, 20)) {
+        if (!tokenSet.has(b.tokenAddress)) {
+          tokenSet.set(b.tokenAddress, { boost: b.totalAmount || b.amount || 0, source: "boosted" });
+        }
+      }
+    }
+
+    if (tokenSet.size === 0) {
+      log("discovery_error", "DexScreener: no tokens from any source");
       if (isBirdeyeEnabled()) return discoverBirdeyeTokens({ timeframe, limit });
       return { error: "No tokens found", tokens: [] };
     }
 
     // Step 2: Fetch full pair data for collected addresses
-    const addresses = [...boostMap.keys()].slice(0, 30).join(",");
+    const addresses = [...tokenSet.keys()].slice(0, 30).join(",");
     const tokenData = await fetchDS(`${DS_BASE}/latest/dex/tokens/${addresses}`);
     const pairs = (tokenData.pairs || []).filter(p => p.chainId === "solana");
 
@@ -195,20 +226,47 @@ export async function discoverTokens({ timeframe = "1m", limit = 20 } = {}) {
       return { error: "No pair data from DexScreener", tokens: [] };
     }
 
-    // Step 3: Deduplicate by mint — keep highest-liquidity pair per token
+    // Step 3: Deduplicate by mint + enrich with pump.fun priority
     const tokenMap = new Map();
     for (const pair of pairs) {
       const mint = pair.baseToken.address;
       if (mint === SOL_MINT) continue;
       const liq = pair.liquidity?.usd || 0;
+      const meta = tokenSet.get(mint) || { boost: 0, source: "unknown" };
       if (!tokenMap.has(mint) || liq > (tokenMap.get(mint).liquidity || 0)) {
-        tokenMap.set(mint, mapPair(pair, boostMap.get(mint) || 0, timeframe));
+        const token = mapPair(pair, meta.boost, timeframe);
+        token._discovery_source = meta.source;
+        token._is_pumpfun = meta.source.includes("pumpfun") || (pair.dexId || "").toLowerCase().includes("pump");
+        // pump.fun tokens get hot_level boost for being from the primary memecoin launchpad
+        if (token._is_pumpfun && token.hot_level < 2) token.hot_level = 2;
+        tokenMap.set(mint, token);
       }
     }
 
     let tokens = [...tokenMap.values()]
-      .sort((a, b) => (b.swaps || 0) - (a.swaps || 0))
-      .slice(0, limit);
+      .sort((a, b) => {
+        // Pump.fun tokens first, then by swaps
+        if (a._is_pumpfun && !b._is_pumpfun) return -1;
+        if (!a._is_pumpfun && b._is_pumpfun) return 1;
+        return (b.swaps || 0) - (a.swaps || 0);
+      });
+
+    // ── Quality pre-filter: reject dust/scams at discovery level ──
+    const rawCount = tokens.length;
+    tokens = tokens.filter(t => t.liquidity >= MIN_DISCOVERY_LIQUIDITY && t.swaps >= MIN_DISCOVERY_SWAPS && t.mcap >= MIN_DISCOVERY_MCAP);
+    if (tokens.length < rawCount) {
+      log("discovery", `Quality pre-filter: ${tokens.length}/${rawCount} passed (min liq $${MIN_DISCOVERY_LIQUIDITY}, swaps ${MIN_DISCOVERY_SWAPS}, mcap $${MIN_DISCOVERY_MCAP})`);
+    }
+    const pumpFunCount = tokens.filter(t => t._is_pumpfun).length;
+    if (pumpFunCount > 0) log("discovery", `pump.fun ecosystem: ${pumpFunCount} tokens`);
+
+    // ── Jupiter strict-list enrichment ──
+    const jupiterTokens = await discoverJupiterTokens().catch(() => []);
+    if (jupiterTokens.length > 0) {
+      tokens = mergeTokenLists(tokens, jupiterTokens);
+    }
+
+    tokens = tokens.slice(0, limit);
 
     if (isBirdeyeEnabled()) {
       const [birdeyeDiscovery, enriched] = await Promise.all([
@@ -220,12 +278,125 @@ export async function discoverTokens({ timeframe = "1m", limit = 20 } = {}) {
         .slice(0, limit);
     }
 
-    log("discovery", "DexScreener" + (isBirdeyeEnabled() ? " + Birdeye" : "") + ": found " + tokens.length + " tokens");
+    log("discovery", "DexScreener" + (isBirdeyeEnabled() ? " + Birdeye" : "") + (jupiterTokens.length > 0 ? " + Jupiter" : "") + ": found " + tokens.length + " tokens");
     return { tokens, source: isBirdeyeEnabled() ? "dexscreener+birdeye" : "dexscreener" };
   } catch (error) {
     log("discovery_error", "DexScreener discoverTokens: " + error.message);
     if (isBirdeyeEnabled()) return discoverBirdeyeTokens({ timeframe, limit });
     return { error: error.message, tokens: [] };
+  }
+}
+
+// ─── Jupiter Discovery ───────────────────────────────────────
+// Supplementary source: Jupiter strict-list verified tokens with
+// on-chain liquidity. Higher signal, lower noise than trending feeds.
+
+async function discoverJupiterTokens() {
+  try {
+    const res = await fetch(JUPITER_TOKEN_API);
+    if (!res.ok) return [];
+    const strictList = await res.json();
+    if (!Array.isArray(strictList) || strictList.length === 0) return [];
+
+    // Fetch price data for the top tokens by market cap
+    const solanaTokens = strictList
+      .filter(t => t.chainId === 101 || t.tags?.includes("verified"))
+      .slice(0, 50);
+    if (solanaTokens.length === 0) return [];
+
+    const mintStr = solanaTokens.map(t => t.address).slice(0, 30).join(",");
+    const pairData = await fetchDS(`${DS_BASE}/latest/dex/tokens/${mintStr}`).catch(() => null);
+    if (!pairData?.pairs) return [];
+
+    const solPairs = pairData.pairs.filter(p => p.chainId === "solana");
+    const result = [];
+    for (const pair of solPairs) {
+      const mint = pair.baseToken.address;
+      if (mint === SOL_MINT) continue;
+      const liq = pair.liquidity?.usd || 0;
+      if (liq < MIN_DISCOVERY_LIQUIDITY) continue;
+      result.push(mapPair(pair, 0, "24h"));
+    }
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+// ─── pump.fun Discovery ─────────────────────────────────────
+// pump.fun is the primary Solana memecoin launchpad. Since their
+// API is Cloudflare-protected from servers, we discover pump.fun
+// tokens indirectly via DexScreener's search endpoint, filtering
+// for pairs on pumpswap (pump.fun's native DEX).
+
+const PUMPFUN_DEX_IDS = ["pumpswap", "pump.fun", "pumpfun", "pump"];
+
+async function discoverPumpFunTokens() {
+  try {
+    // Search DexScreener for Solana pairs — the search returns
+    // tokens across all DEXes. We then filter for pump.fun ecosystem.
+    const results = await Promise.allSettled([
+      fetchDS(`${DS_BASE}/latest/dex/search?q=sol`).catch(() => null),
+      fetchDS(`${DS_BASE}/latest/dex/search?q=ai`).catch(() => null),
+    ]);
+
+    const seenMints = new Set();
+    const pumpFunPairs = [];
+
+    for (const result of results) {
+      if (result.status !== "fulfilled" || !result.value?.pairs) continue;
+      const pairs = result.value.pairs.filter(p => p.chainId === "solana");
+      for (const pair of pairs) {
+        const dexId = (pair.dexId || "").toLowerCase();
+        const isPumpFun = PUMPFUN_DEX_IDS.some(id => dexId.includes(id));
+        if (!isPumpFun) continue;
+        const mint = pair.baseToken.address;
+        if (mint === SOL_MINT || seenMints.has(mint)) continue;
+        seenMints.add(mint);
+        const liq = pair.liquidity?.usd || 0;
+        if (liq < MIN_DISCOVERY_LIQUIDITY) continue;
+        const token = mapPair(pair, 50, "1m");
+        token._discovery_source = "pumpfun";
+        token._is_pumpfun = true;
+        token.hot_level = Math.max(token.hot_level, 2);
+        pumpFunPairs.push(token);
+      }
+    }
+
+    // Also try to discover from token profiles that mention pump.fun
+    const profileRes = await fetchDS(`${DS_BASE}/token-profiles/latest/v1`).catch(() => null);
+    if (profileRes && Array.isArray(profileRes)) {
+      const profileMints = profileRes
+        .filter(p => p.chainId === "solana")
+        .map(p => p.tokenAddress)
+        .filter(m => !seenMints.has(m))
+        .slice(0, 20);
+      if (profileMints.length > 0) {
+        const mintStr = profileMints.join(",");
+        const pairData = await fetchDS(`${DS_BASE}/latest/dex/tokens/${mintStr}`).catch(() => null);
+        if (pairData?.pairs) {
+          for (const pair of pairData.pairs.filter(p => p.chainId === "solana")) {
+            const dexId = (pair.dexId || "").toLowerCase();
+            const isPumpFun = PUMPFUN_DEX_IDS.some(id => dexId.includes(id));
+            if (!isPumpFun) continue;
+            const mint = pair.baseToken.address;
+            if (mint === SOL_MINT || seenMints.has(mint)) continue;
+            seenMints.add(mint);
+            const liq = pair.liquidity?.usd || 0;
+            if (liq < MIN_DISCOVERY_LIQUIDITY) continue;
+            const token = mapPair(pair, 50, "1m");
+            token._discovery_source = "pumpfun-profile";
+            token._is_pumpfun = true;
+            token.hot_level = Math.max(token.hot_level, 2);
+            pumpFunPairs.push(token);
+          }
+        }
+      }
+    }
+
+    return pumpFunPairs;
+  } catch {
+    return [];
   }
 }
 

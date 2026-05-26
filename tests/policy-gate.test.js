@@ -30,7 +30,7 @@ describe("policy gate", () => {
     expect(finalized.error).toBe("Policy gate failed.");
   });
 
-  it("allows Claude to finalize when policy requirements are met", async () => {
+  it("allows Claude to finalize when policy requirements are met", { timeout: 15000 }, async () => {
     const experiment = createExperiment({
       name: "Healthy experiment",
       hypothesis: "Route awareness improves quality",

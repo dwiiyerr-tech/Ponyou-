@@ -41,9 +41,35 @@ import {
   PublicKey,
   Keypair,
 } from "@solana/web3.js";
+import { randomBytes } from "crypto";
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { recordCounter, recordLatency, startTimer, elapsedMs } from "../metrics.js";
+
+// Track in-flight bundle IDs to prevent double-spend when multi-region
+// failover re-submits the same signed transaction.
+const _submittedBundles = new Map(); // idempotencyKey → { bundleId, region, ts }
+const IDEMPOTENCY_TTL_MS = 300_000; // 5 min
+let _idempotencyPruneTimer = null;
+
+function pruneIdempotencyCache() {
+  const cutoff = Date.now() - IDEMPOTENCY_TTL_MS;
+  for (const [key, v] of _submittedBundles) {
+    if (v.ts < cutoff) _submittedBundles.delete(key);
+  }
+}
+
+function idempotencyKey(tx) {
+  // Derive a stable key from the first signature so re-submissions of the
+  // same signed tx are caught even if serialized differently.
+  try {
+    const sigs = tx.signatures || (typeof tx.signatures === "function" ? tx.signatures : null);
+    if (Array.isArray(tx.signatures) && tx.signatures[0]?.signature) {
+      return bs58.encode(tx.signatures[0].signature);
+    }
+  } catch {}
+  return null;
+}
 
 // Published Jito tip accounts. One is selected per bundle. Source:
 // https://docs.jito.wtf/lowlatencytxnsend/#tip-amount
@@ -186,10 +212,25 @@ export async function sendBundle({
   signedTxs,
   region = "fra",
   authToken = null,
+  idempotencyKey: extKey = null,
 } = {}) {
   if (!Array.isArray(signedTxs) || signedTxs.length === 0 || signedTxs.length > 5) {
     throw new Error("sendBundle: 1-5 transactions required");
   }
+
+  // Dedup: if this signed tx (by first signature) was already submitted,
+  // return the existing bundle ID instead of re-submitting — prevents
+  // double-spend from multi-region failover retries.
+  const dedupKey = extKey || idempotencyKey(signedTxs[0]);
+  if (dedupKey) {
+    const existing = _submittedBundles.get(dedupKey);
+    if (existing) {
+      log("jito", `Bundle dedup: ${dedupKey.slice(0, 16)}... already submitted as ${existing.bundleId} (region=${existing.region})`);
+      recordCounter("jito_bundle_dedup");
+      return existing.bundleId;
+    }
+  }
+
   const t0 = startTimer();
   const b58s = signedTxs.map(serializeTxForBundle);
   recordCounter("jito_bundle_attempted");
@@ -201,6 +242,13 @@ export async function sendBundle({
       authToken,
     });
     recordLatency("jito_send_bundle_ms", elapsedMs(t0));
+
+    // Track for dedup
+    if (dedupKey) {
+      _submittedBundles.set(dedupKey, { bundleId, region, ts: Date.now() });
+      if (!_idempotencyPruneTimer) _idempotencyPruneTimer = setInterval(pruneIdempotencyCache, 60_000);
+    }
+
     log("jito", `Bundle submitted: ${bundleId} (${signedTxs.length} tx, region=${region})`);
     return bundleId;
   } catch (e) {
@@ -278,10 +326,12 @@ export async function submitSwapBundle({
   if (!recentBlockhash) throw new Error("submitSwapBundle: recentBlockhash required");
 
   const tipTx = buildTipTransaction({ wallet, recentBlockhash, tipLamports });
+  const dedupKey = idempotencyKey(signedSwapTx);
   const bundleId = await sendBundle({
     signedTxs: [signedSwapTx, tipTx],
     region,
     authToken,
+    idempotencyKey: dedupKey,
   });
   return bundleId;
 }

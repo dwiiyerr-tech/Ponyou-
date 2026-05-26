@@ -24,6 +24,7 @@
 
 import { validateStrategyRuleSchema } from "./strategy-composer.js";
 import { getDataMaturity } from "./data-maturity.js";
+import { validateStrategyCandidate } from "./agents/pro-orchestrator.js";
 
 const DEFAULT_LOGGER = {
   info: (...args) => console.log("[fundamental-producer]", ...args),
@@ -399,11 +400,12 @@ export class FundamentalStrategyProducer {
       generatedAt: new Date().toISOString(),
     };
 
+    const proIntel = context.proIntel || null;
     const candidates = [];
-    const composed = this.#buildComposedCandidate({ evidence, regime: context.regime });
+    const composed = this.#buildComposedCandidate({ evidence, regime: context.regime, proIntel });
     if (composed) candidates.push(composed);
 
-    const llmCandidate = this.#maybeBuildLlmCandidate({ evidence, regime: context.regime });
+    const llmCandidate = this.#maybeBuildLlmCandidate({ evidence, regime: context.regime, proIntel });
     if (llmCandidate) candidates.push(llmCandidate);
 
     return candidates;
@@ -449,17 +451,34 @@ export class FundamentalStrategyProducer {
       entry.fingerprint === fingerprint && now - entry.ts < windowMs);
   }
 
-  #buildComposedCandidate({ evidence, regime }) {
+  #buildComposedCandidate({ evidence, regime, proIntel }) {
     if (!this.#composer || typeof this.#composer.compose !== "function") return null;
     if (!this.#registry || typeof this.#registry.getAll !== "function") return null;
 
     const active = this.#registry.getAll().filter(s => s?.status === "active");
     if (active.length < 2) return null;
 
+    // ── Pro intel enrichment ──────────────────────────────────
+    // When pro-orchestrator analysis is available, boost strategies
+    // that align with winning regimes/narratives. This biases parent
+    // selection toward empirically-validated patterns.
+    let proBoost = new Map(); // strategyId → boost multiplier
+    if (proIntel?.strategies) {
+      for (const [id, data] of Object.entries(proIntel.strategies)) {
+        if (data.recommendation === "ACTIVE" && data.winRate >= 0.45) {
+          proBoost.set(id, 1.3); // +30% score for pro-preferred strategies
+        } else if (data.recommendation === "DEGRADED") {
+          proBoost.set(id, 0.5); // -50% score for degraded strategies
+        }
+      }
+    }
+
     const sorted = [...active].sort((a, b) => {
-      const aScore = clampNumber(a.scores?.live ?? a.scores?.winRate ?? a.scores?.paper ?? 0);
-      const bScore = clampNumber(b.scores?.live ?? b.scores?.winRate ?? b.scores?.paper ?? 0);
-      return bScore - aScore;
+      const aBase = clampNumber(a.scores?.live ?? a.scores?.winRate ?? a.scores?.paper ?? 0);
+      const bBase = clampNumber(b.scores?.live ?? b.scores?.winRate ?? b.scores?.paper ?? 0);
+      const aBoost = proBoost.get(a.id) ?? 1.0;
+      const bBoost = proBoost.get(b.id) ?? 1.0;
+      return (bBase * bBoost) - (aBase * aBoost);
     });
     const [parentA, parentB] = sorted;
 
@@ -491,7 +510,7 @@ export class FundamentalStrategyProducer {
     };
   }
 
-  #maybeBuildLlmCandidate({ evidence, regime }) {
+  #maybeBuildLlmCandidate({ evidence, regime, proIntel }) {
     if (!this.#composer || typeof this.#composer.generate !== "function") return null;
     if (!this.#registry || typeof this.#registry.getAll !== "function") return null;
     const active = this.#registry.getAll().filter(s => s?.status === "active");
@@ -511,6 +530,7 @@ export class FundamentalStrategyProducer {
       pending: true,
       regime: regime ?? null,
       evidence,
+      proIntel: proIntel || null,
       conviction: evidence.scores.composite_strength,
     };
   }
@@ -524,6 +544,7 @@ export class FundamentalStrategyProducer {
         const generated = await this.#composer.generate({
           regime: candidate.regime,
           evidence: candidate.evidence,
+          proIntel: candidate.proIntel,
         });
         if (!generated || !validateStrategyRuleSchema(generated.rules)) return false;
         candidate = { ...generated, evidence: candidate.evidence, conviction: candidate.conviction };
@@ -531,6 +552,15 @@ export class FundamentalStrategyProducer {
         this.#logger.warn?.(`composer.generate failed: ${err?.message || err}`);
         return false;
       }
+    }
+
+    // ── Pro-Orchestrator Candidate Validation ─────────────────
+    // Gate terakhir sebelum enqueue — validasi setiap kandidat
+    // untuk mencegah strategi delusi atau berbahaya.
+    const candidateCheck = validateStrategyCandidate(candidate);
+    if (!candidateCheck.valid) {
+      this.#logger.warn?.(`candidate REJECTED: ${candidateCheck.reason} — name=${candidate.name}`);
+      return false;
     }
 
     const fingerprint = fingerprintRules(candidate.rules);

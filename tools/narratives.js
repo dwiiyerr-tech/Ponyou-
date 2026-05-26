@@ -13,7 +13,7 @@
 
 import fs from "fs";
 import path from "path";
-import { atomicWriteJson } from "../atomic-write.js";
+import { atomicWriteJson, withFileLock } from "../atomic-write.js";
 import { fileURLToPath } from "url";
 import { log } from "../logger.js";
 
@@ -99,7 +99,7 @@ const _kwRegexCache = new Map();
 function kwRegex(kw) {
   if (!_kwRegexCache.has(kw)) {
     // Match as a word — but allow it to be embedded in tickers like "AICAT", "BONKAI"
-    _kwRegexCache.set(kw, new RegExp(`(?:^|[^a-z0-9])${kw}(?:[^a-z0-9]|$)|${kw}`, "i"));
+    _kwRegexCache.set(kw, new RegExp(`(?:^|[^a-z0-9])${kw}(?:[^a-z0-9]|$)`, "i"));
   }
   return _kwRegexCache.get(kw);
 }

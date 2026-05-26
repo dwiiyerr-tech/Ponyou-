@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = path.resolve(__dirname, "..");
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -92,7 +97,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "gemini_analyze_file") {
     try {
-      const content = readFileSync(args.file_path, "utf8").slice(0, MAX_FILE_CHARS);
+      // Validate path is within the project directory
+      const resolved = path.resolve(args.file_path);
+      if (!resolved.startsWith(PROJECT_ROOT)) {
+        return errorResult("File path must be within the project directory");
+      }
+      const content = readFileSync(resolved, "utf8").slice(0, MAX_FILE_CHARS);
       const prompt = `Analyze this content:\n\n${content}\n\nQuestion: ${args.question}`;
       return runGemini(prompt);
     } catch (e) {

@@ -1,12 +1,13 @@
 /**
  * Strategy Preset Registry (inspired by Charon's strategy gates).
  *
- * Ponyou ships with 5 presets:
- *  - scalping      : default — instant scalping new pair (Freqtrade-style ROI)
- *  - sniper        : early entry pump.fun-style — strict fees + mcap gates
- *  - dip_buy       : wait for dip from ATH on more mature tokens
- *  - smart_money   : higher mcap, larger holder count, partial TP on
- *  - degen         : lowest filters, rule-based (no LLM), tight stops
+ * Ponyou ships with 6 presets:
+ *  - scalping          : default — instant scalping new pair (Freqtrade-style ROI)
+ *  - sniper            : early entry pump.fun-style — strict fees + mcap gates
+ *  - dip_buy           : wait for dip from ATH on more mature tokens
+ *  - smart_money       : higher mcap, larger holder count, partial TP on
+ *  - degen             : lowest filters, rule-based (no LLM), tight stops
+ *  - day_phase_trading : short swing 3-7 hari, entry weekend DCA, exit weekday
  *
  * Active strategy is persisted in ./active-strategy.json (hot-readable).
  * User overrides per strategy are stored in ./strategies-overrides.json
@@ -44,6 +45,7 @@ export const PRESETS = {
     partial_tp: { enabled: false, at_pct: 0, sell_pct: 0 },
     use_llm: true,
     llm_min_confidence: 0,
+    staged_entry: { enabled: false },
     roi_presets: {
       EXTREME: { "0": 0.60, "2": 0.35, "10": 0.25, "20": 0.15, "45": 0.05, "60": 0.0 },
       HOT:     { "0": 0.50, "5": 0.30, "15": 0.20, "30": 0.10, "60": 0.02 },
@@ -74,6 +76,7 @@ export const PRESETS = {
     partial_tp: { enabled: false, at_pct: 0, sell_pct: 0 },
     use_llm: true,
     llm_min_confidence: 50,
+    staged_entry: { enabled: false },
   },
 
   dip_buy: {
@@ -96,6 +99,14 @@ export const PRESETS = {
     partial_tp: { enabled: false, at_pct: 0, sell_pct: 0 },
     use_llm: true,
     llm_min_confidence: 60,
+    // Beli 3 stage saat harga turun: averaging down di setiap dip
+    staged_entry: {
+      enabled: true,
+      stages: 3,
+      stage_pct: [35, 35, 30],     // 35% first, 35% at -5%, 30% at -10%
+      trigger_type: "price",
+      price_trigger_pct: -5,        // buy next stage every -5% from last entry avg
+    },
   },
 
   smart_money: {
@@ -119,6 +130,13 @@ export const PRESETS = {
     partial_tp: { enabled: true, at_pct: 100, sell_pct: 50 },
     use_llm: true,
     llm_min_confidence: 70,
+    staged_entry: {
+      enabled: true,
+      stages: 2,
+      stage_pct: [60, 40],
+      trigger_type: "price",
+      price_trigger_pct: -8,
+    },
   },
 
   degen: {
@@ -140,6 +158,67 @@ export const PRESETS = {
     partial_tp: { enabled: false, at_pct: 0, sell_pct: 0 },
     use_llm: false,
     llm_min_confidence: 0,
+    staged_entry: { enabled: false },
+  },
+
+  day_phase_trading: {
+    id: "day_phase_trading",
+    name: "Day Phase Trade",
+    description: "Short swing 3-7 hari — entry weekend DCA, exit weekday saat revival pump. Main di fase Cooldown/Sideway.",
+    // ── Filter Entry ──────────────────────────────────────────
+    // Token HARUS: FDV > $1M, dip 50-70% dari ATH, sideway 3-5 hari,
+    // holder count stabil/naik tipis, naratif masih relevan.
+    filters: {
+      // Entry gate
+      maxGasFeeLevel: "extreme",       // Hanya blokir saat gas ekstrem
+      minHolderAgeHours: 24,           // Holder harus mature (swing butuh stabilitas)
+      minTopHolderSol: 0.5,            // Top holder wajib punya ≥0.5 SOL (serius)
+      maxEntryPumpMc: 50000,           // MCap saat entry maks $50K
+      maxAllowedFlags: 2,              // Longgar — swing tidak perlu timing sempurna
+      // MCap / FDV gate
+      min_mcap_usd: 1000000,           // FDV > $1M — perlu exit liquidity aman
+      max_mcap_usd: 50000000,          // Max $50M FDV
+      // Holder gate
+      min_holders: 500,                // Min 500 holders — distribusi sehat
+      max_top10_pct: 40,               // Top 10 holders max 40% supply
+      // Dip gate (dari ATH)
+      max_ath_distance_pct: -50,       // HARUS sudah di bawah -50% dari ATH (diskusi fase 3)
+    },
+    // ── Exit & Money Management ────────────────────────────────
+    // ROI bertahap untuk swing 3-7 hari (dalam menit):
+    //   Hari ke-3 (4320m): 40%  → jual 30% posisi
+    //   Hari ke-5 (7200m): 55%  → jual 30% posisi
+    //   Hari ke-7 (10080m): 70% → jual 40% sisa
+    //   Setelah 7 hari tanpa profit: auto-cut
+    minimal_roi: {
+      "0":      0.70,    // 70% langsung — hampir tidak pernah trigger, safety only
+      "4320":   0.40,    // Hari ke-3: 40% profit → exit pertama
+      "7200":   0.55,    // Hari ke-5: 55% profit → exit kedua
+      "10080":  0.70,    // Hari ke-7: 70% profit → exit penuh
+      "10081": -0.99,    // Setelah hari ke-7 → force exit (PnL selalu >= -99%)
+    },
+    stoploss: -0.30,                     // Stop loss 30% — lebar karena swing
+    trailing_stop: {
+      enabled: true,
+      positive_offset: 0.30,             // Trailing aktif setelah +30% profit
+      positive_distance: 0.10,           // Jarak trailing 10% dari peak
+    },
+    // ── Partial TP untuk exit bertahap ─────────────────────────
+    partial_tp: {
+      enabled: true,
+      at_pct: 40,                        // Trigger partial TP pertama di +40%
+      sell_pct: 30,                      // Jual 30% posisi
+    },
+    use_llm: true,
+    llm_min_confidence: 50,
+    // DCA 2 hari: 50% Sabtu, 50% Minggu (1440 menit = 24 jam)
+    staged_entry: {
+      enabled: true,
+      stages: 2,
+      stage_pct: [50, 50],
+      trigger_type: "time",
+      time_trigger_min: 1440,            // 24 jam antar stage
+    },
   },
 };
 
@@ -176,6 +255,10 @@ export function getActiveStrategyId() {
   const id = data?.id;
   if (id && PRESETS[id]) return id;
   return DEFAULT_STRATEGY;
+}
+
+export function getActiveStrategy() {
+  return getStrategy();
 }
 
 export function setActiveStrategy(id) {
@@ -289,7 +372,7 @@ export function getStrategy(id = null, context = {}) {
 
   // ── Strategy Evolution runtime override (opt-in) ────────────────
   const selector = getRuntimeSelector();
-  if (selector && context?.regime !== undefined) {
+  if (selector && typeof context?.regime === "string" && context.regime.length > 0) {
     let resolved;
     try {
       resolved = selector.effectiveOverrides(context.regime);

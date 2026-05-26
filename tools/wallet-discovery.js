@@ -55,7 +55,16 @@ function loadDiscovered() {
   try { return JSON.parse(fs.readFileSync(DISCOVERED_FILE, "utf8")); } catch { return {}; }
 }
 
+const MAX_DISCOVERED_WALLETS = 500; // cap to prevent unbounded file growth
+
 function saveDiscovered(data) {
+  // Prune to MAX_DISCOVERED_WALLETS, keeping highest-quality entries
+  const entries = Object.entries(data);
+  if (entries.length > MAX_DISCOVERED_WALLETS) {
+    entries.sort((a, b) => (b[1]?.selection?.score || 0) - (a[1]?.selection?.score || 0));
+    const kept = entries.slice(0, MAX_DISCOVERED_WALLETS);
+    data = Object.fromEntries(kept);
+  }
   atomicWriteJson(DISCOVERED_FILE, data);
 }
 

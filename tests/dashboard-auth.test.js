@@ -5,17 +5,26 @@ const mockWriteFileSync = vi.fn();
 const mockReadFileSync = vi.fn(() => { throw new Error("no file"); });
 const mockRandomBytes = vi.fn(() => Buffer.alloc(32, 0xab));
 const mockRenameSync = vi.fn();
+const mockOpenSync = vi.fn(() => 42);
+const mockFsyncSync = vi.fn();
+const mockCloseSync = vi.fn();
 
 vi.mock("fs", () => ({
   default: {
     writeFileSync: (...a) => mockWriteFileSync(...a),
     readFileSync: (...a) => mockReadFileSync(...a),
     renameSync: (...a) => mockRenameSync(...a),
+    openSync: (...a) => mockOpenSync(...a),
+    fsyncSync: (...a) => mockFsyncSync(...a),
+    closeSync: (...a) => mockCloseSync(...a),
     existsSync: vi.fn(() => false),
   },
   writeFileSync: (...a) => mockWriteFileSync(...a),
   readFileSync: (...a) => mockReadFileSync(...a),
   renameSync: (...a) => mockRenameSync(...a),
+  openSync: (...a) => mockOpenSync(...a),
+  fsyncSync: (...a) => mockFsyncSync(...a),
+  closeSync: (...a) => mockCloseSync(...a),
   existsSync: vi.fn(() => false),
 }));
 
