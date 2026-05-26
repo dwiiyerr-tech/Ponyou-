@@ -55,8 +55,11 @@ describe("planWalletExecution", () => {
     expect(plan.split).toBe(true);
     expect(plan.selected_wallets).toHaveLength(2);
     expect(plan.selected_wallets.map(w => w.address)).toEqual(["walletA", "walletB"]);
-    expect(plan.selected_wallets[0].amount_sol).toBe(3);
-    expect(plan.selected_wallets[1].amount_sol).toBe(3);
+    // With ±10% jitter, amounts are ~3 but not exactly 3
+    expect(plan.selected_wallets[0].amount_sol).toBeGreaterThan(2.4);
+    expect(plan.selected_wallets[0].amount_sol).toBeLessThan(3.6);
+    expect(plan.selected_wallets[1].amount_sol).toBeGreaterThan(2.4);
+    expect(plan.selected_wallets[1].amount_sol).toBeLessThan(3.6);
   });
 
   it("uses a fresh wallet for DCA when an existing wallet already holds the token", async () => {

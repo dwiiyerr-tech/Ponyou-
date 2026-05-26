@@ -163,14 +163,17 @@ export class StrategyRegistry {
         const normalized = normalizeRecord(record);
         if (normalized) this.#catalog.set(normalized.id, normalized);
       }
-    } catch {
-      this.#catalog.clear();
+    } catch (e) {
+      // Keep existing in-memory catalog — don't discard on parse failure.
+      // A corrupt file may be a transient write error; clearing would lose all data.
+      if (process.env.NODE_ENV !== "production") console.warn("[StrategyRegistry] load failed, keeping existing catalog:", e.message);
     }
   }
 
   #persist() {
     if (!this.#persistPath) return;
-    fs.mkdirSync(path.dirname(this.#persistPath), { recursive: true });
+    const dir = path.dirname(this.#persistPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     atomicWriteJson(this.#persistPath, [...this.#catalog.values()]);
   }
 }

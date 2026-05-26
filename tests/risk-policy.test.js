@@ -6,10 +6,14 @@ describe("risk policy", () => {
     const hot = buildRiskPolicy({ marketCondition: "HOT" });
     const cold = buildRiskPolicy({ marketCondition: "COLD" });
 
+    // HOT lets you take larger probe sizes than COLD (momentum vs freeze)
     expect(hot.sizing.probeSizeFraction).toBeGreaterThan(cold.sizing.probeSizeFraction);
-    expect(hot.entry.probeCautionThreshold).toBeGreaterThan(cold.entry.probeCautionThreshold);
+    // HOT tightens exit stops more than COLD (faster dumps)
+    expect(Math.abs(hot.exit.hardStopLossPct)).toBeGreaterThan(Math.abs(cold.exit.hardStopLossPct));
     expect(hot.exit.trailingTriggerPct).toBeGreaterThan(cold.exit.trailingTriggerPct);
     expect(hot.exit.profitSweepPct).toBeGreaterThan(cold.exit.profitSweepPct);
+    // COLD requires higher conviction than HOT (volume is thin in colder markets)
+    expect(cold.entry.probeConfidenceFloor).toBeGreaterThan(hot.entry.probeConfidenceFloor);
   });
 
   it("disables probe sizing in dead markets", () => {

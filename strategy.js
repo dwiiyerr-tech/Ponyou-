@@ -124,7 +124,8 @@ export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
   const gasLevel = gasFee?.level ?? "unknown";
   const holders = securityDetails?.holders ?? [];
 
-  if (gasLevel === "extreme" || gasLevel === "high") {
+  const maxGasFee = active.filters?.maxGasFeeLevel ?? "high";
+  if (gasLevel === "extreme" || (maxGasFee === "extreme" ? false : gasLevel === "high")) {
     flags.push(`Gas Fee: ${gasLevel} level (Bots/Traffic)`);
   }
 
@@ -234,14 +235,21 @@ export function getMcapTier(mcap) {
   };
 }
 
-export function getTierExecutionProfile(mcap) {
+export function getTierExecutionProfile(mcap, strategyId = null) {
   const tier = getMcapTier(mcap);
+
+  // ── Strategy-aware sell_only threshold ──────────────────────
+  // Scalping strategies: block >$50M (no exit liquidity at swing scale)
+  // Swing strategies:    allow up to $200M (need deep liquidity for position size)
+  const swingStrategies = new Set(["day_phase_trading", "swing"]);
+  const isSwing = swingStrategies.has(strategyId);
+
   if (tier.tier === "NEW_PAIR") {
     return {
       ...tier,
       use_holder_filters: true,
       use_technicals: false,
-      size_multiplier: 1.0,
+      size_multiplier: isSwing ? 0.5 : 1.0,    // swing: half-size di pair baru
       sell_only: false,
     };
   }
@@ -250,7 +258,7 @@ export function getTierExecutionProfile(mcap) {
       ...tier,
       use_holder_filters: false,
       use_technicals: true,
-      size_multiplier: 1.0,
+      size_multiplier: isSwing ? 0.75 : 1.0,   // swing: cautious size at micro cap
       sell_only: false,
     };
   }
@@ -259,10 +267,22 @@ export function getTierExecutionProfile(mcap) {
       ...tier,
       use_holder_filters: false,
       use_technicals: true,
-      size_multiplier: 1.25,
+      size_multiplier: isSwing ? 1.25 : 1.25,   // both: confidence sizing
       sell_only: false,
     };
   }
+  if (tier.tier === "HIGH_CAP") {
+    // Scalping: sell_only (no exit liquidity for fast trades)
+    // Swing:     allowed — deep liquidity needed for multi-day positions
+    return {
+      ...tier,
+      use_holder_filters: false,
+      use_technicals: true,
+      size_multiplier: isSwing ? 1.0 : 0,
+      sell_only: !isSwing,
+    };
+  }
+  // CEX_LEVEL (>$200M) — always sell_only regardless of strategy
   return {
     ...tier,
     use_holder_filters: false,

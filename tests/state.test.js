@@ -102,8 +102,7 @@ describe("state — trackPosition", () => {
   });
 
   it("warns on zero initial_value_usd", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const { trackPosition, _resetStateForTests } = await import("../state.js");
+    const { trackPosition, getState, _resetStateForTests } = await import("../state.js");
     _resetStateForTests();
     await trackPosition({
       position: "So11111111111111111111111111111111111111113",
@@ -111,8 +110,11 @@ describe("state — trackPosition", () => {
       amount_sol: 1,
       initial_value_usd: 0,
     });
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+    const tracked = getState().positions;
+    const key = Object.keys(tracked).find(k => tracked[k].position === "So11111111111111111111111111111111111111113");
+    expect(key).toBeDefined();
+    // Falls back to amount_sol when initial_value_usd is 0 — avoids permanent PnL=0%
+    expect(tracked[key].initial_value_usd).toBe(1);
   });
 
   it("pushes a deploy event", async () => {

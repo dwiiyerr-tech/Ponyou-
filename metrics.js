@@ -52,7 +52,10 @@ export function elapsedMs(t0) {
 }
 
 function pushSample(series, value) {
-  if (!Number.isFinite(value)) return;
+  if (!Number.isFinite(value)) {
+    if (process.env.NODE_ENV !== "production") console.warn(`[metrics] pushSample dropped non-finite value for series="${series}": ${value}`);
+    return;
+  }
   if (!_samples.has(series)) _samples.set(series, []);
   const arr = _samples.get(series);
   arr.push(value);
@@ -94,6 +97,19 @@ export function recordCounter(kind, delta = 1) {
 export function setGauge(name, value) {
   if (!Number.isFinite(value)) return;
   _gauges.set(name, value);
+  maybePersist();
+}
+
+/**
+ * Track cumulative PnL delta. Call on every trade close.
+ * cumulative_pnl_usd is the running total; cumulative_trades counts closes.
+ */
+export function recordCumulativePnl(usdDelta) {
+  if (!Number.isFinite(usdDelta)) return;
+  const current = _gauges.get("cumulative_pnl_usd") || 0;
+  _gauges.set("cumulative_pnl_usd", current + usdDelta);
+  const trades = (_gauges.get("cumulative_trades") || 0) + 1;
+  _gauges.set("cumulative_trades", trades);
   maybePersist();
 }
 
@@ -144,7 +160,7 @@ function maybePersist() {
   const now = Date.now();
   if (now - _lastPersistAt < PERSIST_INTERVAL_MS) return;
   _lastPersistAt = now;
-  flushMetrics().catch(() => {}); // best-effort; metrics shouldn't crash the agent
+  flushMetrics().catch((e) => { if (process.env.NODE_ENV !== "production") console.warn("[metrics] persist failed:", e.message); });
 }
 
 export async function flushMetrics() {

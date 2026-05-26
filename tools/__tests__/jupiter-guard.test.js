@@ -58,14 +58,14 @@ describe("preSwapGuard", () => {
     expect(result).toEqual({ allowed: true });
   });
 
-  it("fails open when the quote check fails", async () => {
+  it("fails closed when the quote check fails", async () => {
     globalThis.fetch.mockRejectedValue(new Error("timeout"));
 
     const result = await preSwapGuard({ mint: "mint-timeout", amountSol: 0.01 });
 
     expect(result).toEqual({
-      allowed: true,
-      warn: "quote_check_failed",
+      allowed: false,
+      reason: "quote_check_failed",
     });
   });
 });

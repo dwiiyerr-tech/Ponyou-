@@ -40,7 +40,11 @@ function clampNumber(value, fallback) {
 function normalizeRate(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
-  return n > 1 ? n / 100 : n;
+  // n >= 1 → treat as percentage (100 → 1.0, 1 → 0.01)
+  // n < 1  → already a decimal fraction (0.5 = 50%)
+  // The old n > 1 threshold made n === 1 ambiguous: it could mean
+  // 100 % (expressed as 1.0) or 1 % (expressed as 0.01).
+  return n >= 1 ? n / 100 : n;
 }
 
 /**
@@ -64,14 +68,27 @@ export function evolvedRulesToOverrides(rules = {}) {
   let touched = false;
 
   // ── Stop-loss ────────────────────────────────────────────────────
+  // Evolved rules may express stoploss as either:
+  //   - Positive magnitude in percent (15 = 15% stop)
+  //   - Negative decimal (-0.15 = -15% stop, same shape as presets)
+  // Normalize both into the preset shape: negative decimal.
   const stopRaw = rules.stopLossPct ?? rules.stopPct ?? (
     Number.isFinite(rules.stopLossBps) ? rules.stopLossBps / 100 : undefined
   );
   if (stopRaw != null && Number.isFinite(Number(stopRaw))) {
-    // Preset stoploss is a NEGATIVE decimal (-0.15 = -15%). Evolved rules
-    // typically express it as a positive magnitude in percent.
-    const magnitude = Math.abs(Number(stopRaw));
-    overrides.stoploss = -magnitude / 100;
+    const raw = Number(stopRaw);
+    // Already a negative decimal? Use as-is after clamping.
+    // Positive magnitude? Convert to negative decimal.
+    if (raw < 0 && raw >= -1) {
+      // Value is already in preset shape (-0.15 = -15%)
+      overrides.stoploss = raw;
+    } else {
+      // Positive magnitude (15 = 15%) — convert to decimal
+      const magnitude = Math.abs(raw);
+      overrides.stoploss = -(magnitude / 100);
+    }
+    // Clamp to reasonable range: stoploss between -50% and -1%
+    overrides.stoploss = Math.max(-0.50, Math.min(-0.01, Number(overrides.stoploss)));
     touched = true;
   }
 
@@ -119,13 +136,40 @@ export function evolvedRulesToRoiPatch(rules = {}) {
 
 function meetsFloor(strategy, cfg) {
   if (!strategy) return false;
-  if (strategy.status !== "active") return false;
+  // Accept both "active" and "provisional" statuses.
+  // Provisional strategies auto-promote once minLiveTrades accumulates.
+  if (strategy.status !== "active" && strategy.status !== "provisional") return false;
+
+  // ── Try live score first (best data) ──────────────────
   const liveScore = normalizeRate(strategy.scores?.live);
-  if (liveScore == null) return false;
-  if (liveScore < cfg.minLiveScoreForOverride) return false;
   const liveTrades = Number(strategy.evidence?.live?.trades ?? strategy.scores?.liveTrades ?? 0);
-  if (liveTrades < cfg.minLiveTradesForOverride) return false;
-  return true;
+  if (liveScore != null && liveTrades >= cfg.minLiveTradesForOverride) {
+    return liveScore >= cfg.minLiveScoreForOverride;
+  }
+
+  // ── Fallback to paper score if live data is too thin ──
+  const paperScore = normalizeRate(strategy.scores?.paper);
+  const paperTrades = Number(strategy.evidence?.paper?.trades ?? strategy.scores?.paperTrades ?? 0);
+  if (paperScore != null && paperTrades >= cfg.minPaperTradesForOverride) {
+    return paperScore >= cfg.minPaperScoreForOverride;
+  }
+
+  // ── Fallback to backtest score if no paper/live data ──
+  const backtestScore = normalizeRate(strategy.scores?.backtest);
+  const backtestTrades = Number(strategy.evidence?.backtest?.trades ?? strategy.scores?.backtestTrades ?? 0);
+  if (backtestScore != null && backtestTrades >= cfg.minBacktestTradesForOverride) {
+    return backtestScore >= cfg.minBacktestScoreForOverride;
+  }
+
+  // ── Provisional: no trade evidence yet, check fundamental signal ──
+  if (strategy.status === "provisional") {
+    const provisionalScore = normalizeRate(strategy.scores?.provisional);
+    if (provisionalScore != null) {
+      return provisionalScore >= (cfg.minProvisionalScoreForOverride ?? 0.65);
+    }
+  }
+
+  return false;
 }
 
 function diffOverrides(presetOverrides = {}, evolvedOverrides = {}) {
@@ -153,11 +197,16 @@ export class StrategyRuntimeSelector {
 
   #normalizeConfig(cfg = {}) {
     return {
-      enabled:                  Boolean(cfg.enabled ?? false),
-      mode:                     cfg.mode === "live" ? "live" : "shadow",
-      minLiveScoreForOverride:  clampNumber(cfg.minLiveScoreForOverride, 0.85),
-      minLiveTradesForOverride: Math.max(0, Math.floor(clampNumber(cfg.minLiveTradesForOverride, 20))),
-      cacheTtlMs:               Math.max(0, clampNumber(cfg.cacheTtlMs, DEFAULT_CACHE_TTL_MS)),
+      enabled:                       Boolean(cfg.enabled ?? false),
+      mode:                          String(cfg.mode || "").toLowerCase() === "live" ? "live" : "shadow",
+      minLiveScoreForOverride:       clampNumber(cfg.minLiveScoreForOverride, 0.85),
+      minLiveTradesForOverride:      Math.max(0, Math.floor(clampNumber(cfg.minLiveTradesForOverride, 60))),
+      minPaperScoreForOverride:      clampNumber(cfg.minPaperScoreForOverride, 0.82),
+      minPaperTradesForOverride:     Math.max(0, Math.floor(clampNumber(cfg.minPaperTradesForOverride, 35))),
+      minBacktestScoreForOverride:   clampNumber(cfg.minBacktestScoreForOverride, 0.80),
+      minBacktestTradesForOverride:  Math.max(0, Math.floor(clampNumber(cfg.minBacktestTradesForOverride, 150))),
+      minProvisionalScoreForOverride: clampNumber(cfg.minProvisionalScoreForOverride, 0.80),
+      cacheTtlMs:                    Math.max(0, clampNumber(cfg.cacheTtlMs, DEFAULT_CACHE_TTL_MS)),
     };
   }
 

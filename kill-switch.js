@@ -23,13 +23,22 @@ const FLAG_FILE = path.join(__dirname, "kill-switch.flag");
 const STATE_FILE = new URL("./kill-switch-state.json", import.meta.url).pathname;
 
 const DEFAULT_LIMITS = {
-  drawdown_pct: -20,        // session drawdown trip-point
-  consecutive_errors: 5,    // consecutive swap failures trip-point
+  drawdown_pct: -15,        // session drawdown trip-point (tighter: 15% not 20%)
+  consecutive_errors: 3,    // consecutive swap failures trip-point (3, not 5)
 };
 
 // ─── In-memory state (rebuilt every restart; flag file is the source of truth) ───
 let _sessionStartUsd = null;
 let _consecutiveErrors = 0;
+
+// Baseline stabilization: collect N readings over M seconds before locking in
+// the session baseline. This prevents a transient dip (swap in flight, RPC
+// blip) from setting an artificially low baseline that would false-trip later.
+const BASELINE_WARMUP_READINGS = 5;
+const BASELINE_WARMUP_INTERVAL_MS = 10_000; // 10 s between readings → 50 s total
+let _baselineReadings = [];
+let _baselineWarmupTimer = null;
+let _baselineLocked = false;
 
 function _loadState() {
   try {
@@ -98,22 +107,70 @@ _restoreState();
 
 /**
  * Snapshot session-start balance. Called once at startup.
+ * An explicit call to setSessionBaseline bypasses the warmup period and
+ * immediately locks the baseline — the caller has already validated the
+ * balance reading.
  */
 export function setSessionBaseline(usd) {
   if (!Number.isFinite(usd) || usd <= 0) return;
   _sessionStartUsd = usd;
+  _baselineLocked = true;
+  _baselineReadings = [];
   _persistState();
 }
 
 /**
- * Update running session balance. Trips drawdown if exceeded.
+ * Feed a balance reading into the baseline stabilizer.
+ * Called every cycle by index.js. The baseline only locks after
+ * BASELINE_WARMUP_READINGS consecutive readings within 10% of each other,
+ * ruling out transient dips or in-flight swap effects.
  */
 export function reportBalance(usd, limits = DEFAULT_LIMITS) {
-  // Guard usd<=0 too — a 0 reading usually means the wallet RPC failed, and
-  // computing it as a -100% drawdown would trip the kill switch on every
-  // transient outage. The caller in index.js already filters this, but the
-  // public function should be robust.
-  if (!Number.isFinite(usd) || usd <= 0 || _sessionStartUsd == null || _sessionStartUsd <= 0) return false;
+  if (!Number.isFinite(usd) || usd <= 0) return false;
+
+  // If baseline already locked (via setSessionBaseline or prior warmup),
+  // skip straight to drawdown check.
+  if (_baselineLocked) {
+    if (_sessionStartUsd == null || _sessionStartUsd <= 0) return false;
+    const pct = ((usd - _sessionStartUsd) / _sessionStartUsd) * 100;
+    if (pct <= limits.drawdown_pct) {
+      trip({
+        reason: "drawdown",
+        detail: `Session P&L ${pct.toFixed(2)}% ≤ limit ${limits.drawdown_pct}%`,
+      });
+      return true;
+    }
+    return false;
+  }
+
+  // Warmup: collect readings until stable
+  if (!_baselineLocked) {
+    _baselineReadings.push(usd);
+    if (_baselineReadings.length >= BASELINE_WARMUP_READINGS) {
+      const recent = _baselineReadings.slice(-BASELINE_WARMUP_READINGS);
+      const max = Math.max(...recent);
+      const min = Math.min(...recent);
+      // Readings must be within 10% spread to lock baseline
+      if (min > 0 && (max - min) / min < 0.10) {
+        _baselineLocked = true;
+        _sessionStartUsd = Math.max(_sessionStartUsd || 0, max); // use peak of stable window
+        _persistState();
+        log("kill_switch", `Baseline locked at $${_sessionStartUsd.toFixed(2)} after ${_baselineReadings.length} readings (spread ${((max-min)/min*100).toFixed(1)}%)`);
+        _baselineReadings = [];
+      } else if (_baselineReadings.length > BASELINE_WARMUP_READINGS * 3) {
+        // 3x readings still unstable — force lock at the max reading
+        _baselineLocked = true;
+        _sessionStartUsd = Math.max(..._baselineReadings);
+        _persistState();
+        log("kill_switch", `Baseline force-locked at $${_sessionStartUsd.toFixed(2)} after ${_baselineReadings.length} unstable readings`);
+        _baselineReadings = [];
+      }
+    }
+    return false; // no kill check during warmup
+  }
+
+  // Normal check after baseline locked
+  if (_sessionStartUsd == null || _sessionStartUsd <= 0) return false;
   const pct = ((usd - _sessionStartUsd) / _sessionStartUsd) * 100;
   if (pct <= limits.drawdown_pct) {
     trip({
@@ -198,6 +255,9 @@ export function reset() {
   }
   _consecutiveErrors = 0;
   _sessionStartUsd = null;
+  _baselineReadings = [];
+  _baselineLocked = false;
+  if (_baselineWarmupTimer) { clearTimeout(_baselineWarmupTimer); _baselineWarmupTimer = null; }
   log("kill_switch", "Kill switch reset");
 }
 
@@ -208,4 +268,7 @@ export function _resetForTests() {
   if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
   _consecutiveErrors = 0;
   _sessionStartUsd = null;
+  _baselineReadings = [];
+  _baselineLocked = false;
+  if (_baselineWarmupTimer) { clearTimeout(_baselineWarmupTimer); _baselineWarmupTimer = null; }
 }

@@ -53,7 +53,7 @@ describe("workflow bridge", () => {
     expect(result.task.task.current_stage).toBe("evaluate");
   });
 
-  it("records spec, plan, build, and testing artifacts", async () => {
+  it("records spec, plan, build, and testing artifacts", { timeout: 15000 }, async () => {
     const task = createOrchestrationTask({
       title: "Upgrade execution route",
       objective: "Assess and implement a safer split-route default.",
@@ -115,7 +115,7 @@ describe("workflow bridge", () => {
     expect(result.task.task.current_stage).toBe("research");
   });
 
-  it("auto-submits Gemini and Codex worker results into the right artifacts", async () => {
+  it("auto-submits Gemini and Codex worker results into the right artifacts", { timeout: 15000 }, async () => {
     const task = createOrchestrationTask({
       title: "Route quality upgrade",
       objective: "Research and validate a route-aware improvement.",

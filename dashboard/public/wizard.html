@@ -57,7 +57,7 @@ const STEPS = [
   {
     title: "4/13 — Strategy & Trading Mode",
     fields: [
-      { key: "strategy", label: "Strategy Preset", type: "select", options: ["scalp","conservative","aggressive"], hint: "Default entry/exit strategy" },
+      { key: "strategy", label: "Strategy Preset", type: "select", options: ["scalp","conservative","aggressive","sniper","recovery","day_phase_swing"], hint: "Default entry/exit strategy" },
       { key: "confirmMode", label: "Confirm Mode", type: "checkbox", hint: "Require Telegram /yes before each buy" },
       { key: "confirmTtlMin", label: "Confirm TTL (min)", type: "number", hint: "How long to wait for approval (default 5)" },
     ]
@@ -74,6 +74,8 @@ const STEPS = [
       { key: "maxBundlePct", label: "Max Bundle %", type: "number", hint: "Default 30" },
       { key: "maxBotHoldersPct", label: "Max Bot Holders %", type: "number", hint: "Default 30" },
       { key: "maxTop10Pct", label: "Max Top10 Concentration %", type: "number", hint: "Default 60" },
+      { key: "trashFilterEnabled", label: "Enable Trash Filter (Layer 0)", type: "checkbox", hint: "Reject obvious scams before API calls. Zero-cost pre-screening." },
+      { key: "trashWallets", label: "Trash Coin Wallets (add/remove)", type: "trash-wallet-list", hint: "Wallet addresses known to deploy or interact with trash/scam coins. One per line." },
     ]
   },
   {
@@ -88,6 +90,9 @@ const STEPS = [
       { key: "trailingTakeProfit", label: "Trailing Take Profit", type: "checkbox", hint: "Enable trailing TP" },
       { key: "trailingTriggerPct", label: "Trailing Trigger %", type: "number", hint: "Activate at X% PnL, default 5" },
       { key: "trailingDropPct", label: "Trailing Drop %", type: "number", hint: "Close when drops X% from peak, default 6" },
+      { key: "stagedEntryEnabled", label: "Enable Staged Entry (DCA)", type: "checkbox", hint: "Multiple staged buys instead of single-shot entry" },
+      { key: "stagedEntryStages", label: "DCA Stages", type: "number", hint: "Number of buy stages (default 3)" },
+      { key: "stagedEntryTrigger", label: "DCA Trigger Type", type: "select", options: ["price","time"], hint: "price = buy next stage when price drops; time = buy after interval" },
     ]
   },
   {
@@ -149,6 +154,13 @@ const STEPS = [
       { key: "wallets", label: "Wallet Slots (2-10, total capital_pct = 100%)", type: "wallet-list", condKey: "multiWalletEnabled" },
       { key: "strategyEvolutionEnabled", label: "Enable Strategy Evolution", type: "checkbox" },
       { key: "darwinEnabled", label: "Enable Darwin Signal Weighting", type: "checkbox" },
+      { key: "rugCheckEnabled", label: "Enable RugCheck.xyz Integration", type: "checkbox", hint: "Free external rug verification API" },
+      { key: "devBlacklistEnabled", label: "Enable Dev Blacklist (MCap-Aware)", type: "checkbox", hint: "Tiered dev blacklist based on rug market cap" },
+      { key: "sellSimEnabled", label: "Enable Pre-Flight Sell Simulator", type: "checkbox", hint: "Verify token can be sold before buying" },
+      { key: "rugAnomalyEnabled", label: "Enable Rug Anomaly Detection", type: "checkbox", hint: "Embedding similarity to detect novel rug patterns" },
+      { key: "rugLLMEnabled", label: "Enable LLM Rug Analysis", type: "checkbox", hint: "LLM second opinion for ambiguous tokens" },
+      { key: "dayPhaseScreenerEnabled", label: "Enable Day Phase Screener", type: "checkbox", hint: "Weekend swing trade discovery (3-7 day holds)" },
+      { key: "solscanEnabled", label: "Enable Solscan.io Integration", type: "checkbox", hint: "Wallet tracking + dev wallet detection" },
       { key: "managementIntervalMin", label: "Management Interval (min)", type: "number", hint: "Default 10" },
       { key: "screeningIntervalMin", label: "Screening Interval (min)", type: "number", hint: "Default 30" },
     ]
@@ -241,6 +253,8 @@ function renderStep() {
     } else if (f.type === "wallet-list") {
       const enabled = f.condKey ? !!getNestedVal(formData, f.condKey) : true;
       html += renderWalletList(f, enabled);
+    } else if (f.type === "trash-wallet-list") {
+      html += renderTrashWalletList(f);
     } else {
       html += `<div class="field-row"><label>${f.label}${f.required?" *":""}</label>
         <input type="${f.type}" data-key="${f.key}" value="${val}" placeholder="${f.hint||""}">
@@ -342,6 +356,57 @@ function updateWalletTotal() {
   el.style.color = ok ? "var(--ok, #4ade80)" : "var(--warn, #fbbf24)";
 }
 
+// ─── Trash Wallet List ──────────────────────────────────
+function renderTrashWalletList(field) {
+  const rows = (formData.trashWallets || []);
+  let html = `<div class="field-row"><label>${field.label}</label>
+    <div class="field-hint" style="margin-bottom:.5rem">${field.hint}</div>
+    <div id="trashWalletList" style="display:flex;flex-direction:column;gap:.4rem">`;
+  rows.forEach((w, i) => {
+    const addr = typeof w === "string" ? w : (w?.address || "");
+    const label = (w && w.label) || "";
+    html += `<div class="trash-wallet-row" data-row="${i}" style="display:grid;grid-template-columns:1fr auto;gap:.4rem;align-items:center;background:var(--bg);padding:.4rem;border-radius:6px">
+      <div style="display:flex;flex-direction:column;gap:.2rem">
+        <input type="text" data-trash-field="address" placeholder="Solana wallet address (base58)" value="${addr.replace(/"/g,"&quot;")}" style="font-family:monospace;font-size:12px">
+        <input type="text" data-trash-field="label" placeholder="Optional label (e.g. known-rug-deployer)" value="${label.replace(/"/g,"&quot;")}" style="font-size:12px">
+      </div>
+      <button class="btn" type="button" onclick="removeTrashWalletRow(${i})" style="align-self:center">− Remove</button>
+    </div>`;
+  });
+  if (rows.length === 0) {
+    html += `<div style="color:var(--muted);font-size:13px;padding:.5rem">No trash wallets added yet.</div>`;
+  }
+  html += `</div>
+    <button class="btn" type="button" onclick="addTrashWalletRow()" style="margin-top:.5rem">+ Add Trash Wallet</button>
+  </div>`;
+  return html;
+}
+
+function readTrashWalletRows() {
+  const rows = document.querySelectorAll(".trash-wallet-row");
+  const wallets = [];
+  rows.forEach((row) => {
+    const addr = (row.querySelector('[data-trash-field="address"]')?.value || "").trim();
+    const label = (row.querySelector('[data-trash-field="label"]')?.value || "").trim();
+    if (addr) {
+      wallets.push(label ? { address: addr, label } : { address: addr });
+    }
+  });
+  return wallets;
+}
+
+function addTrashWalletRow() {
+  formData.trashWallets = readTrashWalletRows();
+  formData.trashWallets.push({ address: "", label: "" });
+  renderStep();
+}
+
+function removeTrashWalletRow(idx) {
+  formData.trashWallets = readTrashWalletRows();
+  formData.trashWallets.splice(idx, 1);
+  renderStep();
+}
+
 function collectStep() {
   const s = STEPS[currentStep];
   if (s.review) return;
@@ -357,6 +422,9 @@ function collectStep() {
     const { wallets, keys } = readWalletRows();
     formData.wallets = wallets;
     formData._walletKeys = { ...(formData._walletKeys || {}), ...keys };
+  }
+  if (document.querySelector(".trash-wallet-row")) {
+    formData.trashWallets = readTrashWalletRows();
   }
 }
 

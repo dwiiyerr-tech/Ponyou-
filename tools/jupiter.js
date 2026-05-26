@@ -140,11 +140,45 @@ async function getDecimals(mint) {
  */
 export async function swapToken({ token_in, token_out, amount, slippage = 0.5, wallet: walletOverride = null, wallet_address = null, executionContext = {} }) {
   if (process.env.DRY_RUN === "true") {
+    // Paper trading: fetch a real Jupiter quote for accurate simulation,
+    // but don't send any transaction.
+    try {
+      const inputMint = (token_in === "SOL") ? SOL_MINT : token_in;
+      const outputMint = (token_out === "SOL") ? SOL_MINT : token_out;
+      const decimals = await getDecimals(inputMint);
+      const amountRaw = Math.floor(amount * Math.pow(10, decimals)).toString();
+      const slippageBps = Math.floor((slippage ?? 0.5) * 100);
+      const quoteUrl = `${JUPITER_V6}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}`;
+      const quoteRes = await fetch(quoteUrl, { signal: AbortSignal.timeout(10000) });
+      if (quoteRes.ok) {
+        const quote = await quoteRes.json();
+        if (!quote.error) {
+          const outDecimals = await getDecimals(outputMint);
+          const outAmount = Number(quote.outAmount) / Math.pow(10, outDecimals);
+          const priceImpactPct = quote.priceImpactPct != null ? Number(quote.priceImpactPct) : null;
+          return {
+            dry_run: true,
+            simulated: true,
+            quote_used: true,
+            token_in: inputMint,
+            token_out: outputMint,
+            amount,
+            amount_out: outAmount,
+            price_impact_pct: priceImpactPct,
+            slippage: slippage ?? 0.5,
+            wallet_address,
+            message: `PAPER TRADE — simulated at ~${outAmount.toFixed(4)} output (${priceImpactPct != null ? priceImpactPct.toFixed(2) + "% impact" : "impact unknown"})`,
+          };
+        }
+      }
+    } catch (_) { /* quote unavailable — fall through to bare simulation */ }
     return {
       dry_run: true,
+      simulated: true,
+      quote_used: false,
       would_swap: { token_in, token_out, amount, slippage, wallet_address },
       wallet_address,
-      message: "DRY RUN — no transaction sent",
+      message: "PAPER TRADE — simulated (no quote available)",
     };
   }
 
@@ -315,7 +349,7 @@ export async function preSwapGuard({ mint, amountSol = 0.01 }) {
   try {
     const quote = await checkJupiterQuote({ mint, amountSol });
     if (quote.fetch_failed) {
-      return { allowed: true, warn: "quote_check_failed" };
+      return { allowed: false, reason: "quote_check_failed" };
     }
 
     if (!quote.tradeable) {
@@ -329,6 +363,6 @@ export async function preSwapGuard({ mint, amountSol = 0.01 }) {
 
     return { allowed: true };
   } catch {
-    return { allowed: true, warn: "quote_check_failed" };
+    return { allowed: false, reason: "quote_check_failed" };
   }
 }

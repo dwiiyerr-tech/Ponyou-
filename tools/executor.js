@@ -144,7 +144,13 @@ async function adaptiveSwap(args = {}) {
 
     if (plan.split && rankedWallets.length > 1) {
       const executions = [];
-      for (const slot of rankedWallets) {
+      const delays = plan.delays_ms || [];
+      for (let i = 0; i < rankedWallets.length; i++) {
+        const slot = rankedWallets[i];
+        // Stealth: random delay between wallets (skip first, delay before subsequent)
+        if (i > 0 && delays[i - 1] > 0) {
+          await new Promise(r => setTimeout(r, delays[i - 1]));
+        }
         const result = await executeJupiterSwap({
           ...args,
           amount: slot.amount_sol,
@@ -474,6 +480,26 @@ export async function executeTool(name, args) {
     if (!safetyCheck.pass) return { blocked: true, reason: safetyCheck.reason };
   }
 
+  // Capture pre-trade balance for TOCTOU guard (defense-in-depth).
+  let preBalance = null;
+  let _postCheckTriggered = false;
+  const _maybePostCheck = async (success) => {
+    if (_postCheckTriggered) return;
+    _postCheckTriggered = true;
+    if (!success || !isSwapTool(name)) return;
+    try {
+      const post = await getWalletBalances();
+      if (preBalance && post && post.sol < config.management.gasReserve) {
+        log("executor_warn", `Post-swap SOL ${post.sol} below gas reserve ${config.management.gasReserve} — possible TOCTOU or concurrent drain`);
+        recordCounter("executor_post_balance_low");
+      }
+    } catch {} // best-effort
+  };
+
+  if (isSwapTool(name) && process.env.DRY_RUN !== "true") {
+    try { preBalance = await getWalletBalances(); } catch {} // best-effort
+  }
+
   // Confirm-mode intercept: park BUYs as pending intents instead of executing.
   if (isSwapTool(name)) {
     const parked = await maybeParkAsConfirmIntent(args);
@@ -494,6 +520,9 @@ export async function executeTool(name, args) {
     const result = await withToolTimeout(fn(callArgs), name);
     const duration = Date.now() - startTime;
     const success = result?.success !== false && !result?.error;
+
+    // Post-execution TOCTOU guard: verify balance didn't drop below safe level
+    _maybePostCheck(success);
 
     logAction({
       tool: name,
@@ -605,6 +634,16 @@ async function runSafetyChecks(name, args) {
             pass: false,
             reason: `Insufficient SOL: have ${balance.sol} SOL, need ${amount + gasReserve} SOL.`,
           };
+        }
+        // Check token balance for sells (token_in is a non-SOL mint)
+        if (args.token_in && args.token_in !== "SOL" && args.token_in !== "So11111111111111111111111111111111111111112") {
+          const tokenBal = (balance.tokens || []).find(t => t.mint === args.token_in);
+          if (!tokenBal || tokenBal.balance <= 0) {
+            return {
+              pass: false,
+              reason: `Token not held: ${args.token_in?.slice(0, 8)} not found in wallet.`,
+            };
+          }
         }
       }
       return { pass: true };

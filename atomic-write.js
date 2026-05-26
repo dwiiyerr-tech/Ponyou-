@@ -1,6 +1,29 @@
 import fs from "fs";
 import path from "path";
 
+// Clean up orphaned .tmp files from crashed writes on startup.
+// Only removes files older than 60s to avoid touching in-progress writes
+// from a concurrently-starting process.
+(function cleanupOrphanedTmp() {
+  const dirs = [path.resolve(".")];
+  for (const dir of dirs) {
+    try {
+      const files = fs.readdirSync(dir);
+      const now = Date.now();
+      for (const f of files) {
+        if (!f.includes(".tmp.")) continue;
+        const fp = path.join(dir, f);
+        try {
+          const stat = fs.statSync(fp);
+          if (now - stat.mtimeMs > 60_000) {
+            fs.unlinkSync(fp);
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+})();
+
 // In-process mutex per absolute file path. Serializes RMW (read-mutate-write)
 // sequences on shared JSON state files so concurrent async callers cannot
 // interleave: load -> mutate -> atomicWriteJson. Crash-consistency is already
@@ -26,26 +49,68 @@ export async function withFileLock(filePath, fn) {
   }
 }
 
+function uniqueTmp(filePath) {
+  return filePath + ".tmp." + process.pid + "." + Date.now();
+}
+
+function fsyncPath(p) {
+  try {
+    const fd = fs.openSync(p, "r");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+  } catch {} // best-effort — metadata durability is not critical
+}
+
 export function atomicWriteJson(filePath, data) {
-  const tmp = filePath + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-  fs.renameSync(tmp, filePath);
+  const tmp = uniqueTmp(filePath);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fsyncPath(tmp); // flush file data to disk before rename
+    fs.renameSync(tmp, filePath);
+    fsyncPath(path.dirname(filePath)); // flush directory metadata
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (_) { /* best effort */ }
+    throw e;
+  }
 }
 
 export function atomicWriteText(filePath, text) {
-  const tmp = filePath + ".tmp";
-  fs.writeFileSync(tmp, text, "utf8");
-  fs.renameSync(tmp, filePath);
+  const tmp = uniqueTmp(filePath);
+  try {
+    fs.writeFileSync(tmp, text, "utf8");
+    fsyncPath(tmp);
+    fs.renameSync(tmp, filePath);
+    fsyncPath(path.dirname(filePath));
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (_) { /* best effort */ }
+    throw e;
+  }
 }
 
 export async function atomicWriteJsonAsync(filePath, data) {
-  const tmp = filePath + ".tmp";
-  await fs.promises.writeFile(tmp, JSON.stringify(data, null, 2));
-  await fs.promises.rename(tmp, filePath);
+  const tmp = uniqueTmp(filePath);
+  try {
+    await fs.promises.writeFile(tmp, JSON.stringify(data, null, 2));
+    const fh = await fs.promises.open(tmp, "r");
+    await fh.sync();
+    await fh.close();
+    await fs.promises.rename(tmp, filePath);
+  } catch (e) {
+    try { await fs.promises.unlink(tmp); } catch (_) { /* best effort */ }
+    throw e;
+  }
 }
 
 export async function atomicWriteTextAsync(filePath, text) {
-  const tmp = filePath + ".tmp";
-  await fs.promises.writeFile(tmp, text, "utf8");
-  await fs.promises.rename(tmp, filePath);
+  const tmp = uniqueTmp(filePath);
+  try {
+    await fs.promises.writeFile(tmp, text, "utf8");
+    const fh = await fs.promises.open(tmp, "r");
+    await fh.sync();
+    await fh.close();
+    await fs.promises.rename(tmp, filePath);
+  } catch (e) {
+    try { await fs.promises.unlink(tmp); } catch (_) { /* best effort */ }
+    throw e;
+  }
 }

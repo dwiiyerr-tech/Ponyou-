@@ -3,16 +3,25 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // vi.mock is hoisted — define mock fns before factory
 const mockWriteFileSync = vi.fn();
 const mockRenameSync = vi.fn();
+const mockOpenSync = vi.fn(() => 42); // fake fd
+const mockFsyncSync = vi.fn();
+const mockCloseSync = vi.fn();
 
 vi.mock("fs", () => ({
   default: {
     writeFileSync: (...a) => mockWriteFileSync(...a),
     renameSync: (...a) => mockRenameSync(...a),
+    openSync: (...a) => mockOpenSync(...a),
+    fsyncSync: (...a) => mockFsyncSync(...a),
+    closeSync: (...a) => mockCloseSync(...a),
     existsSync: vi.fn(() => false),
     readFileSync: vi.fn(),
   },
   writeFileSync: (...a) => mockWriteFileSync(...a),
   renameSync: (...a) => mockRenameSync(...a),
+  openSync: (...a) => mockOpenSync(...a),
+  fsyncSync: (...a) => mockFsyncSync(...a),
+  closeSync: (...a) => mockCloseSync(...a),
   existsSync: vi.fn(() => false),
   readFileSync: vi.fn(),
 }));
@@ -33,12 +42,12 @@ describe("writeDashboardCmd — atomic write", () => {
     // writeFileSync must be called with the .tmp path
     expect(mockWriteFileSync).toHaveBeenCalledOnce();
     const writeCall = mockWriteFileSync.mock.calls[0];
-    expect(writeCall[0]).toMatch(/dashboard-cmd\.json\.tmp$/);
+    expect(writeCall[0]).toMatch(/dashboard-cmd\.json\.tmp\.\d+\.\d+$/);
 
     // renameSync must be called: tmp → final
     expect(mockRenameSync).toHaveBeenCalledOnce();
     const [tmpPath, finalPath] = mockRenameSync.mock.calls[0];
-    expect(tmpPath).toMatch(/dashboard-cmd\.json\.tmp$/);
+    expect(tmpPath).toMatch(/dashboard-cmd\.json\.tmp\.\d+\.\d+$/);
     expect(finalPath).toMatch(/dashboard-cmd\.json$/);
     expect(finalPath).not.toMatch(/\.tmp$/);
 
@@ -66,11 +75,11 @@ describe("writeAutomationCommand — atomic write", () => {
 
     expect(mockWriteFileSync).toHaveBeenCalledOnce();
     const writeCall = mockWriteFileSync.mock.calls[0];
-    expect(writeCall[0]).toMatch(/automation-command\.json\.tmp$/);
+    expect(writeCall[0]).toMatch(/automation-command\.json\.tmp\.\d+\.\d+$/);
 
     expect(mockRenameSync).toHaveBeenCalledOnce();
     const [tmpPath, finalPath] = mockRenameSync.mock.calls[0];
-    expect(tmpPath).toMatch(/automation-command\.json\.tmp$/);
+    expect(tmpPath).toMatch(/automation-command\.json\.tmp\.\d+\.\d+$/);
     expect(finalPath).toMatch(/automation-command\.json$/);
     expect(finalPath).not.toMatch(/\.tmp$/);
 

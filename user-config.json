@@ -7,6 +7,7 @@
   "llmModel": "minimax/minimax-m2.7",
   "executionMode": "demo",
   "dryRun": true,
+  "pipelineTestMode": true,
   "deployAmountSol": 0.5,
   "maxPositions": 3,
   "minSolToOpen": 0.55,

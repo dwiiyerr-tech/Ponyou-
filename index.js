@@ -14,7 +14,7 @@ import { initGeneralAgent } from "./agents/general-agent.js";
 import { initTrashLayer } from "./agents/trash-layer.js";
 import { initOrchestratorAgent, runOrchestratorCycle, setFullAutomationMode, getOrchestratorDashboard } from "./agents/orchestrator-agent.js";
 import { runAutomationQualification, isAutomationActive, guardAutomatedDecision, getAutomationState, approveAutomation, rejectAutomation, revokeAutomation } from "./agents/automation-rules.js";
-import { initProOrchestrator, isProModeActive, getProDashboard } from "./agents/pro-orchestrator.js";
+import { initProOrchestrator, isProModeActive, getProDashboard, proBuyDecision, proSellDecision, proCutlossDecision, runProAnalysis, validateStrategyReadiness } from "./agents/pro-orchestrator.js";
 import { checkWalletSignals, getWalletTierStats, discoverWalletTiers, TIER_CONFIG } from "./tools/wallet-tiers.js";
 import { log } from "./logger.js";
 import { getWalletBalances } from "./tools/wallet.js";
@@ -105,7 +105,13 @@ import { recordExecutionQuality, getExecutionQualityAssessment } from "./executi
 import { assessTradeAttribution, recordTradeAttribution } from "./trade-attribution.js";
 import { harvestMarketRugs } from "./tools/rug-harvester.js";
 import { preScreenBatch } from "./tools/trash-filter.js";
+import { runCommunityAssessment, getDevReputation, scoreDevReputation } from "./tools/community-detector.js";
+import { startOnChainListener, getFreshOnChainCandidates, getOnChainListenerStatus } from "./tools/onchain-listener.js";
+import { enrichCoin, coinGeckoToSocialVelocity, getTrendingCoins, getSolanaMarkets } from "./tools/coingecko-enrichment.js";
 import { runHunterExpedition, injectHunterPrey, getHunterStats, getCachedPrey } from "./tools/hunter-agent.js";
+import { getSmartMoneyCandidates, injectWalletPingCandidates, initWalletSignalInjector, checkRugDevDeployer, autoBlockRugDevToken, getWalletSignalStats } from "./tools/wallet-signal-injector.js";
+import { getStrategyPositionLimit, canActivateStrategy, canEnterToken, getStrategyMinSolToActivate } from "./tools/position-limits.js";
+import { computeTradeFeeBreakdown, calcTruePnl, calcDexFee, calcPlatformFee, extractSlippageFromSwapResult, recordTokenAccountCreated, recordSimCall } from "./tools/fee-tracker.js";
 import { detectAnomaly, hasAnyActiveFlag } from "./tools/rug-anomaly.js";
 import { analyzeRugWithLLM } from "./tools/rug-llm-analysis.js";
 import { simulateSell } from "./tools/sell-simulator.js";
@@ -253,6 +259,7 @@ initGeneralAgent({
   config,
 });
 initTrashLayer();
+initWalletSignalInjector();
 initOrchestratorAgent({
   getStrategyFn: (id, opts) => getStrategy(id, opts),
   getMarketIntelFn: () => getMarketIntelligence(),
@@ -293,9 +300,71 @@ if (config.strategy?.evolution?.enabled) {
   });
   const _strategyComposer = new StrategyComposer({
     registry: _strategyRegistry,
-    // LLM generator is intentionally null in Phase-1 — composer.generate() will
-    // simply return null and the producer falls back to compose-only.
-    llmGenerator: null,
+    // LLM generator: calls the agent LLM with pro analysis context to create
+    // novel strategy candidates. The producer throttles this to 1×/24h, so
+    // cost is controlled. Returns null when pro mode is inactive.
+    llmGenerator: async (context) => {
+      const proIntel = isProModeActive() ? runProAnalysis() : null;
+      const regimeList = proIntel?.regimes
+        ? Object.entries(proIntel.regimes)
+            .sort((a, b) => b[1].score - a[1].score)
+            .slice(0, 3)
+            .map(([name, data]) => `${name} (WR:${(data.winRate*100).toFixed(0)}%, score:${data.score.toFixed(2)})`)
+            .join(", ")
+        : "N/A";
+      const narrativeList = proIntel?.narratives
+        ? Object.entries(proIntel.narratives)
+            .filter(([, d]) => d.recommendation === "STRONG_BUY" || d.recommendation === "BUY")
+            .slice(0, 3)
+            .map(([name, data]) => `${name} (WR:${(data.winRate*100).toFixed(0)}%, gems:${data.gems})`)
+            .join(", ")
+        : "N/A";
+      const currentStrategies = [...(_strategyRegistry?.getAll?.() || [])]
+        .filter(s => s.status === "active")
+        .map(s => `${s.id} (WR:${((s.scores?.live ?? s.scores?.winRate ?? 0)*100).toFixed(0)}%)`)
+        .join(", ");
+
+      const prompt = [
+        "You are a trading strategy designer for a Solana memecoin bot.",
+        "Create ONE new strategy rule set as a JSON object. Be creative but safe.",
+        "",
+        "Current market intelligence:",
+        `  Top regimes: ${regimeList}`,
+        `  Top narratives: ${narrativeList}`,
+        `  Active strategies: ${currentStrategies || "none yet"}`,
+        "",
+        "Evidence from fundamental signals:",
+        `  ${JSON.stringify(context?.evidence?.scores || {})}`,
+        "",
+        "Output ONLY a JSON object with these fields:",
+        '  {',
+        '    "name": "strategy-name",',
+        '    "regime": "HOT|NORMAL|COLD",',
+        '    "rules": {',
+        '      "signal": "fundamental-strong",',
+        '      "minConviction": 65,',
+        '      "maxRugScore": 25,',
+        '      "minVolume": 5000,',
+        '      "maxMcap": 5000000,',
+        '      "stopLossPct": -15,',
+        '      "takeProfitPct": 30',
+        '    },',
+        '    "source": "llm-generated"',
+        '  }',
+        "",
+        "Rules must include at minimum a \"signal\" field. Do NOT add BUY/SELL action fields.",
+        "Output ONLY the JSON, no markdown, no explanation.",
+      ].join("\n");
+
+      try {
+        const { content } = await agentLoop(prompt, 4, [], "GENERAL", config.llm.generalModel, 1024);
+        log("strategy_composer", `LLM generator response: ${(content || "").slice(0, 200)}`);
+        return content;
+      } catch (e) {
+        log("strategy_composer_error", `LLM generation failed: ${e.message}`);
+        return null;
+      }
+    },
   });
   _evolutionEngine = new StrategyEvolutionEngine({
     bus: _strategyBus,
@@ -1605,6 +1674,79 @@ async function checkDeterministicExits(tokens) {
       continue;
     }
 
+    // ─── Pro Orchestrator SELL / CUTLOSS Gate ──────────────────
+    if (isProModeActive()) {
+      const currentConviction = getCoinConviction(token.mint, token);
+      const crossBatchVel = getCrossBatchVelocity();
+
+      const entryNarrative = tracked.signal_snapshot?.conviction?.narrative ?? null;
+      let posNarrativeVelocityScore = 0;
+      if (entryNarrative && crossBatchVel?.active?.length) {
+        const found = crossBatchVel.active.find(a => a.narrative === entryNarrative);
+        if (found) posNarrativeVelocityScore = found.cross_batch_score ?? 0;
+      }
+      const narrativeVelForPro = {
+        velocity_score: posNarrativeVelocityScore,
+        trendingNarratives: crossBatchVel?.sustained ?? [],
+      };
+
+      // Pro Sell — multi-signal exit evaluation
+      const proSell = proSellDecision({
+        position: {
+          conviction_entry: tracked.signal_snapshot?.conviction?.conviction_score ?? 0,
+          narrative_entry: entryNarrative,
+          narrative_entry_velocity: 0,
+          pnl_pct: currentPnlPct,
+          peak_pnl_pct: tracked.peak_pnl_pct ?? 0,
+        },
+        conviction: currentConviction,
+        marketCondition: condition,
+        narrativeVelocity: narrativeVelForPro,
+        regimeHistory: null,
+      });
+
+      if (proSell.action === "SELL") {
+        exits.push({
+          mint: token.mint,
+          symbol: token.symbol,
+          reason: `pro_sell: ${proSell.reasons.join("; ")}`,
+          pnl_pct: currentPnlPct,
+          is_loss: currentPnlPct < 0,
+          wallet_address: token.wallet_address ?? null,
+          position_key: token.position_key ?? token.mint,
+        });
+        log("pro_orchestrator",
+          `SELL ${token.symbol}: ${proSell.exitSignals} signals, urgency=${proSell.urgency} — ${proSell.reasons.join("; ")}`
+        );
+        continue;
+      }
+
+      // Pro Cutloss — regime-adaptive stop check
+      const proCut = proCutlossDecision({
+        pnlPct: currentPnlPct,
+        holdMinutes: ageMinutes,
+        marketCondition: condition,
+        conviction: currentConviction,
+        entryConviction: tracked.signal_snapshot?.conviction?.conviction_score ?? 0,
+      });
+
+      if (proCut.action === "CUTLOSS") {
+        exits.push({
+          mint: token.mint,
+          symbol: token.symbol,
+          reason: `pro_cutloss: ${proCut.reason}`,
+          pnl_pct: currentPnlPct,
+          is_loss: true,
+          wallet_address: token.wallet_address ?? null,
+          position_key: token.position_key ?? token.mint,
+        });
+        log("pro_orchestrator",
+          `CUTLOSS ${token.symbol}: ${proCut.type} — ${proCut.reason}`
+        );
+        continue;
+      }
+    }
+
     const exitPolicy = evaluateExitPolicy({
       pnlPct: currentPnlPct,
       peakPnlPct: tracked.peak_pnl_pct || 0,
@@ -1923,12 +2065,38 @@ export async function runManagementCycle({ silent = false } = {}) {
         const realizedPnlPct = entrySolSpent > 0 && exitSolReceived != null
           ? ((exitSolReceived - entrySolSpent) / entrySolSpent) * 100
           : null;
+
+        // ─── Fee Tracking: Exit + True PnL ──────────────
+        const entryFees = tracked?.signal_snapshot?.entry_fee_breakdown;
+        const exitSlippage = extractSlippageFromSwapResult(res, exitSolReceived || 0);
+        const exitFeeBreakdown = computeTradeFeeBreakdown({
+          amountSol: exitSolReceived || 0,
+          dexId: tracked?.signal_snapshot?.entry_dex || tokenData?.dex || "unknown",
+          isEntry: false,
+          expectedPrice: tokenData?.price || 0,
+          actualPrice: tokenData?.price ? tokenData.price * (1 + exitSlippage.price_impact_pct / 100) : 0,
+          liquidity: tokenData?.liquidity || 0,
+          priorityFeeSol: (Number(res?.priority_fee_lamports || 0) / 1e9) || 0,
+          jitoTipSol: (Number(res?.total_tip_lamports || res?.tip_lamports || 0) / 1e9) || 0,
+          txFeeLamports: res?.tx_fee_lamports || null,
+          entryFeeBreakdown: entryFees || null,
+        });
+        recordSimCall();
+
+        // True PnL after ALL fees
+        const truePnl = calcTruePnl({
+          entrySol: entrySolSpent || 0,
+          exitSol: exitSolReceived || 0,
+          entryFeeBreakdown: entryFees,
+          exitFeeBreakdown,
+        });
+
         recordTradeOutcome({
           mint: exit.mint,
           symbol: exit.symbol,
           entry_usd: tracked?.initial_value_usd,
           exit_usd: tokenData?.usd,
-          pnl_pct: tradePnl,
+          pnl_pct: truePnl.net_pnl_pct || tradePnl,
           hold_minutes: holdMinutes,
           exit_reason: exit.reason,
           rug_detected: /rug/i.test(exit.reason),
@@ -1937,6 +2105,12 @@ export async function runManagementCycle({ silent = false } = {}) {
           exit_sol: exitSolReceived,
           swap_fee_sol: swapFeeSol,
           actual_realized_pct: realizedPnlPct,
+          fee_breakdown: {
+            entry: entryFees || null,
+            exit: exitFeeBreakdown,
+            true_pnl: truePnl,
+            slippage: exitSlippage,
+          },
         });
         await recordTradeAttribution({
           mint: exit.mint,
@@ -2204,12 +2378,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const balance = await getPortfolioSnapshot();
     const openTokens = (balance.tokens || []).filter(t => t.usd >= 0.1 && t.symbol !== "SOL");
 
-    // ─── Profit-aware position limit ──────────────
-    // Strategy presets don't carry a `protections` block — fall back to
-    // config.risk.maxPositions (default 3) as the base cap.
-    const baseMaxPositions = strategy?.protections?.max_open_trades
-      ?? config.risk?.maxPositions
-      ?? 3;
+    // ─── Per-Strategy Position Limit ──────────────
+    // Uses manual config or Kelly formula from position-limits module.
+    // Falls back to strategy protections → config.risk.maxPositions → 3.
+    const strategyPositionLimit = getStrategyPositionLimit(strategy?.id);
+    const baseMaxPositions = strategyPositionLimit > 0
+      ? strategyPositionLimit
+      : (strategy?.protections?.max_open_trades ?? config.risk?.maxPositions ?? 3);
     const heatmapMax = getHeatmapMaxPositions(baseMaxPositions);
     const effectiveMax = Math.min(baseMaxPositions, heatmapMax);
     const positionLimit = config.pilot.enabled
@@ -2223,6 +2398,23 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return `Max positions reached (${openTokens.length}/${positionLimit})`;
     }
 
+    // ─── Wallet SOL (resolve early — used by activation gate AND deploy calc) ───
+    const recentTrades = getPerformanceHistory({ limit: 30 });
+    const activeWallet = getActiveWallet();
+    const walletSol = isMultiWalletEnabled() && activeWallet
+      ? getWalletCapitalSol(activeWallet.address, balance.sol)
+      : balance.sol;
+
+    // ─── Min SOL Activation Gate ────────────────────
+    const activeStrategyId = strategy?.id || "scalp";
+    const solActivation = canActivateStrategy(walletSol, activeStrategyId);
+    if (!solActivation.canOpen) {
+      const minSol = getStrategyMinSolToActivate(activeStrategyId);
+      log("position_limits", `Min SOL gate: ${solActivation.reason} (strategy=${activeStrategyId})`);
+      _screeningBusy = false;
+      return `Min SOL not met for ${activeStrategyId}: need ${minSol} SOL, have ${walletSol.toFixed(3)} SOL`;
+    }
+
     const bankrollSol = balance.sol || 0;
     const totalExposedSol = Object.values(getState()?.positions || {})
       .filter(p => !p?.closed)
@@ -2233,11 +2425,6 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return; // skip this screening cycle
     }
 
-    const recentTrades = getPerformanceHistory({ limit: 30 });
-    const activeWallet = getActiveWallet();
-    const walletSol = isMultiWalletEnabled() && activeWallet
-      ? getWalletCapitalSol(activeWallet.address, balance.sol)
-      : balance.sol;
     const deployAmount = computeDeployAmount(walletSol, { solPriceUsd: balance.sol_price });
     const walletPlanSummary = buildCapitalAwareWalletPlan(
       balance.sol,
@@ -2251,7 +2438,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     }
     const discovery = await discoverTokens({ timeframe: "1m" });
     const candidates = discovery.tokens || [];
-    const cappedCandidates = candidates.slice(0, MAX_CANDIDATES_PER_CYCLE);
+    let cappedCandidates = candidates.slice(0, MAX_CANDIDATES_PER_CYCLE);
     if (candidates.length > MAX_CANDIDATES_PER_CYCLE) {
       log("screening", `Capping candidates ${candidates.length} -> ${MAX_CANDIDATES_PER_CYCLE} to avoid API burst`);
     }
@@ -2260,12 +2447,59 @@ export async function runScreeningCycle({ silent = false } = {}) {
     // Merge hunter agent finds with DexScreener discovery.
     // Hunter prey are pre-scored and get priority in the pipeline.
     const cachedPrey = getCachedPrey();
-    const allCandidates = cachedPrey.length > 0
-      ? injectHunterPrey(cappedCandidates, cachedPrey, 10)
-      : cappedCandidates;
-    if (allCandidates.length > cappedCandidates.length) {
+    if (cachedPrey.length > 0) {
+      const before = cappedCandidates.length;
+      cappedCandidates = injectHunterPrey(cappedCandidates, cachedPrey, 10);
       const hunterPrio = cachedPrey.filter(t => t._hunter_score >= 50).length;
-      log("screening", `Hunter injected ${allCandidates.length - cappedCandidates.length} prey (${hunterPrio} priority) → ${allCandidates.length} total candidates`);
+      log("screening", `Hunter injected ${cappedCandidates.length - before} prey (${hunterPrio} priority) → ${cappedCandidates.length} total candidates`);
+    }
+
+    // ─── Inject Wallet Ping Candidates ───────────────
+    // Smart money wallet activity → inject tokens into screening with elevated priority.
+    const walletPingCandidates = getSmartMoneyCandidates({ minWinRate: 0.60 });
+    if (walletPingCandidates.length > 0) {
+      const before = cappedCandidates.length;
+      cappedCandidates = injectWalletPingCandidates(cappedCandidates, walletPingCandidates, 10);
+      const smCount = walletPingCandidates.filter(t => t._hunter_tier === "PRIORITY").length;
+      log("screening", `Wallet ping injected ${cappedCandidates.length - before} candidates (${smCount} priority smart money) → ${cappedCandidates.length} total`);
+    }
+
+    // ─── Fresh On-Chain Candidates ──────────────────
+    // Inject pools discovered via WebSocket programSubscribe.
+    // These are tokens created on-chain that DexScreener hasn't indexed yet.
+    const freshOnChain = getFreshOnChainCandidates({ maxAgeMs: 120_000, limit: 10 });
+    if (freshOnChain.length > 0) {
+      for (const oc of freshOnChain) {
+        if (!cappedCandidates.find(c => c.mint === oc.mint)) {
+          cappedCandidates.push(oc);
+        }
+      }
+      log("screening", `On-chain listener injected ${freshOnChain.length} fresh candidates → ${cappedCandidates.length} total`);
+    }
+
+    // ─── Rug Dev Auto-Block ─────────────────────────
+    // Check each candidate's creator against the dev blocklist.
+    // Tokens from known rug devs get auto-blacklisted before screening.
+    let rugBlockedCount = 0;
+    for (const token of cappedCandidates) {
+      if (token.creator && token.mint) {
+        const rugAlert = checkRugDevDeployer({
+          creatorWallet: token.creator,
+          tokenMint: token.mint,
+          tokenSymbol: token.symbol,
+        });
+        if (rugAlert) {
+          await autoBlockRugDevToken({
+            creatorWallet: token.creator,
+            tokenMint: token.mint,
+            tokenSymbol: token.symbol,
+          });
+          rugBlockedCount++;
+        }
+      }
+    }
+    if (rugBlockedCount > 0) {
+      log("wallet_signal", `Rug dev auto-block: ${rugBlockedCount} tokens blocked before screening`);
     }
 
     // ─── Market intelligence ─────────────────────
@@ -2643,11 +2877,65 @@ export async function runScreeningCycle({ silent = false } = {}) {
         narrativeTags,
       });
 
+      // ─── CoinGecko Enrichment (social + community + CEX data) ──
+      let coingeckoData = null;
+      let socialVelocityFromCG = null;
+      try {
+        const symbol = token.symbol || enhancedToken?.symbol || null;
+        if (symbol) {
+          coingeckoData = await enrichCoin({ symbol });
+          if (coingeckoData) {
+            socialVelocityFromCG = coinGeckoToSocialVelocity(coingeckoData);
+          }
+        }
+      } catch (e) { /* CoinGecko is supplementary — fail silently */ }
+
+      // ─── Community & Dev Assessment ────────────────────────────
+      const communityAssessment = runCommunityAssessment({
+        mint: token.mint,
+        symbol: token.symbol,
+        creator: token.creator || enhancedToken?.creator || null,
+        launchpad: token.launchpad || token._dex || null,
+        holder_count: token.holders || enhancedToken?.holders || null,
+        holder_count_24h: null,
+        top_10_concentration: token.top_10_pct || token.top10Concentration || null,
+        price_usd: token.price || token.priceUsd || token.price_usd || null,
+        price_24h: null,
+        volume_24h: token.volume || token.volume24h || null,
+        social_velocity: socialVelocityFromCG?.velocity_score || narrativeVelocity?.velocity_score || null,
+        dev_balance: null,
+        dev_initial_balance: null,
+        dev_last_active_hours: coingeckoData?.developer?.commit_count_4w > 0 ? 24 : null,
+        dev_engagement_score: coingeckoData ? Math.round(coingeckoData.developer.developer_score * 100) : null,
+        bot_holder_estimate: token.bot_holders_pct || null,
+        sniper_count: token.sniper_count || null,
+        whale_count: token.whale_count || null,
+        bonding_curve_progress: token.bonding_curve || null,
+        lp_moved_to: null,
+        cex_listings: coingeckoData?.cex_listings?.map(l => l.exchange) || [],
+        age_hours: token.age_minutes ? token.age_minutes / 60 : null,
+      });
+      if (communityAssessment.signals.length > 0) {
+        log("community", `${token.symbol}: ${communityAssessment.signals.join(", ")} — ${communityAssessment.summary}`);
+      }
+
+      // Boost conviction with community quality signal
+      const communityBonus = communityAssessment.community_quality?.is_quality_community ? 5 : 0;
+      const devBonus = communityAssessment.dev?.credibility === "HIGH" ? 8
+        : communityAssessment.dev?.credibility === "MEDIUM" ? 4 : 0;
+      const devPenalty = communityAssessment.dev?.tier === "RUGGER" ? -15 : 0;
+      const ctoBonus = communityAssessment.community_takeover?.is_cto ? 3 : 0;
+
       // Feature aggregate boosts conviction floor for trending/strong signals
       const boostedConviction = {
         ...conviction,
-        conviction_score: Math.min(100, conviction.conviction_score + Math.max(0, (featureResult.aggregate - 30) * 0.3)),
+        conviction_score: Math.min(100, Math.max(0,
+          conviction.conviction_score
+          + Math.max(0, (featureResult.aggregate - 30) * 0.3)
+          + communityBonus + devBonus + devPenalty + ctoBonus
+        )),
         feature_aggregate: featureResult.aggregate,
+        community_assessment: communityAssessment,  // attach for downstream
       };
 
       const workflow = config.decisionWorkflow?.enabled
@@ -2660,11 +2948,30 @@ export async function runScreeningCycle({ silent = false } = {}) {
               narrative_tags: narrativeTags,
               momentum_entry_pass: momentumEntry.pass,
               volatility_adjusted_size: sizedAmount,
+              community_assessment: communityAssessment,
             },
             conviction: boostedConviction,
             marketCondition: marketIntel.condition,
             config: config.decisionWorkflow,
             narrativeVelocity,
+            portfolioContext: {
+              open_positions: openTokens.length,
+              max_positions: positionLimit,
+              session_pnl_pct: _lastSessionPnl ?? undefined,
+              kill_switch_threshold: -15,
+              consecutive_losses: config.pilot.enabled ? getConsecutiveLosses() : 0,
+              pro_skip_threshold: 3,
+              same_narrative_count: openTokens.filter(t => narrativeTags.some(nt => (t.narrative_tags || []).includes(nt))).length,
+              daily_guard_blocked: isDailyTradeGuardEntryBlocked?.(config.dailyTradeGuard) ?? false,
+              in_profit_mode: config.pilot.enabled ? isInProfitMode() : false,
+            },
+            timingContext: {
+              circuit_breaker_locked: _rugCircuitBreaker?.getStatus?.()?.locked ?? false,
+              circuit_breaker_reason: _rugCircuitBreaker?.getStatus?.()?.lockReason ?? null,
+              learning_mode_active: getLearningModeStatus?.()?.active ?? false,
+              token_cooldown_active: isTokenOnCooldown?.(enhancedToken.mint),
+              cooldown_remaining_min: 0,
+            },
           })
         : {
             verdict: "active",
@@ -2706,6 +3013,36 @@ export async function runScreeningCycle({ silent = false } = {}) {
         flags.push(`Workflow skip: ${workflow.reasons.join(", ") || "caution score terlalu tinggi"}`);
       }
 
+      // ─── Pro Orchestrator BUY Gate ─────────────────────────────
+      let proBuySkipped = false;
+      if (passed && isProModeActive()) {
+        const proBuyResult = proBuyDecision({
+          conviction: boostedConviction,
+          signal,
+          kelly,
+          workflow,
+          rugScore: rugRisk.score,
+          marketCondition: marketIntel.condition,
+          narrativeVelocity,
+          volatilityPercentile,
+          liquidity: enhancedToken?.liquidity ?? 0,
+        });
+        if (proBuyResult.action === "SKIP") {
+          proBuySkipped = true;
+          flags.push(
+            `Pro gate SKIP: ${proBuyResult.convergingSignals}/${proBuyResult.requiredSignals} signals — ${proBuyResult.reasons.join(", ")}`
+          );
+          log("pro_orchestrator",
+            `BUY SKIP ${token.symbol}: ${proBuyResult.convergingSignals}/${proBuyResult.requiredSignals} signals (conf=${proBuyResult.confidence}%)`
+          );
+        } else {
+          log("pro_orchestrator",
+            `BUY PASS ${token.symbol}: ${proBuyResult.convergingSignals}/${proBuyResult.requiredSignals} signals (conf=${proBuyResult.confidence}%)`
+          );
+        }
+      }
+      const finalPassed = passed && !proBuySkipped;
+
       let recommendedAmount = preRegimeAmount;
       if (config.regimeMemory?.enabled) {
         const cap = config.regimeMemory?.tailwindMultiplierCap ?? 1.15;
@@ -2716,7 +3053,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
       scoredCandidates.push({
         ...enhancedToken, ...filterResult,
-        passed,
+        passed: finalPassed,
         flags,
         rug_score: rugRisk.score,
         rug_reasons: rugRisk.reasons,
@@ -2737,6 +3074,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
         volatility_percentile: volatilityPercentile,
         volatility_adjusted_size: recommendedAmount,
         recommended_deploy_amount_sol: recommendedAmount,
+        community_assessment: communityAssessment,
+        dev_reputation: communityAssessment.dev,
       });
     }
 
@@ -2772,11 +3111,21 @@ export async function runScreeningCycle({ silent = false } = {}) {
           const sampleWallets = listSmartWallets({ minDecayMultiplier: 0.5 })
             .slice(0, 12)
             .map(w => w.address);
-          await _fundamentalProducer.tick({
-            sampleTokens,
-            sampleWallets,
-            regime: computeMarketRegime?.()?.regime || null,
-          });
+          // Pro-orchestrator gate: block strategy creation if data evidence is insufficient
+          const proCtx = isProModeActive() ? runProAnalysis() : null;
+          const readiness = isProModeActive() ? validateStrategyReadiness() : null;
+          if (readiness && !readiness.ready) {
+            log("pro_orchestrator",
+              `Producer tick SKIPPED — strategy creation blocked: ${readiness.summary}`
+            );
+          } else {
+            await _fundamentalProducer.tick({
+              sampleTokens,
+              sampleWallets,
+              regime: computeMarketRegime?.()?.regime || null,
+              proIntel: proCtx,
+            });
+          }
         } catch (e) { log("fundamental_producer_error", e.message); }
       }
     }
@@ -2795,6 +3144,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
     } else if (passingCandidates.length > 0) {
       const guardedCandidates = [];
       for (const candidate of passingCandidates) {
+        // ─── Per-Coin Position Limit ─────────────────
+        const perCoinCheck = canEnterToken(candidate.mint, activeStrategyId);
+        if (!perCoinCheck.allowed) {
+          log("position_limits", `${candidate.symbol || candidate.mint}: ${perCoinCheck.reason}`);
+          continue;
+        }
+
         const amountSol = Number(candidate.recommended_deploy_amount_sol || deployAmount || 0.01);
         const guard = await preSwapGuard({
           mint: candidate.mint,
@@ -2921,6 +3277,24 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                   stagedTracking = initStagedEntry(null, activeStrat, stage1Amount, balance.sol_price || 0);
                 }
 
+                // ─── Fee Tracking: Entry ──────────────────
+                const entrySlippage = extractSlippageFromSwapResult(result, stage1Amount);
+                const entryFeeBreakdown = computeTradeFeeBreakdown({
+                  amountSol: stage1Amount,
+                  dexId: token.dex || token.launchpad || "unknown",
+                  isEntry: true,
+                  expectedPrice: token.price || 0,
+                  actualPrice: token.price ? token.price * (1 + entrySlippage.price_impact_pct / 100) : 0,
+                  liquidity: token.liquidity || 0,
+                  volume: token.volume || 0,
+                  priorityFeeSol: (Number(result?.priority_fee_lamports || 0) / 1e9) || 0,
+                  jitoTipSol: (Number(result?.total_tip_lamports || result?.tip_lamports || 0) / 1e9) || 0,
+                  txFeeLamports: result?.tx_fee_lamports || null,
+                  tokenAccountsCreated: 1,
+                });
+                recordTokenAccountCreated();
+                recordSimCall();
+
                 await trackPosition({
                   position: token.mint,
                   pool: "jupiter",
@@ -2937,10 +3311,12 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                     workflow: token.workflow || null,
                     kelly: token.kelly || null,
                     staged_entry: stagedTracking,
+                    entry_fee_breakdown: entryFeeBreakdown,
+                    entry_dex: token.dex || token.launchpad || "unknown",
                     execution_context: {
                       wallet_address: exec.wallet_address || null,
                       provider: result?.execution_provider || "auto",
-                      slippage: Number(result?.slippage || 0),
+                      slippage: Number(result?.slippage || entrySlippage.slippage_bps / 100 || 0),
                     },
                   },
                   wallet_address: exec.wallet_address || null,
@@ -3252,6 +3628,23 @@ function startTurboButtons() {
   if (_turboStarted) return;
   _turboStarted = true;
   try {
+    // ─── On-Chain Pool Listener ─────────────────────────────
+    // Real-time DEX pool discovery via WebSocket programSubscribe.
+    // Catches new tokens at slot 0 — no DexScreener delay.
+    const rpcUrl = process.env.RPC_URL || config.rpcUrl || "https://api.mainnet-beta.solana.com";
+    const wssUrl = process.env.WSS_URL || process.env.HELIUS_ATLAS_WS_URL || "";
+    startOnChainListener({
+      rpcUrl,
+      wssUrl: wssUrl || rpcUrl.replace("https://", "wss://"),
+      enabled: true,
+      onNewPool: (pool) => {
+        // Inject fresh on-chain candidate directly into the next screening cycle
+        if (pool.mint) {
+          log("onchain", `${pool.programName}: new pool ${pool.mint?.slice(0, 12)}... (slot ${pool.slot})`);
+        }
+      },
+    });
+
     _geyserStream = startGeyserStream({ onEvent: handleSmartWalletSwap, onDisconnect: handleGeyserDisconnect });
     if (_geyserStream) {
       log("turbo", "Geyser stream active — real-time smart-wallet monitoring ON");
@@ -3473,6 +3866,29 @@ export function startCronJobs() {
   // Coordinates: market check → strategy selection → pipeline adaptation
   tasks.push(cron.schedule("1,16,31,46 * * * *", async () => {
     try {
+      // Pro analysis — inject regime/narrative/strategy intelligence when pro mode is active
+      if (isProModeActive()) {
+        const proIntel = runProAnalysis();
+        if (proIntel && proIntel.recommendations.length > 0) {
+          log("pro_orchestrator",
+            `Intelligence: ${proIntel.recommendations.map(r => r.detail).join(" | ")}`
+          );
+          agentBus.emit("pro:intelligence_ready", proIntel);
+        }
+
+        // Strategy creation readiness — fundamental analyst gate
+        // Blocks strategy creation if agent lacks sufficient data/evidence
+        const readiness = validateStrategyReadiness();
+        if (!readiness.ready) {
+          log("pro_orchestrator", `Strategy creation BLOCKED: ${readiness.summary}`);
+          for (const c of readiness.components) {
+            if (!c.passed) log("pro_orchestrator", `  ✗ ${c.name}: ${c.detail}`);
+          }
+        } else {
+          log("pro_orchestrator", "Strategy creation READY — all 3 components passed.");
+        }
+        agentBus.emit("pro:strategy_readiness", readiness);
+      }
       await runOrchestratorCycle({
         getStrategyFn: (id, opts) => getStrategy(id, opts),
         getMarketIntelFn: () => getMarketIntelligence(),

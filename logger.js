@@ -16,8 +16,15 @@ if (!fs.existsSync(LOG_DIR)) {
 }
 
 // HTML escape for safe Telegram error notifications.
+// Escapes all HTML special characters including Telegram parse-mode
+// sensitive ones (quotes, control chars that could break formatting).
 function htmlEscape(s) {
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 // Strip CRLF, ANSI escapes, and other control chars to prevent log injection

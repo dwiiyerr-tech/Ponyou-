@@ -197,8 +197,15 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  const MAX_BODY_SIZE = 5 * 1024 * 1024; // 5 MB limit
   let rawBody = "";
-  req.on("data", chunk => { rawBody += chunk; });
+  req.on("data", chunk => {
+    rawBody += chunk;
+    if (rawBody.length > MAX_BODY_SIZE) {
+      req.destroy();
+      return;
+    }
+  });
   req.on("end", () => {
     try {
       const body = JSON.parse(rawBody);
@@ -222,6 +229,9 @@ server.listen(PORT, "127.0.0.1", () => {
 });
 
 server.on("error", (e) => {
-  console.error("Server error:", e.message);
-  process.exit(1);
+  if (e.code === "EADDRINUSE") {
+    console.error(`Port ${PORT} already in use — proxy unavailable`);
+  } else {
+    console.error("Server error:", e.message);
+  }
 });

@@ -57,6 +57,9 @@ function loadRuns() {
     .filter(Boolean);
 }
 
+// Single-process Node.js serializes synchronous calls through the event loop,
+// so appendFileSync from two callers cannot interleave. If this is ever made
+// async, switch to withFileLock() from atomic-write.js.
 function appendRun(run) {
   fs.appendFileSync(RUNS_FILE, `${JSON.stringify(run)}\n`, "utf8");
 }

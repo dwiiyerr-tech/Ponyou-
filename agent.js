@@ -289,6 +289,22 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       }
       sawToolCall = true;
 
+      // Reserve ONCE_PER_SESSION slots synchronously BEFORE Promise.all
+      // to prevent a race where two swap_token calls in the same round
+      // both check firedOnce.has() before either adds to the set.
+      const onceReserved = new Set();
+      const blockedIds = new Set();
+      for (const toolCall of msg.tool_calls) {
+        const fn = toolCall.function.name.replace(/<.*$/, "").trim();
+        if (ONCE_PER_SESSION.has(fn)) {
+          if (firedOnce.has(fn) || onceReserved.has(fn)) {
+            blockedIds.add(toolCall.id);
+          } else {
+            onceReserved.add(fn);
+          }
+        }
+      }
+
       const toolResults = await Promise.all(msg.tool_calls.map(async (toolCall) => {
         const functionName = toolCall.function.name.replace(/<.*$/, "").trim();
         let functionArgs;
@@ -306,7 +322,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           }
         }
 
-        if (ONCE_PER_SESSION.has(functionName) && firedOnce.has(functionName)) {
+        if (blockedIds.has(toolCall.id)) {
           return { role: "tool", tool_call_id: toolCall.id, content: JSON.stringify({ blocked: true, reason: "Executed once already." }) };
         }
 
@@ -314,6 +330,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         const result = await executeTool(functionName, functionArgs);
         await onToolFinish?.({ name: functionName, args: functionArgs, result, success: !result.error, step });
 
+        // firedOnce was pre-reserved above; no-op add here is safe but kept for non-ONCE_PER_SESSION paths
         if (ONCE_PER_SESSION.has(functionName)) firedOnce.add(functionName);
         
         // RTK Compression: reduce token usage by 60-90%

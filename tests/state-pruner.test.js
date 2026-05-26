@@ -5,10 +5,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("fs");
 vi.mock("../state.js", () => ({
   getState: vi.fn(),
+  saveState: vi.fn(),
 }));
 
 import fs from "fs";
-import { getState } from "../state.js";
+import { getState, saveState } from "../state.js";
 import { pruneClosedPositions } from "../state-pruner.js";
 
 // Helper: ISO timestamp N days ago
@@ -65,13 +66,16 @@ describe("pruneClosedPositions", () => {
 
     expect(result).toEqual({ pruned: 1, archived: 1 });
 
-    // Archive file should have been written with 1 entry
-    expect(fs.writeFileSync).toHaveBeenCalledTimes(2); // archive + state
+    // Archive file written via atomicWriteJson + state persisted via saveState
+    expect(fs.writeFileSync).toHaveBeenCalled(); // archive write (atomicWriteJson)
     const archiveCall = fs.writeFileSync.mock.calls[0];
     const archived = JSON.parse(archiveCall[1]);
     expect(archived).toHaveLength(1);
     expect(archived[0].position).toBe("oldMint");
     expect(archived[0].archived_at).toBeDefined();
+
+    // State persisted through saveState (not direct fs write)
+    expect(saveState).toHaveBeenCalledWith(expect.objectContaining({ lastUpdated: expect.any(String) }));
 
     // Position should be removed from state
     expect(mockState.positions).not.toHaveProperty("oldMint");

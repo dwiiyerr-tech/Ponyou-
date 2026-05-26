@@ -28,7 +28,7 @@ function activeStrategy(overrides = {}) {
     regime: "HOT",
     rules: { signal: "fundamental-strong", tpPct: 70, stopLossPct: 12 },
     scores: { live: 0.90, paper: 0.88, backtest: 0.85 },
-    evidence: { live: { trades: 25 } },
+    evidence: { live: { trades: 65 } },
     ...overrides,
   };
 }
