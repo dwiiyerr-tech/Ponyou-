@@ -2,20 +2,18 @@
 // Ponyou Monitor — professional TUI  (GMGN/Trojan-style)
 
 import blessed from 'blessed';
-import { connectWebSocket, getLogs, readPonyouState, bus } from '../data/state-bridge.js';
-
-// ── Constants ──
-const BORDER = { type: 'line', fg: 'white' };
-const STYLE  = { fg: 'white' };
-const DIM    = '{white-fg}';
-const DIMC   = '{/white-fg}';
+import { connectWebSocket, disconnectWebSocket, getLogs, readPonyouState, bus } from '../data/state-bridge.js';
 
 // ── Screen ──
 const screen = blessed.screen({
   smartCSR: true, title: 'PONYOU', fullUnicode: true,
-  dockBorders: false, autoPadding: false,
+  dockBorders: true, autoPadding: false,
   grabKeys: true,
 });
+
+// ── Style ──
+const BORDER = { type: 'line', fg: '#777777' };
+const STYLE  = { fg: 'white', border: { fg: '#777777' }, label: { fg: 'yellow' } };
 
 connectWebSocket(3000);
 
@@ -23,7 +21,7 @@ connectWebSocket(3000);
 function getDims() {
   const rows = process.stdout.rows  || screen.rows || 24;
   const cols  = process.stdout.columns || screen.cols || 80;
-  const HDR = 6, FTR = 1;
+  const HDR = 4, FTR = 1;
   const MAIN_TOP = HDR;
   const MAIN_H   = Math.max(rows - HDR - FTR, 4);
   const LW  = Math.floor(cols * 0.24);
@@ -32,10 +30,7 @@ function getDims() {
   const L_P   = 8;
   const L_POS = Math.max(Math.floor(MAIN_H * 0.30), 2);
   const L_E   = Math.max(MAIN_H - L_P - L_POS, 2);
-  const R_MKT = Math.max(Math.floor(MAIN_H * 0.28), 2);
-  const R_TOK = Math.max(Math.floor(MAIN_H * 0.38), 2);
-  const R_INT = Math.max(MAIN_H - R_MKT - R_TOK, 2);
-  return { rows, cols, HDR, FTR, MAIN_TOP, MAIN_H, LW, RW, CW, L_P, L_POS, L_E, R_MKT, R_TOK, R_INT };
+  return { rows, cols, HDR, FTR, MAIN_TOP, MAIN_H, LW, RW, CW, L_P, L_POS, L_E };
 }
 
 let D = getDims();
@@ -122,7 +117,7 @@ function pnlColor(v) { return Number(v) >= 0 ? 'green' : 'red'; }
 function box(opts) {
   const w = blessed.box({
     border: BORDER,
-    style: { ...STYLE, border: { fg: 'white' }, label: { fg: 'white' } },
+    style: { ...STYLE },
     tags: true, scrollable: opts.scrollable || false,
     alwaysScroll: opts.alwaysScroll || false,
     keys: opts.keys || false, vi: opts.vi || false,
@@ -134,9 +129,9 @@ function box(opts) {
 }
 
 // ── Widgets ──
-const wHeader = box({ top: 0, left: 0, width: D.cols, height: D.HDR,
-  border: { type: 'line', fg: 'white' },
-  style: { fg: 'white', border: { fg: 'white' } } });
+const wHeader = blessed.box({ top: 0, left: 0, width: D.cols, height: D.HDR,
+  tags: true, style: { fg: 'white', bg: 'default' } });
+screen.append(wHeader);
 
 const wPortfolio = box({ top: D.MAIN_TOP, left: 0, width: D.LW, height: D.L_P,
   label: ' portfolio ' });
@@ -149,15 +144,11 @@ const wActivity = box({ top: D.MAIN_TOP, left: D.LW, width: D.CW, height: D.MAIN
   label: ' activity ', scrollable: true, alwaysScroll: true,
   keys: true, vi: true, mouse: true });
 
-const wMarket = box({ top: D.MAIN_TOP, left: D.LW + D.CW, width: D.RW, height: D.R_MKT,
-  label: ' market ' });
-const wTokens = box({ top: D.MAIN_TOP + D.R_MKT, left: D.LW + D.CW, width: D.RW, height: D.R_TOK,
-  label: ' tokens ', scrollable: true, keys: true, vi: true });
-const wInternal = box({ top: D.MAIN_TOP + D.R_MKT + D.R_TOK, left: D.LW + D.CW, width: D.RW, height: D.R_INT,
-  label: ' internal ', scrollable: true, keys: true, vi: true });
+const wRight = box({ top: D.MAIN_TOP, left: D.LW + D.CW, width: D.RW, height: D.MAIN_H,
+  label: ' market·tokens·perf ', scrollable: true, alwaysScroll: false, keys: true, vi: true });
 
 const wFooter = blessed.box({ top: D.rows - D.FTR, left: 0, width: D.cols, height: D.FTR,
-  tags: true, style: { fg: 'white' } });
+  tags: true, style: { fg: 'gray' } });
 screen.append(wFooter);
 
 // ── Render ──
@@ -178,7 +169,7 @@ function render() {
     `  {yellow-fg}╔═╗ ╔═╗ ╔╗╔ ╦ ╦ ╔═╗ ╦ ╦   ╔═╗ ╔═╗ ╔═╗ ╔╗╔ ╔╦╗{/yellow-fg}`,
     `  {yellow-fg}╠═╝ ║ ║ ║║║ ╚╦╝ ║ ║ ║ ║   ╠═╣ ║ ╦ ║╣  ║║║  ║ {/yellow-fg}`,
     `  {yellow-fg}╩   ╚═╝ ╝╚╝  ╩  ╚═╝ ╚═╝   ╩ ╩ ╚═╝ ╚═╝ ╝╚╝  ╩ {/yellow-fg}`,
-    `  ${modeTag}  {white-fg}·{/white-fg}  SOL ${solTag}  {white-fg}·{/white-fg}  {white-fg}↑ ${uptime(s.uptime)}{/white-fg}  {white-fg}·{/white-fg}  ${wsTag}  {white-fg}·{/white-fg}  {#888888-fg}session ${s.sessionId || 'new'}  ·  wallet ${walletStr}{/#888888-fg}`,
+    `  ${modeTag}  {#555555-fg}·{/#555555-fg}  SOL ${solTag}  {#555555-fg}·{/#555555-fg}  {white-fg}↑ ${uptime(s.uptime)}{/white-fg}  {#555555-fg}·{/#555555-fg}  ${wsTag}  {#555555-fg}·{/#555555-fg}  {#666666-fg}${s.sessionId || 'new'}  ·  ${walletStr}{/#666666-fg}`,
   ].join('\n'));
 
   // ── Portfolio ──
@@ -292,73 +283,71 @@ function render() {
   }).join('\n'));
   if (!paused) wActivity.setScrollPerc(100);
 
-  // ── Market ──
-  const tokens = s.observedTokens.length > 0 ? s.observedTokens : s.recentTokens;
+  // ── Right Panel (market · tokens · internal, elegant separators) ──
+  const tokens   = s.observedTokens.length > 0 ? s.observedTokens : s.recentTokens;
   const hasTokens = tokens.length > 0;
-  const rpcC = wsConnected ? 'green' : '#555555';
-  const regimes = s.regimeStats;
-  wMarket.setContent([
+  const rpcC     = wsConnected ? 'green' : '#555555';
+  const regimes  = s.regimeStats;
+  const aq       = s.executionQuality;
+  const winRate  = aq.win_rate != null ? (aq.win_rate * 100).toFixed(1) + '%' : '--';
+  const cycMgmt  = s.cycleMetrics.mgmtMeanMs > 0 ? s.cycleMetrics.mgmtMeanMs.toFixed(0) + 'ms' : '--';
+  const cycScan  = s.cycleMetrics.scanMeanMs > 0  ? s.cycleMetrics.scanMeanMs.toFixed(0)  + 'ms' : '--';
+  const lr       = s.lastReport;
+
+  const routes    = s.executionRoutes;
+  const routeLines = routes.length > 0
+    ? routes.map(r => {
+        const sr = r.attempts > 0 ? ((r.successes / r.attempts) * 100).toFixed(0) : '0';
+        const rC2 = parseInt(sr) >= 80 ? 'green' : parseInt(sr) >= 50 ? 'yellow' : 'red';
+        return `  {#555555-fg}${pad((r.provider || r.wallet_address || '?').slice(0, 7), 7)}{/#555555-fg} ${lc(rC2)}${sr}%${lce(rC2)} {#333333-fg}${r.attempts}tx{/#333333-fg}`;
+      })
+    : [`  {#333333-fg}no route data{/#333333-fg}`];
+
+  const coinLines = s.convictionCoins.slice(0, 3).map(c => {
+    const wr = c.win_count + c.loss_count > 0
+      ? ((c.win_count / (c.win_count + c.loss_count)) * 100).toFixed(0) + '%' : '--';
+    const wrC2 = parseInt(wr) >= 60 ? 'green' : parseInt(wr) >= 40 ? 'yellow' : 'red';
+    return `  {#555555-fg}${pad((c.symbol || '?').slice(0, 7), 8)}{/#555555-fg}${lc(wrC2)}${wr}${lce(wrC2)} {#333333-fg}${c.win_count}W/${c.loss_count}L{/#333333-fg}`;
+  });
+
+  const lessons    = s.lessons;
+  const lastLesson = lessons.length > 0
+    ? (lessons[lessons.length - 1].lesson || lessons[lessons.length - 1].text || '').slice(0, 40)
+    : null;
+
+  // Solid separator — full ─ line matching panel width
+  const SEP = ` {#555555-fg}${'─'.repeat(Math.max(4, D.RW - 3))}{/#555555-fg}`;
+
+  const rightContent = [
+    // ── market ──
+    `  {yellow-fg}market{/yellow-fg}`,
     `  {#555555-fg}SOL    {/#555555-fg}{white-fg}$${s.solPrice > 0 ? s.solPrice.toFixed(2) : '--'}{/white-fg}`,
     `  {#555555-fg}regime {/#555555-fg}${lc(regC)}${regime}${lce(regC)}`,
     `  {#555555-fg}RPC    {/#555555-fg}${lc(rpcC)}${s.rpcStatus}${lce(rpcC)}  {#555555-fg}DEX {/#555555-fg}{green-fg}${s.dexStatus}{/green-fg}`,
     `  {#555555-fg}scan/s {/#555555-fg}{white-fg}${s.scanRate || '--'}{/white-fg}`,
     ``,
-    regimes.length > 0
-      ? `  {yellow-fg}seen regimes{/yellow-fg}\n` +
-        regimes.map(r => `  {#555555-fg}${pad((r.market_condition || '?').slice(0, 4), 4)}{/#555555-fg} {#444444-fg}│{/#444444-fg} {white-fg}${r.verdict || '--'}{/white-fg} {#333333-fg}${r.trade_count || 0}tx{/#333333-fg}`).join('\n')
-      : `  {#333333-fg}no regime history yet{/#333333-fg}`,
-  ].join('\n'));
-
-  // ── Observed Tokens ──
-  if (hasTokens) {
-    const hdr = `  {white-fg}${pad('sym', 7)} ${rpad('scr', 4)} ${rpad('liq', 8)} ${rpad('vol', 8)} ${rpad('mc', 8)}{/white-fg}`;
-    const tRows = tokens.slice(0, 12).map(t => {
-      const sym   = (t.symbol || t.ticker || '?').slice(0, 6);
-      const score = t.score || t.quality_score || 0;
-      const sC    = score >= 70 ? 'green' : score >= 40 ? 'yellow' : 'red';
-      const liq   = fmtNum(t.liquidity || t.liq);
-      const vol   = fmtNum(t.volume24h || t.vol);
-      const mc    = fmtNum(t.marketCap || t.mcap || t.mc);
-      return `  {white-fg}${pad(sym, 7)}{/white-fg} ${lc(sC)}${rpad(score, 4)}${lce(sC)} {#555555-fg}${rpad(liq, 8)} ${rpad(vol, 8)} ${rpad(mc, 8)}{/#555555-fg}`;
-    });
-    wTokens.setContent(hdr + '\n' + tRows.join('\n'));
-  } else {
-    wTokens.setContent(`\n  {#444444-fg}no token data{/#444444-fg}\n\n  {#333333-fg}start bot to populate{/#333333-fg}`);
-  }
-
-  // ── Internal Activity ──
-  const aq = s.executionQuality;
-  const winRate = aq.win_rate != null ? (aq.win_rate * 100).toFixed(1) + '%' : '--';
-  const cycMgmt = s.cycleMetrics.mgmtMeanMs > 0 ? s.cycleMetrics.mgmtMeanMs.toFixed(0) + 'ms' : '--';
-  const cycScan = s.cycleMetrics.scanMeanMs > 0  ? s.cycleMetrics.scanMeanMs.toFixed(0)  + 'ms' : '--';
-  const lr = s.lastReport;
-
-  // Execution routes (best performing)
-  const routes = s.executionRoutes;
-  const routeLines = routes.length > 0
-    ? routes.map(r => {
-        const successRate = r.attempts > 0 ? ((r.successes / r.attempts) * 100).toFixed(0) : '0';
-        const rC = parseInt(successRate) >= 80 ? 'green' : parseInt(successRate) >= 50 ? 'yellow' : 'red';
-        return `  {#555555-fg}${pad((r.provider || r.wallet_address || '?').slice(0, 7), 7)}{/#555555-fg} ${lc(rC)}${successRate}%${lce(rC)} {#333333-fg}${r.attempts}tx{/#333333-fg}`;
-      })
-    : [`  {#333333-fg}no route data{/#333333-fg}`];
-
-  // Conviction coins
-  const coinLines = s.convictionCoins.slice(0, 3).map(c => {
-    const wr = c.win_count + c.loss_count > 0
-      ? ((c.win_count / (c.win_count + c.loss_count)) * 100).toFixed(0) + '%'
-      : '--';
-    const wrC = parseInt(wr) >= 60 ? 'green' : parseInt(wr) >= 40 ? 'yellow' : 'red';
-    return `  {#555555-fg}${pad((c.symbol || '?').slice(0, 7), 8)}{/#555555-fg}${lc(wrC)}${wr}${lce(wrC)} {#333333-fg}${c.win_count}W/${c.loss_count}L{/#333333-fg}`;
-  });
-
-  // Last lesson
-  const lessons = s.lessons;
-  const lastLesson = lessons.length > 0
-    ? (lessons[lessons.length - 1].lesson || lessons[lessons.length - 1].text || '').slice(0, 40)
-    : null;
-
-  wInternal.setContent([
+    ...(regimes.length > 0
+      ? [`  {yellow-fg}regimes{/yellow-fg}`,
+         ...regimes.map(r => `  {#555555-fg}${pad((r.market_condition || '?').slice(0, 4), 4)}{/#555555-fg} {#444444-fg}│{/#444444-fg} {white-fg}${r.verdict || '--'}{/white-fg} {#333333-fg}${r.trade_count || 0}tx{/#333333-fg}`)]
+      : [`  {#333333-fg}no regime history{/#333333-fg}`]),
+    ``,
+    SEP,
+    ``,
+    // ── tokens ──
+    `  {yellow-fg}tokens{/yellow-fg}`,
+    ...(hasTokens
+      ? [`  {white-fg}${pad('sym', 7)} ${rpad('scr', 4)} ${rpad('liq', 8)} ${rpad('vol', 8)} ${rpad('mc', 8)}{/white-fg}`,
+         ...tokens.slice(0, 12).map(t => {
+           const sym   = (t.symbol || t.ticker || '?').slice(0, 6);
+           const score = t.score || t.quality_score || 0;
+           const sC    = score >= 70 ? 'green' : score >= 40 ? 'yellow' : 'red';
+           return `  {white-fg}${pad(sym, 7)}{/white-fg} ${lc(sC)}${rpad(score, 4)}${lce(sC)} {#555555-fg}${rpad(fmtNum(t.liquidity || t.liq), 8)} ${rpad(fmtNum(t.volume24h || t.vol), 8)} ${rpad(fmtNum(t.marketCap || t.mcap || t.mc), 8)}{/#555555-fg}`;
+         })]
+      : [`  {#444444-fg}no token data{/#444444-fg}`, `  {#333333-fg}start bot to populate{/#333333-fg}`]),
+    ``,
+    SEP,
+    ``,
+    // ── internal / performance ──
     `  {yellow-fg}performance{/yellow-fg}`,
     `  {#555555-fg}win rate{/#555555-fg}  {white-fg}${winRate}{/white-fg}`,
     `  {#555555-fg}mgmt    {/#555555-fg}  {#666666-fg}${cycMgmt}{/#666666-fg}  {#555555-fg}scan{/#555555-fg}  {#666666-fg}${cycScan}{/#666666-fg}`,
@@ -366,14 +355,10 @@ function render() {
     ``,
     `  {yellow-fg}exec routes{/yellow-fg}`,
     ...routeLines,
-    ``,
-    coinLines.length > 0 ? `  {yellow-fg}conviction{/yellow-fg}` : '',
-    ...coinLines,
-    lastLesson
-      ? [``, `  {yellow-fg}last lesson{/yellow-fg}`,
-         `  {#888888-fg}${lastLesson}{/#888888-fg}`].join('\n')
-      : '',
-  ].filter(l => l !== undefined).join('\n'));
+    ...(coinLines.length > 0 ? [``, `  {yellow-fg}conviction{/yellow-fg}`, ...coinLines] : []),
+    ...(lastLesson ? [``, `  {yellow-fg}last lesson{/yellow-fg}`, `  {#888888-fg}${lastLesson}{/#888888-fg}`] : []),
+  ];
+  wRight.setContent(rightContent.join('\n'));
 
   // ── Footer ──
   const fp = s.dailyPnl >= 0 ? '+' : '';
@@ -396,11 +381,9 @@ screen.on('resize', () => {
   wPositions.top   = D.MAIN_TOP + D.L_P;           wPositions.width = D.LW; wPositions.height = D.L_POS;
   wEngine.top      = D.MAIN_TOP + D.L_P + D.L_POS; wEngine.width    = D.LW; wEngine.height    = D.L_E;
 
-  wActivity.left = D.LW; wActivity.width = D.CW; wActivity.height = D.MAIN_H;
+  wActivity.top = D.MAIN_TOP; wActivity.left = D.LW; wActivity.width = D.CW; wActivity.height = D.MAIN_H;
 
-  wMarket.left   = D.LW + D.CW;                             wMarket.width   = D.RW; wMarket.height   = D.R_MKT;
-  wTokens.top    = D.MAIN_TOP + D.R_MKT;    wTokens.left    = D.LW + D.CW; wTokens.width    = D.RW; wTokens.height   = D.R_TOK;
-  wInternal.top  = D.MAIN_TOP + D.R_MKT + D.R_TOK; wInternal.left = D.LW + D.CW; wInternal.width  = D.RW; wInternal.height = D.R_INT;
+  wRight.left = D.LW + D.CW; wRight.width = D.RW; wRight.height = D.MAIN_H;
 
   wFooter.top = D.rows - D.FTR; wFooter.width = D.cols;
 
@@ -413,7 +396,9 @@ function quit() {
   if (quitting) return;
   quitting = true;
   clearInterval(renderTimer);
+  try { disconnectWebSocket(); } catch {}
   screen.destroy();
+  process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
   process.exit(0);
 }
 screen.key(['q', 'Q'],   quit);
@@ -425,9 +410,24 @@ screen.key(['3'],        () => { logFilter = 'TRADE'; render(); });
 screen.key(['4'],        () => { logFilter = 'RISK';  render(); });
 screen.key(['5'],        () => { logFilter = 'ERR';   render(); });
 screen.key(['tab'],      () => { wActivity.focus(); });
-screen.key(['S-tab'],    () => { wTokens.focus(); });
+screen.key(['S-tab'],    () => { wRight.focus(); });
 
 // ── Refresh ──
-const renderTimer = setInterval(() => { if (!paused) render(); }, 1000);
+// Primary trigger: WS state/log events push us to re-render immediately.
+// Secondary trigger: a 2s heartbeat catches changes from file-only data
+// sources (e.g. closed-positions-archive.json) when WS is offline.
+let _dirty = false;
+function scheduleRender() {
+  if (paused || quitting) return;
+  if (_dirty) return;
+  _dirty = true;
+  setImmediate(() => { _dirty = false; render(); });
+}
+bus.on('state', scheduleRender);
+bus.on('log', scheduleRender);
+bus.on('connected', scheduleRender);
+bus.on('disconnected', scheduleRender);
+
+const renderTimer = setInterval(() => { if (!paused) render(); }, 2000);
 render();
 wActivity.focus();

@@ -20,7 +20,20 @@ let _ws = null;
 let _connected = false;
 let _state = {};
 let _logs = [];
+let _reconnectAttempt = 0;
+let _reconnectTimer = null;
+let _stopped = false;
 const MAX_LOGS = 500;
+const MAX_RECONNECT_DELAY_MS = 60_000; // cap exponential backoff at 1 min
+
+function readDashboardToken() {
+  // Token written by dashboard/auth.js at start-up to dashboard-token.txt.
+  try {
+    const tokenPath = resolve(ROOT, "dashboard-token.txt");
+    if (!existsSync(tokenPath)) return null;
+    return readFileSync(tokenPath, "utf-8").trim() || null;
+  } catch { return null; }
+}
 
 function safeRead(fpath, fallback) {
   try {
@@ -29,18 +42,42 @@ function safeRead(fpath, fallback) {
   } catch { return fallback; }
 }
 
+// File-stat memoization. `closed-positions-archive.json` can grow into
+// the megabytes and the monitor re-renders every second — parsing it
+// per-tick is wasteful. We re-parse only when mtime changes.
+import { statSync } from 'fs';
+const _readCache = new Map(); // fpath → { mtimeMs, value }
+
+function safeReadCached(fpath, fallback) {
+  try {
+    if (!existsSync(fpath)) return fallback;
+    const st = statSync(fpath);
+    const hit = _readCache.get(fpath);
+    if (hit && hit.mtimeMs === st.mtimeMs) return hit.value;
+    const value = JSON.parse(readFileSync(fpath, 'utf-8'));
+    _readCache.set(fpath, { mtimeMs: st.mtimeMs, value });
+    return value;
+  } catch { return fallback; }
+}
+
 // ── WebSocket connect ──
 export async function connectWebSocket(port = 3000) {
-  if (_ws) return; // already connected
+  if (_ws || _stopped) return;
 
   try {
-    // Dynamic import so the module loads even if ws is unavailable
-    const url = `ws://127.0.0.1:${port}`;
+    // Pass the dashboard auth token as ?token=… so the server's
+    // validateTokenWs check passes. Without it, the connection is
+    // closed with code 4001 and the monitor silently falls back to
+    // file polling (with "FILE" instead of "LIVE" in the header).
+    const token = readDashboardToken();
+    const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+    const url = `ws://127.0.0.1:${port}${qs}`;
     const WS = (await import('ws')).default;
     const sock = new WS(url);
 
     sock.on('open', () => {
       _connected = true;
+      _reconnectAttempt = 0;
       bus.emit('connected');
     });
 
@@ -61,21 +98,43 @@ export async function connectWebSocket(port = 3000) {
 
     sock.on('close', () => {
       _connected = false;
+      _ws = null;
       bus.emit('disconnected');
-      // Reconnect after 5s
-      setTimeout(() => { _ws = null; connectWebSocket(port); }, 5000);
+      scheduleReconnect(port);
     });
 
     sock.on('error', () => {
       _connected = false;
-      sock.close?.();
-      _ws = null;
+      try { sock.close?.(); } catch {}
+      // 'close' handler will null _ws and schedule reconnect — don't do
+      // it twice here, or we end up with two pending reconnect timers.
     });
 
     _ws = sock;
   } catch {
     // ws package not available — stay on file fallback
+    scheduleReconnect(port);
   }
+}
+
+function scheduleReconnect(port) {
+  if (_stopped || _reconnectTimer) return;
+  // Exponential backoff: 1s, 2s, 4s, … capped at 60s.
+  const delay = Math.min(1000 * 2 ** _reconnectAttempt, MAX_RECONNECT_DELAY_MS);
+  _reconnectAttempt += 1;
+  _reconnectTimer = setTimeout(() => {
+    _reconnectTimer = null;
+    connectWebSocket(port);
+  }, delay);
+  // Don't keep node alive solely for the reconnect timer.
+  _reconnectTimer.unref?.();
+}
+
+export function disconnectWebSocket() {
+  _stopped = true;
+  if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+  if (_ws) { try { _ws.close(); } catch {} _ws = null; }
+  _connected = false;
 }
 
 export function isConnected() { return _connected; }
@@ -90,12 +149,14 @@ export function readPonyouState() {
   const config = safeRead(resolve(ROOT, 'user-config.json'), {});
   const metrics = safeRead(resolve(ROOT, 'metrics.json'), {});
   const marketIntel = safeRead(resolve(ROOT, 'market-heatmap-state.json'), {});
-  const observedTokens = safeRead(resolve(ROOT, 'observed-tokens.json'), []);
-  const smartWallets = safeRead(resolve(ROOT, 'smart-wallets.json'), []);
-  const lessons = safeRead(resolve(ROOT, 'lessons.json'), []);
+  const observedTokens = safeReadCached(resolve(ROOT, 'observed-tokens.json'), []);
+  const smartWallets = safeReadCached(resolve(ROOT, 'smart-wallets.json'), []);
+  const lessons = safeReadCached(resolve(ROOT, 'lessons.json'), []);
   const regimeMemory = safeRead(resolve(ROOT, 'regime-memory.json'), {});
   const executionQuality = safeRead(resolve(ROOT, 'execution-quality.json'), {});
-  const closedPositions = safeRead(resolve(ROOT, 'closed-positions-archive.json'), []);
+  // Closed positions archive can be many MB; cache by mtime so we don't
+  // re-parse on every 1s render.
+  const closedPositions = safeReadCached(resolve(ROOT, 'closed-positions-archive.json'), []);
   const automationState = safeRead(resolve(ROOT, 'automation-state.json'), {});
   const conviction = safeRead(resolve(ROOT, 'coin-conviction.json'), {});
   const lastReport = safeRead(resolve(ROOT, 'last-report.json'), {});
@@ -225,23 +286,45 @@ export function readPonyouState() {
 }
 
 // ── Tools registry ──
+//
+// Reports tool *availability* (file exists on disk) and a *liveness hint*
+// when we can derive one from WS-broadcast state. Status values:
+//   READY    — file exists, bot is alive and we have no negative signal
+//   DOWN     — file is missing on disk
+//   OFFLINE  — no WS connection (file polling only; can't probe liveness)
+//   RATE_LIMIT — WS state surfaced a 429/rate-limit flag for this module
+//
+// This is best-effort — we don't crawl process internals; we read what
+// the bot publishes via dashboard state. Each tool entry is rooted at
+// the project root (or `tools/` for files under that subdir).
 export function getPonyouTools() {
-  const tools = [
-    { name: 'token_scanner', file: 'day-phase-screener.js', status: 'READY' },
-    { name: 'dex_pair_watcher', file: 'dexscreener.js', status: 'READY' },
-    { name: 'wallet_tracker', file: 'wallet-discovery.js', status: 'READY' },
-    { name: 'signal_parser', file: 'wallet-signal-injector.js', status: 'READY' },
-    { name: 'rug_check', file: 'rug-anomaly.js', status: 'READY' },
-    { name: 'volume_analyzer', file: 'fee-tracker.js', status: 'READY' },
-    { name: 'holder_analyzer', file: 'community-detector.js', status: 'READY' },
-    { name: 'pnl_tracker', file: 'sell-simulator.js', status: 'READY' },
-    { name: 'narrative_detector', file: 'narratives.js', status: 'READY' },
-    { name: 'launch_monitor', file: 'onchain-listener.js', status: 'READY' },
-    { name: 'position_limits', file: 'position-limits.js', status: 'READY' },
-    { name: 'staged_entry', file: 'staged-entry.js', status: 'READY' },
-    { name: 'jupiter_quote', file: 'jupiter.js', status: 'READY' },
-    { name: 'coingecko_enrich', file: 'coingecko-enrichment.js', status: 'READY' },
-    { name: 'dev_blacklist', file: 'dev-blacklist.js', status: 'READY' },
+  const ROOT_FILES = [
+    { name: 'token_scanner',    file: 'tools/day-phase-screener.js' },
+    { name: 'dex_pair_watcher', file: 'tools/dexscreener.js' },
+    { name: 'wallet_tracker',   file: 'smart-wallets.js' },
+    { name: 'signal_parser',    file: 'signal-aggregator.js' },
+    { name: 'rug_check',        file: 'tools/rug-anomaly.js' },
+    { name: 'volume_analyzer',  file: 'execution-quality-memory.js' },
+    { name: 'holder_analyzer',  file: 'holder-memory.js' },
+    { name: 'pnl_tracker',      file: 'tools/sell-simulator.js' },
+    { name: 'narrative_detector', file: 'narrative-contagion.js' },
+    { name: 'launch_monitor',   file: 'tools/onchain-listener.js' },
+    { name: 'position_limits',  file: 'tools/position-limits.js' },
+    { name: 'staged_entry',     file: 'tools/staged-entry.js' },
+    { name: 'jupiter_quote',    file: 'tools/jupiter.js' },
+    { name: 'coingecko_enrich', file: 'market-intelligence.js' },
+    { name: 'dev_blacklist',    file: 'dev-blacklist.js' },
   ];
-  return tools;
+  const wsFeatures = (_state && _state.features) || {};
+  const wsRateLimited = new Set(Array.isArray(_state?.rate_limited) ? _state.rate_limited : []);
+  return ROOT_FILES.map(t => {
+    const abs = resolve(ROOT, t.file);
+    if (!existsSync(abs)) return { ...t, status: 'DOWN' };
+    if (wsRateLimited.has(t.name)) return { ...t, status: 'RATE_LIMIT' };
+    // If the bot is publishing features and explicitly disables this one,
+    // surface as OFFLINE instead of READY.
+    const explicit = wsFeatures[t.name];
+    if (explicit === false) return { ...t, status: 'OFFLINE' };
+    return { ...t, status: _connected ? 'READY' : 'OFFLINE' };
+  });
 }
