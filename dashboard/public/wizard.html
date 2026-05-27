@@ -276,6 +276,22 @@ function renderWalletList(field, enabled) {
   const rows = (formData.wallets || []).slice(0, 10);
   const status = formData._walletKeyStatus || {};
   let html = `<div class="field-row"><label>${field.label}</label>
+
+    <!-- Quick Delete Form -->
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.75rem;margin-bottom:.75rem">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.5rem">🗑 Hapus Wallet Slot</div>
+      <div class="input-row" style="display:flex;gap:.5rem">
+        <input type="text" id="walletDeleteInput" placeholder="Ketik label wallet yang ingin dihapus…" style="flex:1;font-size:12px">
+        <button class="btn danger" type="button" onclick="quickDeleteWalletRow()">Hapus</button>
+      </div>
+      <div id="walletDeleteMsg" style="font-size:11px;margin-top:.35rem;min-height:1rem"></div>
+    </div>
+
+    <!-- Search / Filter -->
+    <div style="display:flex;gap:.5rem;margin-bottom:.5rem">
+      <input type="text" id="walletSearchInput" placeholder="🔍 Cari wallet slot…" oninput="filterWalletRows()" style="flex:1;font-size:12px">
+    </div>
+
     <div id="walletList" style="display:flex;flex-direction:column;gap:.5rem">`;
   rows.forEach((w, i) => { html += renderWalletRow(w, i, status); });
   html += `</div>
@@ -287,6 +303,35 @@ function renderWalletList(field, enabled) {
   </div>`;
   setTimeout(updateWalletTotal, 0);
   return html;
+}
+
+function filterWalletRows() {
+  const q = (document.getElementById("walletSearchInput")?.value || "").toLowerCase().trim();
+  document.querySelectorAll(".wallet-row").forEach(row => {
+    const label = (row.querySelector('[data-row-field="label"]')?.value || "").toLowerCase();
+    row.style.display = (!q || label.includes(q)) ? "" : "none";
+  });
+}
+
+function quickDeleteWalletRow() {
+  const q = (document.getElementById("walletDeleteInput")?.value || "").trim().toLowerCase();
+  const msgEl = document.getElementById("walletDeleteMsg");
+  if (!q) { msgEl.textContent = "⚠ Ketik label wallet terlebih dahulu."; msgEl.style.color = "var(--yellow)"; return; }
+  const { wallets, keys } = readWalletRows();
+  if (wallets.length <= 2) { msgEl.textContent = "Minimal 2 wallet slot."; msgEl.style.color = "var(--red)"; return; }
+  const before = wallets.length;
+  const filtered = wallets.filter(w => !(w.label || "").toLowerCase().includes(q));
+  if (filtered.length === before) { msgEl.textContent = "Label tidak ditemukan."; msgEl.style.color = "var(--red)"; return; }
+  if (filtered.length < 2) { msgEl.textContent = "Tidak bisa — minimal 2 slot harus tersisa."; msgEl.style.color = "var(--red)"; return; }
+  const reindexed = filtered.map((w, i) => ({ ...w, env_ref: `WALLET_KEY_${i + 1}` }));
+  formData.wallets = reindexed;
+  formData._walletKeys = { ...(formData._walletKeys || {}), ...keys };
+  document.getElementById("walletDeleteInput").value = "";
+  renderStep();
+  setTimeout(() => {
+    const m = document.getElementById("walletDeleteMsg");
+    if (m) { m.textContent = `✓ ${before - filtered.length} slot dihapus.`; m.style.color = "var(--green)"; }
+  }, 50);
 }
 
 function renderWalletRow(w, i, status) {
@@ -360,37 +405,86 @@ function updateWalletTotal() {
 function renderTrashWalletList(field) {
   const rows = (formData.trashWallets || []);
   let html = `<div class="field-row"><label>${field.label}</label>
-    <div class="field-hint" style="margin-bottom:.5rem">${field.hint}</div>
+    <div class="field-hint" style="margin-bottom:.75rem">${field.hint}</div>
+
+    <!-- Quick Delete Form -->
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.75rem;margin-bottom:.75rem">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.5rem">🗑 Hapus Wallet</div>
+      <div class="input-row" style="display:flex;gap:.5rem">
+        <input type="text" id="trashDeleteInput" placeholder="Ketik alamat atau label wallet yang ingin dihapus…" style="flex:1;font-family:monospace;font-size:12px">
+        <button class="btn danger" type="button" onclick="quickDeleteTrashWallet()">Hapus</button>
+      </div>
+      <div id="trashDeleteMsg" style="font-size:11px;margin-top:.35rem;min-height:1rem"></div>
+    </div>
+
+    <!-- Search / Filter -->
+    <div style="display:flex;gap:.5rem;margin-bottom:.5rem">
+      <input type="text" id="trashSearchInput" placeholder="🔍 Cari wallet dalam daftar…" oninput="filterTrashWallets()" style="flex:1;font-size:12px">
+    </div>
+
     <div id="trashWalletList" style="display:flex;flex-direction:column;gap:.4rem">`;
   rows.forEach((w, i) => {
     const addr = typeof w === "string" ? w : (w?.address || "");
     const label = (w && w.label) || "";
-    html += `<div class="trash-wallet-row" data-row="${i}" style="display:grid;grid-template-columns:1fr auto;gap:.4rem;align-items:center;background:var(--bg);padding:.4rem;border-radius:6px">
-      <div style="display:flex;flex-direction:column;gap:.2rem">
-        <input type="text" data-trash-field="address" placeholder="Solana wallet address (base58)" value="${addr.replace(/"/g,"&quot;")}" style="font-family:monospace;font-size:12px">
-        <input type="text" data-trash-field="label" placeholder="Optional label (e.g. known-rug-deployer)" value="${label.replace(/"/g,"&quot;")}" style="font-size:12px">
-      </div>
-      <button class="btn" type="button" onclick="removeTrashWalletRow(${i})" style="align-self:center">− Remove</button>
-    </div>`;
+    html += renderTrashWalletRow(addr, label, i);
   });
   if (rows.length === 0) {
-    html += `<div style="color:var(--muted);font-size:13px;padding:.5rem">No trash wallets added yet.</div>`;
+    html += `<div id="trashEmpty" style="color:var(--muted);font-size:13px;padding:.5rem">Belum ada trash wallet.</div>`;
   }
   html += `</div>
-    <button class="btn" type="button" onclick="addTrashWalletRow()" style="margin-top:.5rem">+ Add Trash Wallet</button>
+    <button class="btn" type="button" onclick="addTrashWalletRow()" style="margin-top:.5rem">+ Tambah Wallet</button>
   </div>`;
   return html;
 }
 
+function renderTrashWalletRow(addr, label, i) {
+  return `<div class="trash-wallet-row" data-row="${i}" style="display:grid;grid-template-columns:1fr auto;gap:.4rem;align-items:center;background:var(--bg);padding:.4rem;border-radius:6px">
+    <div style="display:flex;flex-direction:column;gap:.2rem">
+      <input type="text" data-trash-field="address" placeholder="Solana wallet address (base58)" value="${addr.replace(/"/g,"&quot;")}" style="font-family:monospace;font-size:12px">
+      <input type="text" data-trash-field="label" placeholder="Label opsional (e.g. known-rug-deployer)" value="${label.replace(/"/g,"&quot;")}" style="font-size:12px">
+    </div>
+    <button class="btn danger" type="button" onclick="removeTrashWalletRow(${i})" style="align-self:center">− Hapus</button>
+  </div>`;
+}
+
+function filterTrashWallets() {
+  const q = (document.getElementById("trashSearchInput")?.value || "").toLowerCase().trim();
+  document.querySelectorAll(".trash-wallet-row").forEach(row => {
+    const addr = (row.querySelector('[data-trash-field="address"]')?.value || "").toLowerCase();
+    const label = (row.querySelector('[data-trash-field="label"]')?.value || "").toLowerCase();
+    row.style.display = (!q || addr.includes(q) || label.includes(q)) ? "" : "none";
+  });
+}
+
+function quickDeleteTrashWallet() {
+  const q = (document.getElementById("trashDeleteInput")?.value || "").trim().toLowerCase();
+  const msgEl = document.getElementById("trashDeleteMsg");
+  if (!q) { msgEl.textContent = "⚠ Ketik alamat atau label terlebih dahulu."; msgEl.style.color = "var(--yellow)"; return; }
+  formData.trashWallets = readTrashWalletRows();
+  const before = formData.trashWallets.length;
+  formData.trashWallets = formData.trashWallets.filter(w => {
+    const addr = (typeof w === "string" ? w : w?.address || "").toLowerCase();
+    const lbl = (w?.label || "").toLowerCase();
+    return !addr.includes(q) && !lbl.includes(q);
+  });
+  const removed = before - formData.trashWallets.length;
+  if (removed === 0) {
+    msgEl.textContent = "Tidak ditemukan — cek alamat/label.";
+    msgEl.style.color = "var(--red)";
+  } else {
+    msgEl.textContent = `✓ ${removed} wallet dihapus.`;
+    msgEl.style.color = "var(--green)";
+    document.getElementById("trashDeleteInput").value = "";
+    renderStep();
+  }
+}
+
 function readTrashWalletRows() {
-  const rows = document.querySelectorAll(".trash-wallet-row");
   const wallets = [];
-  rows.forEach((row) => {
+  document.querySelectorAll(".trash-wallet-row").forEach((row) => {
     const addr = (row.querySelector('[data-trash-field="address"]')?.value || "").trim();
     const label = (row.querySelector('[data-trash-field="label"]')?.value || "").trim();
-    if (addr) {
-      wallets.push(label ? { address: addr, label } : { address: addr });
-    }
+    if (addr) wallets.push(label ? { address: addr, label } : { address: addr });
   });
   return wallets;
 }

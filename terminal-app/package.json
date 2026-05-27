@@ -1,0 +1,24 @@
+{
+  "name": "ponyou-terminal",
+  "version": "2.0.0",
+  "description": "Ponyou Terminal Agent — unified CLI for monitoring, setup, and commanding the Ponyou memecoin AI agent",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node src/index.js",
+    "start": "node src/index.js",
+    "monitor": "node src/index.js --monitor",
+    "wizard": "node src/index.js --wizard"
+  },
+  "dependencies": {
+    "blessed": "^0.1.81",
+    "ink": "^5.0.1",
+    "ink-text-input": "^6.0.0",
+    "ink-spinner": "^5.0.0",
+    "react": "^18.3.1",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

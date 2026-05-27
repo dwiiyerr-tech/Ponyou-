@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# PONYOU — Solana Memecoin AI Agent Terminal
+#   ponyou          → Claude Code-style chat
+#   ponyou wizard   → Setup wizard
+#   ponyou monitor  → Live dashboard
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "$DIR/src/index.js" "$@"
