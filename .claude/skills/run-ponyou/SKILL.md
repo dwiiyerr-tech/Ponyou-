@@ -94,9 +94,12 @@ node .claude/skills/run-ponyou/driver.mjs screenshot /tmp/snap.json
 cat /tmp/snap.json | head -40
 ```
 
-Captures (≈7KB JSON): `active-strategy`, `trading-plan`, `performance`
-(last 5 trades), `metrics`, `state-summary` (positions collapsed to
-counts to keep the file small).
+Captures (≈7KB JSON when fully populated): `active-strategy`,
+`trading-plan`, `performance` (last 5 trades), `metrics`,
+`state-summary` (positions collapsed to counts to keep the file
+small). Each key only appears if its backing JSON file exists at the
+repo root — a fresh bot in demo mode often has no `performance.json`
+or `trading-plan.json` yet, so the snapshot is smaller (≈1KB).
 
 ### Stop
 
