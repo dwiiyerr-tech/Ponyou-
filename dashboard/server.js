@@ -10,6 +10,7 @@ import { globalLogBuffer } from "./log-buffer.js";
 import { createApiRouter } from "./routes/api.js";
 import { createWizardRouter } from "./routes/wizard.js";
 import { generateToken, authMiddleware, validateTokenWs } from "./auth.js";
+import { stripSensitive } from "./sensitive.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,18 +27,32 @@ export function createDashboardServer({ port = 3000 } = {}) {
   const dashToken = generateToken();
   log("dashboard", `Auth token: ${dashToken.slice(0, 8)}... (see dashboard-token.txt)`);
 
-  // Auth middleware — exempt public HTML pages and all wizard API routes
-  // (wizard is the first-time setup flow; server binds to 127.0.0.1 only)
+  // First-time setup detection: wizard endpoints are unauth ONLY when
+  // user-config.json has no walletAddress yet. Once configured, the same
+  // endpoints require auth like everything else.
+  function isFirstTimeSetup() {
+    try {
+      const cfgPath = path.join(__dirname, "..", "user-config.json");
+      if (!fs.existsSync(cfgPath)) return true;
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+      return !cfg.walletAddress;
+    } catch { return true; }
+  }
+
+  // Auth middleware — exempt public HTML pages always; exempt wizard API
+  // routes only during first-time setup (no walletAddress yet).
   app.use((req, res, next) => {
     const publicPaths = ["/", "/wizard", "/wizard.html", "/index.html"];
-    const publicApiPaths = [
+    const wizardApiPaths = [
       { method: "GET",  path: "/wizard/config" },
       { method: "POST", path: "/wizard/save" },
       { method: "GET",  path: "/wizard/wallet-status" },
       { method: "GET",  path: "/wizard/test-telegram" },
     ];
     if (publicPaths.includes(req.path)) return next();
-    if (publicApiPaths.some(p => p.method === req.method && p.path === req.path)) return next();
+    if (wizardApiPaths.some(p => p.method === req.method && p.path === req.path) && isFirstTimeSetup()) {
+      return next();
+    }
     authMiddleware(req, res, next);
   });
 
@@ -57,27 +72,6 @@ export function createDashboardServer({ port = 3000 } = {}) {
 
   const server = createServer(app);
   const wss = new WebSocketServer({ server });
-
-  // Sensitive fields that must never be broadcast to dashboard clients
-  const SENSITIVE_FIELDS = new Set([
-    "walletKey", "privateKey", "keypair", "secretKey", "seedPhrase",
-    "mnemonic", "vaultPrivateKey", "vault_key", "apiKey", "api_key",
-    "rpcToken", "heliusApiKey", "helius_api_key", "authToken", "auth_token",
-    "password", "passphrase", "signer", "_keypair", "_privateKey",
-  ]);
-
-  function stripSensitive(obj, seen = new WeakSet()) {
-    if (obj == null || typeof obj !== "object") return obj;
-    if (seen.has(obj)) return "[Circular]";
-    seen.add(obj);
-    if (Array.isArray(obj)) return obj.map(v => stripSensitive(v, seen));
-    const out = {};
-    for (const [k, v] of Object.entries(obj)) {
-      if (SENSITIVE_FIELDS.has(k)) { out[k] = "[REDACTED]"; continue; }
-      out[k] = stripSensitive(v, seen);
-    }
-    return out;
-  }
 
   // Broadcast state every 2s
   const broadcastTimer = setInterval(async () => {
