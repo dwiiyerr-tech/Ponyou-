@@ -31,13 +31,14 @@ const AGENT_NAME = "management";
 let _runManagementCycle = null;
 let _checkAllGates = null;
 let _telegramEnabled = null;
-let _lLMReviewEnabled = true;
+let _llmReviewEnabled = true;
+let _emergencyCount = 0;
 
 export function initManagementAgent({ runManagementCycle, checkAllGates, telegramEnabled, llmReviewEnabled = true }) {
   _runManagementCycle = runManagementCycle;
   _checkAllGates = checkAllGates;
   _telegramEnabled = telegramEnabled;
-  _lLMReviewEnabled = llmReviewEnabled;
+  _llmReviewEnabled = llmReviewEnabled;
 
   setAgentStatus(AGENT_NAME, "running", "Management agent — owns BUY/SELL decisions, LLM review enabled");
 
@@ -94,10 +95,11 @@ export function initManagementAgent({ runManagementCycle, checkAllGates, telegra
 
   // ── Emergency exits: rug force-exit or price crash ──
   agentBus.subscribe("management:emergency_exit", (payload) => {
+    _emergencyCount += 1;
     log("management", `EMERGENCY: ${payload?.symbol} — ${payload?.reason} (${payload?.type})`);
     updateAgentHealth(AGENT_NAME, {
       lastEmergency: payload,
-      emergencyCount: (updateAgentHealth._emergencyCount || 0) + 1,
+      emergencyCount: _emergencyCount,
     });
   });
 
@@ -148,8 +150,12 @@ export async function runManagementCycle({ silent = false } = {}) {
 }
 
 export function setLLMReviewEnabled(enabled) {
-  _lLMReviewEnabled = !!enabled;
-  log("management", `LLM review ${_lLMReviewEnabled ? "enabled" : "disabled"}`);
+  _llmReviewEnabled = !!enabled;
+  log("management", `LLM review ${_llmReviewEnabled ? "enabled" : "disabled"}`);
+}
+
+export function isLLMReviewEnabled() {
+  return _llmReviewEnabled;
 }
 
 export function getManagementAgentStatus() {
@@ -158,7 +164,8 @@ export function getManagementAgentStatus() {
     role: "management",
     description: "Owns BUY & SELL decisions. Uses LLM for portfolio review.",
     initialized: !!_runManagementCycle,
-    llmReviewEnabled: _lLMReviewEnabled,
+    llmReviewEnabled: _llmReviewEnabled,
+    emergencyCount: _emergencyCount,
   };
 }
 
@@ -166,5 +173,6 @@ export default {
   initManagementAgent,
   runManagementCycle,
   setLLMReviewEnabled,
+  isLLMReviewEnabled,
   getManagementAgentStatus,
 };
