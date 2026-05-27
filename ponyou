@@ -95,7 +95,10 @@ print_help() {
 Ponyou agent command surface
 
 Usage:
-  ponyou             Buka wizard interaktif
+  ponyou             Open chat mode (default)
+  ponyou chat        Open chat mode (explicit)
+  ponyou monitor     Open live dashboard
+  ponyou wizard      Open setup wizard
   ponyou agent       Start live agent
   ponyou demo        Start demo agent
   ponyou status      Quick status snapshot
@@ -135,8 +138,8 @@ NODE
 }
 
 case "${cmd}" in
-  wizard|"")
-    wizard
+  wizard|chat|monitor|dashboard|logs|"")
+    exec node "${ROOT_DIR}/terminal-app/src/index.js" "$@"
     ;;
   agent|start|live)
     exec npm start

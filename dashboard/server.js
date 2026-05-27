@@ -26,10 +26,16 @@ export function createDashboardServer({ port = 3000 } = {}) {
   const dashToken = generateToken();
   log("dashboard", `Auth token: ${dashToken.slice(0, 8)}... (see dashboard-token.txt)`);
 
-  // Auth middleware — exempt public HTML pages and first-time wizard config
+  // Auth middleware — exempt public HTML pages and all wizard API routes
+  // (wizard is the first-time setup flow; server binds to 127.0.0.1 only)
   app.use((req, res, next) => {
     const publicPaths = ["/", "/wizard", "/wizard.html", "/index.html"];
-    const publicApiPaths = [{ method: "GET", path: "/wizard/config" }];
+    const publicApiPaths = [
+      { method: "GET",  path: "/wizard/config" },
+      { method: "POST", path: "/wizard/save" },
+      { method: "GET",  path: "/wizard/wallet-status" },
+      { method: "GET",  path: "/wizard/test-telegram" },
+    ];
     if (publicPaths.includes(req.path)) return next();
     if (publicApiPaths.some(p => p.method === req.method && p.path === req.path)) return next();
     authMiddleware(req, res, next);
