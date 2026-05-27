@@ -2052,6 +2052,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     // ─── Step 2: Deterministic exits ─────────────
     const deterministicExits = await checkDeterministicExits(tokens);
     for (const exit of deterministicExits) {
+      try {
       log("strategy", `EXIT: ${exit.symbol} — ${exit.reason}`);
       const tokenData = tokens.find(t => (t.position_key || t.mint) === (exit.position_key || exit.mint));
       const exitStartAt = Date.now();
@@ -2302,6 +2303,23 @@ export async function runManagementCycle({ silent = false } = {}) {
       } else {
         log("swap_error", `EXIT failed for ${exit.symbol}: ${res.error || "unknown error"}`);
       }
+      } catch (perExitErr) {
+        // Per-exit safety: a bookkeeping failure on one exit must not abort
+        // the whole batch. The on-chain swap may have already succeeded, so
+        // the next cycle's exit attempt on the same mint would hit a
+        // zero-balance position and fail. Log loudly and move on.
+        log("management_error",
+          `Exit bookkeeping failed for ${exit.symbol || exit.mint?.slice(0, 8)}: ${perExitErr.message}`,
+        );
+        recordError("exit_per_iter");
+        if (telegramEnabled()) {
+          sendHTML(
+            `⚠️ <b>Exit bookkeeping error</b> · ${htmlEscape(exit.symbol || "?")}\n` +
+            `<code>${htmlEscape(perExitErr.message)}</code>\n` +
+            fmt.it("On-chain may have succeeded — check state."),
+          ).catch(() => {});
+        }
+      }
     }
 
     // ─── Step 2: LLM Management (via Agent Bus → General Agent) ──
@@ -2366,20 +2384,49 @@ TUGAS:
             // Check if this is a SELL (token_out is SOL/wSOL)
             if (tokenOut === "SOL" || tokenOut === "So11111111111111111111111111111111111111112") {
               const llmPosKey = walletAddress ? `${tokenIn}::${walletAddress}` : tokenIn;
+
+              // ── Compute real PnL for win/loss telemetry ──────────────
+              // Previously this branch hardcoded recordTrade(true) which
+              // counted every LLM-driven exit as a win, even -50% dumps.
+              // Now we derive win/loss from the actual swap output vs the
+              // tracked entry value. If we can't derive (missing tracked
+              // position, missing sol price, dry-run), skip the win/loss
+              // accounting entirely instead of guessing.
+              const trackedPos = getTrackedPosition(tokenIn, walletAddress);
+              const solPriceUsd = Number(remainingBalance?.sol_price) || 0;
+              // result.amount_out is the raw output (lamports for SOL → / 1e9)
+              const exitSolAmount = Number(result.amount_out || 0) / 1e9;
+              const exitUsd = exitSolAmount * solPriceUsd;
+              const entryUsd = Number(trackedPos?.initial_value_usd) || 0;
+              const canComputePnl = !result.dry_run && entryUsd > 0 && exitUsd > 0;
+              const pnlPct = canComputePnl ? ((exitUsd - entryUsd) / entryUsd) * 100 : null;
+              const isWin = pnlPct != null ? pnlPct > 0 : null;
+
               await recordClose(tokenIn, "LLM Manager Decision", walletAddress);
               _rugMonitor?.detachPosition(llmPosKey);
               await clearPartialTPGuard(llmPosKey);
               recordRuggedNarrativesForExit({ reason: "LLM Manager Decision", token: {} });
-              recordTrade(true);
-              await handleDailyTradeGuardOutcome(true, {
-                mint: tokenIn,
-                symbol: tokenIn?.slice(0, 8),
-                exit_reason: "LLM Manager Decision",
-              });
+
+              if (isWin != null) {
+                recordTrade(isWin);
+                await handleDailyTradeGuardOutcome(isWin, {
+                  mint: tokenIn,
+                  symbol: tokenIn?.slice(0, 8),
+                  pnl_pct: pnlPct,
+                  exit_reason: "LLM Manager Decision",
+                });
+              } else {
+                log("management_warn",
+                  `LLM exit ${tokenIn?.slice(0, 8)}: PnL unavailable (entry=$${entryUsd.toFixed(2)}, exit=$${exitUsd.toFixed(2)}, dry_run=${!!result.dry_run}) — skipping win/loss telemetry`,
+                );
+              }
+
               agentBus.emit("management:llm_exit_executed", {
                 mint: tokenIn,
                 reason: "LLM Manager Decision",
                 walletAddress,
+                pnl_pct: pnlPct,
+                is_win: isWin,
                 timestamp: Date.now(),
               });
             }

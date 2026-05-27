@@ -39,7 +39,9 @@ let _strategyHistory = [];
 let _lastMarketCondition = null;
 let _fullAutomationMode = false;
 let _proIntel = null; // latest pro-orchestrator intelligence (regimes, narratives, strategies)
+let _tradeCount = 0;  // closed trades observed via management:llm_exit_executed
 const PRO_INTEL_MAX_AGE_MS = 10 * 60_000; // stale after 10 min
+const STRATEGY_HISTORY_CAP = 100;        // prevent unbounded growth in long-running bot
 
 // Strategy selection rules per market regime
 const STRATEGY_RULES = {
@@ -91,8 +93,12 @@ export function initOrchestratorAgent({ getStrategyFn, getMarketIntelFn } = {}) 
       reason: payload?.reason || "manual",
       timestamp: Date.now(),
     });
+    // Cap history to prevent slow memory bloat in long-running processes.
+    if (_strategyHistory.length > STRATEGY_HISTORY_CAP) {
+      _strategyHistory.splice(0, _strategyHistory.length - STRATEGY_HISTORY_CAP);
+    }
 
-    log("orchestrator", `Strategy switch: ${oldStrategy?.id || "none"} → ${_activeStrategy?.id || "none"} (${payload?.reason})`);
+    log("orchestrator", `Strategy switch: ${oldStrategy?.id || "none"} → ${_activeStrategy?.id || "none"} (${payload?.reason || "manual"})`);
     updateAgentHealth(AGENT_NAME, {
       activeStrategy: _activeStrategy?.id,
       strategyHistory: _strategyHistory.slice(-10),
@@ -101,10 +107,11 @@ export function initOrchestratorAgent({ getStrategyFn, getMarketIntelFn } = {}) 
 
   // ── Listen for trade outcomes → feed back into strategy selection ──
   agentBus.subscribe("management:llm_exit_executed", (payload) => {
+    _tradeCount += 1;
     log("orchestrator", `Trade closed: ${payload?.mint?.slice(0, 8)} — ${payload?.reason}`);
     updateAgentHealth(AGENT_NAME, {
       lastTradeOutcome: payload,
-      totalTradesTracked: (_strategyHistory.length || 0) + 1,
+      totalTradesTracked: _tradeCount,
     });
   });
 
