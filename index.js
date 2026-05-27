@@ -9,7 +9,7 @@ import { agentBus } from "./agents/agent-bus.js";
 import { registerAgent, setAgentStatus, getDashboardSummary } from "./agents/agent-registry.js";
 import { initHuntersAgent, runHuntersExpedition, getHuntersPrey, getHuntersDashboard } from "./agents/hunters-agent.js";
 import { initScreeningAgent, getScreeningDashboard } from "./agents/screening-agent.js";
-import { initManagementAgent } from "./agents/management-agent.js";
+import { initManagementAgent, isLLMReviewEnabled } from "./agents/management-agent.js";
 import { initGeneralAgent, handleGeneralMessage } from "./agents/general-agent.js";
 import { initTrashLayer } from "./agents/trash-layer.js";
 import { initLearningAgent } from "./agents/learning-agent.js";
@@ -2326,9 +2326,20 @@ export async function runManagementCycle({ silent = false } = {}) {
     const remainingBalance = await getPortfolioSnapshot();
     const remainingTokens = (remainingBalance.tokens || []).filter(t => t.usd >= 0.1 && t.symbol !== "SOL");
 
-    if (remainingTokens.length > 0) {
+    if (remainingTokens.length > 0 && isLLMReviewEnabled()) {
       const planSummary = getPlanSummary();
       const marketIntel = getMarketIntelligence();
+
+      // MGMT-3: build the "do not exit" hint so the LLM is told which
+      // positions are inside their managed window (active partial-TP,
+      // age below min hold, etc). This is advisory — not a hard guard.
+      // For a hard guard, the swap_token tool itself would need to
+      // refuse on these mints; that would require threading state into
+      // the tool executor and is deferred to a follow-up.
+      const managedMints = remainingTokens
+        .filter(t => Number(t.age_minutes || 0) < 5 || t.partial_tp_active)
+        .map(t => t.mint)
+        .filter(Boolean);
 
       // Emit to bus — General Agent picks up and runs LLM
       agentBus.emit("management:llm_review_started", {
@@ -2337,7 +2348,12 @@ export async function runManagementCycle({ silent = false } = {}) {
         timestamp: Date.now(),
       });
 
-      const { content } = await agentLoop(`
+      // MGMT-6: inner timeout around the LLM call so a stuck stream
+      // doesn't sit on the whole management cycle. Falls through to the
+      // outer try/catch as a normal exception.
+      const LLM_TIMEOUT_MS = Number(config.llm?.managementTimeoutMs) || 90_000;
+      const MAX_LLM_TOKENS = 2048;
+      const { content } = await withTimeout(agentLoop(`
 MANAGEMENT CYCLE — LLM Portfolio Review
 Market: ${marketIntel.condition} — ${marketIntel.description || ""}
 ${planSummary ? `Plan: Day ${planSummary.day}/${planSummary.days_total} | P&L: ${planSummary.today_pnl_pct}% | Target: +${planSummary.daily_target_pct}%${planSummary.profit_mode ? " | PROFIT MODE" : ""}` : ""}
@@ -2354,6 +2370,8 @@ ${JSON.stringify(remainingTokens.map(t => ({
   market_entry: t.market_condition,
 })))}
 
+${managedMints.length > 0 ? `DO NOT EXIT these mints (managed window — active TP-guard or too young): ${managedMints.map(m => m.slice(0, 8)).join(", ")}` : ""}
+
 TUGAS:
 1. Review setiap posisi — qualitative risk: narrative shifts, conviction decay, market deterioration
 2. EXIT jika: naratif mati, conviction turun >20 poin, atau market jadi DEAD
@@ -2361,7 +2379,7 @@ TUGAS:
 4. BOLEH ENTRY BARU jika: ada peluang jelas dari screening, market kondusif (NORMAL/HOT)
 5. Jangan override SL/TP — itu ditangani otomatis oleh sistem
 6. Fokus: protect capital, cut losers early, let winners run
-      `, config.llm.managerMaxSteps, [], "MANAGER", config.llm.managementModel, 2048, {
+      `, config.llm.managerMaxSteps, [], "MANAGER", config.llm.managementModel, MAX_LLM_TOKENS, {
         onToolStart: async ({ name }) => { await liveMessage?.toolStart(name); },
         onToolFinish: async ({ name, result }) => {
           await liveMessage?.toolFinish(name, result, !result?.error);
@@ -2432,17 +2450,30 @@ TUGAS:
             }
             // Check if this is a BUY (token_in is SOL/wSOL)
             if (tokenIn === "SOL" || tokenIn === "So11111111111111111111111111111111111111112") {
+              // MGMT-4: include dry_run flag in entry events too, so downstream
+              // listeners can distinguish demo paper-fills from real entries.
               agentBus.emit("management:llm_entry_executed", {
                 mint: tokenOut,
                 amount_sol: result.amount,
                 walletAddress,
+                dry_run: !!result.dry_run,
                 timestamp: Date.now(),
               });
             }
           }
         },
-      });
+      }), LLM_TIMEOUT_MS, "llm_manager");
       mgmtReport = content;
+
+      // MGMT-5: warn if the LLM response hugs the token cap — likely
+      // truncated and missing tail actions/justifications.
+      // Approximation: chars/4 ~ tokens. Warn at 90% of MAX_LLM_TOKENS.
+      const approxTokens = (content?.length || 0) / 4;
+      if (approxTokens > MAX_LLM_TOKENS * 0.9) {
+        log("management_warn",
+          `LLM response approx ${approxTokens.toFixed(0)} tokens (cap=${MAX_LLM_TOKENS}) — may be truncated; consider raising max_tokens or trimming prompt`,
+        );
+      }
 
       // Emit LLM review complete to bus
       agentBus.emit("management:llm_review_complete", {
@@ -2450,6 +2481,10 @@ TUGAS:
         reportLength: content?.length || 0,
         timestamp: Date.now(),
       });
+    } else if (remainingTokens.length > 0 && !isLLMReviewEnabled()) {
+      // MA-2: LLM review toggle gate. When disabled, run deterministic
+      // exits only and surface that explicitly in the report.
+      mgmtReport = `LLM review disabled — ${deterministicExits.length} deterministic exit(s) + ${remainingTokens.length} position(s) held without qualitative review.`;
     } else {
       mgmtReport = deterministicExits.length > 0 ? `Closed ${deterministicExits.length} via Strategy.` : "All positions managed.";
     }
