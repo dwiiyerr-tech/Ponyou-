@@ -1,7 +1,15 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { sendHTML, isEnabled as telegramEnabled } from "./telegram.js";
+
+// telegram.js is loaded lazily on first error log to avoid a static cycle
+// (logger → telegram → social-trash-gate → logger). Cached after first call.
+let _tg = null;
+async function getTelegram() {
+  if (_tg !== null) return _tg;
+  try { _tg = await import("./telegram.js"); } catch { _tg = false; }
+  return _tg;
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOG_DIR = path.join(__dirname, "logs");
@@ -59,9 +67,13 @@ export function log(category, message) {
   // Console output
   console.log(line);
 
-  // Send error to telegram (HTML so the tags actually render)
-  if (level === "error" && telegramEnabled()) {
-    sendHTML(`⚠️ <b>${htmlEscape(safeCategory)}</b>\n<code>${htmlEscape(safeMessage)}</code>`).catch(() => {});
+  // Send error to telegram (HTML so the tags actually render) — lazy import
+  if (level === "error") {
+    getTelegram().then(tg => {
+      if (tg && tg.isEnabled && tg.isEnabled()) {
+        tg.sendHTML(`⚠️ <b>${htmlEscape(safeCategory)}</b>\n<code>${htmlEscape(safeMessage)}</code>`).catch(() => {});
+      }
+    }).catch(() => {});
   }
 
   // File output (daily rotation, async to avoid blocking)
