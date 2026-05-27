@@ -128,19 +128,28 @@ export async function runHealthChecks() {
   return results;
 }
 
+// Agents that are *intentionally* stopped (e.g. pro-orchestrator awaiting
+// automation approval) — don't count them as failures in the running tally.
+const INTENTIONALLY_LOCKED = new Set(["pro-orchestrator"]);
+
 export function getDashboardSummary() {
   const agents = getAllAgentStatuses();
   const running = agents.filter(a => a.status === "running").length;
   const degraded = agents.filter(a => a.status === "degraded").length;
   const stopped = agents.filter(a => a.status === "stopped").length;
   const errored = agents.filter(a => a.status === "error").length;
+  const locked = agents.filter(a => a.status === "stopped" && INTENTIONALLY_LOCKED.has(a.name)).length;
+  // expected = total minus locked agents (which are not failures)
+  const expected = agents.length - locked;
 
   return {
     total: agents.length,
+    expected,
     running,
     degraded,
     stopped,
     errored,
+    locked,
     agents,
     timestamp: new Date().toISOString(),
   };

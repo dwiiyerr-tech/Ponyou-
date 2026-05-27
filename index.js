@@ -10,8 +10,10 @@ import { registerAgent, setAgentStatus, getDashboardSummary } from "./agents/age
 import { initHuntersAgent, runHuntersExpedition, getHuntersPrey, getHuntersDashboard } from "./agents/hunters-agent.js";
 import { initScreeningAgent, getScreeningDashboard } from "./agents/screening-agent.js";
 import { initManagementAgent } from "./agents/management-agent.js";
-import { initGeneralAgent } from "./agents/general-agent.js";
+import { initGeneralAgent, handleGeneralMessage } from "./agents/general-agent.js";
 import { initTrashLayer } from "./agents/trash-layer.js";
+import { initLearningAgent } from "./agents/learning-agent.js";
+import { shadowWatch } from "./tools/shadow-watchlist.js";
 import { initOrchestratorAgent, runOrchestratorCycle, setFullAutomationMode, getOrchestratorDashboard } from "./agents/orchestrator-agent.js";
 import { runAutomationQualification, isAutomationActive, guardAutomatedDecision, getAutomationState, approveAutomation, rejectAutomation, revokeAutomation } from "./agents/automation-rules.js";
 import { initProOrchestrator, isProModeActive, getProDashboard, proBuyDecision, proSellDecision, proCutlossDecision, runProAnalysis, validateStrategyReadiness } from "./agents/pro-orchestrator.js";
@@ -31,8 +33,11 @@ import {
 import { analyzeHolderStructure } from "./holder-memory.js";
 import { summarizeSmartWalletHistory } from "./smart-wallet-history.js";
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
-import { executeTool, registerCronRestarter } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape } from "./telegram.js";
+import { executeTool, registerCronRestarter, registerPonyouControls } from "./tools/executor.js";
+import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape, handleCallMessage } from "./telegram.js";
+import { startUserClient, stopUserClient, isUserClientEnabled, getUserClientStatus } from "./telegram-user-client.js";
+import { startHunter, stopHunter, getSocialScore } from "./social-hunter.js";
+import { startDiscordListener, stopDiscordListener } from "./discord-listener.js";
 import {
   strategy, checkROI, run4FilterProtocol, getMcapTier, getTierExecutionProfile,
   checkPartialTP,
@@ -96,7 +101,7 @@ import {
 } from "./learning-continuous.js";
 import {
   getCoinConviction, recordCoinObservation, recordObservationOutcomes, recordTradeConvictionOutcome,
-  getNarrativeConviction,
+  getNarrativeConviction, getProfitPatternSummary, getConvictionPromptLine,
 } from "./conviction-memory.js";
 import {
   buildTokenRegime, getRegimeAssessment, recordRegimeObservation, recordRegimeTradeOutcome,
@@ -104,7 +109,7 @@ import {
 import { recordExecutionQuality, getExecutionQualityAssessment } from "./execution-quality-memory.js";
 import { assessTradeAttribution, recordTradeAttribution } from "./trade-attribution.js";
 import { harvestMarketRugs } from "./tools/rug-harvester.js";
-import { preScreenBatch } from "./tools/trash-filter.js";
+import { outerShieldScreen } from "./tools/trash-filter.js";
 import { runCommunityAssessment, getDevReputation, scoreDevReputation } from "./tools/community-detector.js";
 import { startOnChainListener, getFreshOnChainCandidates, getOnChainListenerStatus } from "./tools/onchain-listener.js";
 import { enrichCoin, coinGeckoToSocialVelocity, getTrendingCoins, getSolanaMarkets } from "./tools/coingecko-enrichment.js";
@@ -254,11 +259,70 @@ initManagementAgent({
   telegramEnabled: telegramEnabled,
   llmReviewEnabled: true,
 });
-initGeneralAgent({
-  agentLoop,
-  config,
-});
+// ── General Agent Controls — expose Ponyou state + actions to LLM ───────────
+const _generalControls = {
+  getStatus: () => {
+    const market = getMarketIntelligence();
+    const plan   = getPlanSummary();
+    const positions = listTrackedPositions ? listTrackedPositions() : [];
+    const activeStrat = getStrategy();
+    return {
+      automation_on:    cronStarted,
+      market_condition: market.condition,
+      market_description: market.description,
+      active_strategy:  activeStrat?.id || "unknown",
+      strategy_name:    activeStrat?.name || "unknown",
+      open_positions:   positions.length,
+      max_positions:    config.risk?.maxPositions || 3,
+      today_pnl_pct:    plan?.today_pnl_pct ?? null,
+      plan_day:         plan?.day ?? null,
+      plan_days_total:  plan?.days_total ?? null,
+      confirm_mode:     config.trading?.confirmMode ?? false,
+    };
+  },
+  toggleAutomation: (enable) => {
+    if (enable) startCronJobs();
+    else stopCronJobs();
+    return { automation_on: cronStarted, message: enable ? "Automation started" : "Automation stopped" };
+  },
+  switchStrategy: (id) => {
+    if (!STRATEGY_IDS.includes(id)) return { error: `Unknown strategy: ${id}. Valid: ${STRATEGY_IDS.join(", ")}` };
+    setActiveStrategy(id);
+    const active = getStrategy();
+    return { switched_to: id, strategy_name: active.name, description: active.description };
+  },
+  toggleFeature: (name, enable) => {
+    if (enable) enableFeature(name);
+    else disableFeature(name);
+    return { feature: name, enabled: enable, message: `Feature "${name}" ${enable ? "enabled" : "disabled"}` };
+  },
+  getAgents: () => getAllAgentStatuses(),
+  getOpenPositions: () => {
+    const positions = listTrackedPositions ? listTrackedPositions() : [];
+    return { positions, count: positions.length };
+  },
+  setConfirmMode: (enable) => {
+    config.trading.confirmMode = enable;
+    return { confirm_mode: enable, message: `Confirm mode ${enable ? "ON" : "OFF"}` };
+  },
+};
+
+initGeneralAgent({ agentLoop, config, controls: _generalControls });
+registerPonyouControls(_generalControls);
 initTrashLayer();
+initLearningAgent(); // Continuous learning — monitors all hunters + patches trash-layer
+
+// ── Social Hunter — Reddit/CoinGecko/Dex/Nitter/Discord/Telegram ──
+registerAgent("social-hunter", {
+  role: "hunters",
+  healthCheck: () => ({ initialized: true, source: "social-signals.json" }),
+});
+if (config.useSocialHunter !== false) {
+  startHunter();
+  setAgentStatus("social-hunter", "running", "Social hunter active — Reddit + CoinGecko + Dex + Nitter");
+}
+startDiscordListener(); // no-op if DISCORD_BOT_TOKEN not set
+
 initWalletSignalInjector();
 initOrchestratorAgent({
   getStrategyFn: (id, opts) => getStrategy(id, opts),
@@ -280,7 +344,11 @@ setAgentStatus("general", "running", "General — chat & Telegram only (no tradi
 // Emit initial market state so agents know current condition
 agentBus.emit("market:update", { condition: getMarketIntelligence().condition });
 
-log("startup", `Multi-Agent System: ${getDashboardSummary().running}/${getDashboardSummary().total} agents running`);
+{
+  const s = getDashboardSummary();
+  const lockedSuffix = s.locked > 0 ? ` (${s.locked} locked)` : "";
+  log("startup", `Multi-Agent System: ${s.running}/${s.expected} agents running${lockedSuffix}`);
+}
 
 // Strategy Evolution Engine — opt-in via config.strategy.evolution.enabled
 // Two-stage opt-in:
@@ -708,6 +776,12 @@ async function handleDailyTradeGuardOutcome(isWin, meta = {}) {
 async function handleStrategyTelegramCommand(text) {
   const parts = text.trim().split(/\s+/);
   const cmd = parts[0];
+
+  if (cmd === "/off") {
+    await sendHTML(`🛑 <b>Shutdown requested</b> — graceful stop initiating…`);
+    setTimeout(() => { shutdown("/off").catch(() => process.exit(0)); }, 100);
+    return true;
+  }
 
   if (cmd === "/menu") {
     const active = getStrategy();
@@ -2121,10 +2195,14 @@ export async function runManagementCycle({ silent = false } = {}) {
           ...attribution,
         });
         recordTradeConvictionOutcome({
-          mint: exit.mint,
-          symbol: exit.symbol,
-          pnl_pct: tradePnl,
-          exit_reason: exit.reason,
+          mint:         exit.mint,
+          symbol:       exit.symbol,
+          name:         tokenData?.name || exit.name || null,
+          pnl_pct:      tradePnl,
+          hold_minutes: holdMinutes,
+          exit_reason:  exit.reason,
+          token:        tokenData || {},          // profil lengkap untuk profit fingerprint
+          strategy:     tokenData?.strategy_id || null,
         });
         // Cumulative PnL tracking
         const tradeUsdDelta = (tracked?.initial_value_usd || 0) > 0
@@ -2534,21 +2612,39 @@ export async function runScreeningCycle({ silent = false } = {}) {
       log("screening", `Narrative contagion: removed ${cappedCandidates.length - narrativeFiltered.length}/${cappedCandidates.length} candidates`);
     }
 
-    // ─── Layer 0: Pre-Screening Trash Filter ─────
-    // Zero-API-cost checks using DexScreener data only.
-    // Reject obvious trash/honeypot BEFORE spending Helius credits.
+    // ─── Layer 0: Trash Gate — Pintu Utama Sebelum Screening ─────
+    // outerShieldScreen: RugCheck.xyz (L0) → Token-2022 extension check
+    // → 7-dimension scoring. Semua kandidat diblokir di sini sebelum
+    // Helius API dipanggil — hemat credit, jaga pipeline bersih.
     const rugMemory = getRugMemory();
     const recentRugs = getPerformanceHistory({ limit: 20 }).filter(t => t.rug_detected);
-    const preScreenResult = preScreenBatch(narrativeFiltered, { rugMemory, recentRugs });
-    const preScreened = config.pipelineTestMode
-      ? (() => {
-          narrativeFiltered.forEach(t => { t._trash_test_mode = true; });
-          return narrativeFiltered;
-        })()
-      : preScreenResult.passed;
-    if (preScreenResult.stats.blocked > 0) {
-      const modeLabel = config.pipelineTestMode ? " (WARN — pipeline test mode: passing all through)" : " — saved API calls";
-      log("screening", `Trash filter blocked ${preScreenResult.stats.blocked}/${narrativeFiltered.length}${modeLabel}`);
+    let trashGateResult;
+    if (config.pipelineTestMode) {
+      narrativeFiltered.forEach(t => { t._trash_test_mode = true; });
+      trashGateResult = {
+        passed: narrativeFiltered, flagged: [], warned: [], blocked: [],
+        stats: { total: narrativeFiltered.length, passed: narrativeFiltered.length, blocked: 0, rugBlocked: 0 },
+      };
+      log("screening", "Pipeline test mode — trash gate bypassed, semua kandidat lolos");
+    } else {
+      trashGateResult = await outerShieldScreen(narrativeFiltered, {
+        marketCondition: marketIntel.condition,
+        rugMemory,
+        recentRugs,
+      });
+    }
+    // ALLOW + FLAG + WARN lanjut; hanya BLOCK yang ditolak.
+    // Token WARN sudah membawa _trash_score/_trash_flags untuk penalti downstream.
+    const preScreened = [
+      ...trashGateResult.passed,
+      ...trashGateResult.flagged,
+      ...trashGateResult.warned,
+    ];
+    if (trashGateResult.stats.blocked > 0) {
+      const rugInfo = trashGateResult.stats.rugBlocked > 0
+        ? ` (${trashGateResult.stats.rugBlocked} via RugCheck)`
+        : "";
+      log("screening", `Trash gate: ${trashGateResult.stats.blocked}/${narrativeFiltered.length} BLOCKED${rugInfo} — ${preScreened.length} lanjut ke screening`);
     }
 
     // ─── Feature Health Maintenance ──────────────
@@ -2875,6 +2971,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
         technicals,
         marketCondition: marketIntel.condition,
         narrativeTags,
+        // social_buzz: gate-filtered Reddit/Discord/Telegram/Twitter score
+        socialBuzz: config.useSocialHunter !== false
+          ? getSocialScore(token.symbol || enhancedToken?.symbol || "")
+          : 0,
       });
 
       // ─── CoinGecko Enrichment (social + community + CEX data) ──
@@ -3076,6 +3176,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         recommended_deploy_amount_sol: recommendedAmount,
         community_assessment: communityAssessment,
         dev_reputation: communityAssessment.dev,
+        conviction_summary: getConvictionPromptLine(token.mint, token),
       });
     }
 
@@ -3102,6 +3203,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
       recordObservations(scoredCandidates);
       // Build ticker registry — learn symbol→mint mappings from real market data
       try { bulkRegisterTickers(scoredCandidates); } catch (e) { log("ticker_error", e.message); }
+
+      // Shadow watchlist — monitor tokens NOT bought for free rug learning
+      try {
+        for (const candidate of scoredCandidates) {
+          if (!candidate.passed && (candidate.signal?.signal_score ?? 0) >= 15) {
+            shadowWatch(candidate);
+          }
+        }
+      } catch (e) { log("shadow_error", e.message); }
 
       // Feed fundamental signals to the strategy producer. Internal throttle
       // (maxPerHour) prevents spam — tick is safe to call every screening cycle.
@@ -3638,9 +3748,12 @@ function startTurboButtons() {
       wssUrl: wssUrl || rpcUrl.replace("https://", "wss://"),
       enabled: true,
       onNewPool: (pool) => {
-        // Inject fresh on-chain candidate directly into the next screening cycle
-        if (pool.mint) {
-          log("onchain", `${pool.programName}: new pool ${pool.mint?.slice(0, 12)}... (slot ${pool.slot})`);
+        // Pool is auto-added to listener cache; screening cron picks it up
+        // via getFreshOnChainCandidates() on the next cycle. This callback
+        // is just for visibility.
+        const addr = pool.mint || pool.poolAddress;
+        if (addr) {
+          log("onchain", `${pool.programName}: new ${pool.mint ? "mint" : "pool"} ${addr.slice(0, 12)}... (slot ${pool.slot})`);
         }
       },
     });
@@ -3665,8 +3778,6 @@ function startTurboButtons() {
         }
       );
       log("turbo", "Exit monitor attached to Geyser stream");
-    } else {
-      log("turbo", "Geyser disabled (HELIUS_ATLAS_WS_URL not set) — polling-only");
     }
     if (config.rugMonitor?.enabled) {
       try {
@@ -4274,9 +4385,26 @@ async function runBusy(fn) {
   }
 }
 
+/**
+ * Handler untuk pesan dari channel/grup sinyal — via user client MTProto.
+ * Hanya parsing signal call, tidak ada command handling.
+ */
+export async function handleSignalChannelMessage(msg) {
+  if (!msg?.text) return;
+  if (config.useTelegramCalls) {
+    await handleCallMessage(msg);
+  }
+}
+
 export async function handleIncomingTelegramMessage(msg) {
   const text = msg?.text?.trim();
   if (!text) return;
+
+  // ── Social call parsing — hanya jika dari bot polling (fallback jika user client off) ──
+  // Jika user client aktif, signal channel sudah ditangani via handleSignalChannelMessage
+  if (config.useTelegramCalls && !isUserClientEnabled()) {
+    await handleCallMessage(msg);
+  }
 
   if (text === "/pnl") {
     const history = getPerformanceHistory({ limit: 10 });
@@ -4288,17 +4416,22 @@ export async function handleIncomingTelegramMessage(msg) {
   if (text === "/status") {
     const plan = getPlanSummary();
     const market = getMarketIntelligence();
+    const ucStatus = getUserClientStatus();
     const planLine = plan
       ? `Day ${plan.day}/${plan.days_total} · PnL ${fmt.pct(plan.today_pnl_pct ?? 0)}`
       : fmt.it("plan belum diinisialisasi");
     const autoLine = cronStarted ? "🟢 ON" : "🔴 OFF";
     const dailyGuard = formatDailyTradeGuardLine();
+    const tgSignalLine = ucStatus.connected
+      ? `🟢 User client (${ucStatus.monitor_mode})`
+      : ucStatus.enabled ? "🟡 User client (connecting…)" : "🤖 Bot polling";
     const message = [
       `📊 <b>Status</b>`,
       planLine,
       `Market · ${htmlEscape(market.condition)}`,
       `Automation · ${autoLine}`,
       `Daily Guard · ${htmlEscape(dailyGuard)}`,
+      `Signal Source · ${tgSignalLine}`,
     ].join("\n");
     await sendHTML(message);
     return;
@@ -4379,29 +4512,18 @@ export async function handleIncomingTelegramMessage(msg) {
     if (handled) return;
   }
 
+  // ── Route free text through General Agent ─────────────────────────────────
   if (busy) return;
   busy = true;
   let liveMsg = null;
   try {
     liveMsg = await createLiveMessage("🤖 Ponyou", "Memproses…");
 
-    const { content } = await agentLoop(text, config.llm.maxSteps, sessionHistory, "GENERAL", null, null, {
-      onThinkingStart: async () => {},
-      onToolStart: async ({ name }) => { await liveMsg?.toolStart(name); },
-      onToolFinish: async ({ name, result }) => {
-        await liveMsg?.toolFinish(name, result, !result?.error);
-        if (name === "swap_token") {
-          recordSwapOutcome({ success: !!(result?.success || result?.dry_run) });
-        }
-      },
-    });
+    const response = await handleGeneralMessage(text);
+    const clean = stripThink(response) || "";
 
-    sessionHistory.push({ role: "user", content: text }, { role: "assistant", content });
-    if (sessionHistory.length > MAX_HISTORY) sessionHistory.splice(0, 2);
-
-    const clean = stripThink(content) || "";
     if (liveMsg) await liveMsg.finalize(clean);
-    else await sendMessage(clean);
+    else await sendHTML(clean);
   } catch (e) {
     const errLine = `❌ <b>Error</b>\n<code>${htmlEscape(e.message)}</code>`;
     if (liveMsg) await liveMsg.finalize(errLine);
@@ -4412,10 +4534,32 @@ export async function handleIncomingTelegramMessage(msg) {
   }
 }
 
-function ensureTelegramAutomationSurface() {
+async function ensureTelegramAutomationSurface() {
+  // Bot API — selalu aktif untuk kirim notifikasi & terima perintah dari user owner
   if (telegramEnabled()) {
     startPolling(handleIncomingTelegramMessage);
   }
+
+  // User Client (MTProto) — untuk monitor channel/grup sinyal tanpa bot di-invite
+  if (isUserClientEnabled()) {
+    const ok = await startUserClient({ onMessage: handleSignalChannelMessage });
+    if (ok) {
+      log("startup", "Telegram user client connected — monitoring signal channels via MTProto");
+    } else {
+      log("startup", "Telegram user client failed to connect — run: npm run telegram:auth");
+    }
+  }
+  // Consolidated optional-features summary
+  const optional = {
+    geyser:        !!(process.env.HELIUS_ATLAS_WS_URL || process.env.HELIUS_GEYSER_URL),
+    discord:       !!process.env.DISCORD_BOT_TOKEN,
+    tg_user:       isUserClientEnabled(),
+    reddit:        !!process.env.REDDIT_USER_AGENT,
+    jupiter_paid:  !!process.env.JUPITER_API_KEY,
+  };
+  const on  = Object.entries(optional).filter(([, v]) => v).map(([k]) => k).join(", ") || "none";
+  const off = Object.entries(optional).filter(([, v]) => !v).map(([k]) => k).join(", ") || "none";
+  log("startup", `Optional features — ON: [${on}] | OFF: [${off}]`);
 }
 
 syncAutomationBootState();
