@@ -2,6 +2,12 @@
  * Trading Plan 30 — session trade counter with configurable target.
  * Tracks N trades per session; blocks new buys when target reached.
  * State persisted in trading-plan-state.json.
+ *
+ * NOTE: This is the *session trade counter*. The *30-day capital compound
+ * plan* (different semantics, state in trading-plan.json) lives in
+ * `trading-plan.js`. Both modules used to export `initTradingPlan`, which
+ * made collisions easy to introduce. The init export here is now
+ * `initSessionPlan`; `initTradingPlan` remains as a deprecated alias.
  */
 
 import fs from "fs";
@@ -67,11 +73,15 @@ export function getTradingPlanStatus() {
   };
 }
 
-export function initTradingPlan() {
+export function initSessionPlan() {
   const state = loadState();
   if (!fs.existsSync(STATE_FILE)) saveState(state);
   return getTradingPlanStatus();
 }
+
+// Deprecated alias — kept so existing imports keep working. Prefer
+// `initSessionPlan` so the distinction with trading-plan.js is explicit.
+export const initTradingPlan = initSessionPlan;
 
 export function recordTrade({ symbol = "?", mint = "", pnl_pct = 0 } = {}) {
   if (!isTradingPlanEnabled()) return { skipped: true };

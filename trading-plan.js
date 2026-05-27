@@ -42,8 +42,19 @@ export function buildCompoundSchedule(initialCapitalUsd, dailyTargetPct, days = 
 
 function loadPlan() {
   if (!fs.existsSync(PLAN_FILE)) return null;
-  try { return JSON.parse(fs.readFileSync(PLAN_FILE, "utf8")); }
-  catch { return null; }
+  try {
+    return JSON.parse(fs.readFileSync(PLAN_FILE, "utf8"));
+  } catch (e) {
+    // Corrupt JSON: back up the bad file so initTradingPlan doesn't
+    // silently wipe multi-day progress. Distinguishes truly-missing
+    // (return null → init fresh) from corrupt (back up first).
+    try {
+      const bak = `${PLAN_FILE}.corrupt-${Date.now()}`;
+      fs.copyFileSync(PLAN_FILE, bak);
+      log("plan", `WARN: trading-plan.json was corrupt (${e.message}); backed up to ${path.basename(bak)} — re-initializing`);
+    } catch (_) { /* best-effort */ }
+    return null;
+  }
 }
 
 function savePlan(plan) {
