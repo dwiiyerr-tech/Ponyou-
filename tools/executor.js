@@ -56,6 +56,12 @@ import { listTrackedPositions } from "../state.js";
 let _cronRestarter = null;
 export function registerCronRestarter(fn) { _cronRestarter = fn; }
 
+// ─── Ponyou Control Registry ────────────────────────────────────────────────
+// General agent registers control functions here so the LLM can call them
+// as native tools without creating circular imports.
+let _ponyouControls = null;
+export function registerPonyouControls(controls) { _ponyouControls = controls; }
+
 function coerceBoolean(value, key) {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -446,6 +452,36 @@ const toolMap = {
     log("config", `Agent self-tuned: ${JSON.stringify(applied)} — ${reason}`);
     return { success: true, applied, unknown, reason };
   },
+
+  // ─── Ponyou Control Tools (wired via registerPonyouControls) ─
+  ponyou_get_status: () => {
+    if (!_ponyouControls?.getStatus) return { error: "Controls not registered" };
+    return _ponyouControls.getStatus();
+  },
+  ponyou_toggle_automation: ({ enable } = {}) => {
+    if (!_ponyouControls?.toggleAutomation) return { error: "Controls not registered" };
+    return _ponyouControls.toggleAutomation(!!enable);
+  },
+  ponyou_switch_strategy: ({ strategy_id } = {}) => {
+    if (!_ponyouControls?.switchStrategy) return { error: "Controls not registered" };
+    return _ponyouControls.switchStrategy(strategy_id);
+  },
+  ponyou_toggle_feature: ({ feature_name, enable } = {}) => {
+    if (!_ponyouControls?.toggleFeature) return { error: "Controls not registered" };
+    return _ponyouControls.toggleFeature(feature_name, !!enable);
+  },
+  ponyou_get_agents: () => {
+    if (!_ponyouControls?.getAgents) return { error: "Controls not registered" };
+    return _ponyouControls.getAgents();
+  },
+  ponyou_get_open_positions: () => {
+    if (!_ponyouControls?.getOpenPositions) return { error: "Controls not registered" };
+    return _ponyouControls.getOpenPositions();
+  },
+  ponyou_set_confirm_mode: ({ enable } = {}) => {
+    if (!_ponyouControls?.setConfirmMode) return { error: "Controls not registered" };
+    return _ponyouControls.setConfirmMode(!!enable);
+  },
 };
 
 const SWAP_TOOL_NAMES = new Set(["swap_token", "jupiter_swap"]);
@@ -621,6 +657,55 @@ async function maybeParkAsConfirmIntent(args) {
   };
 }
 
+// MGMT-3 hard guard tuning. The LLM cannot sell a position that is:
+//   - Younger than MIN_MANAGED_HOLD_MIN (deterministic exit handles dump
+//     detection in the 30s heartbeat), OR
+//   - Already past a partial-TP landing (trailing-stop owns the rest)
+// unless the caller explicitly passes `bypass_managed_guard: true`. The
+// deterministic exit path in runManagementCycle calls swapToken from
+// tools/jupiter.js directly and bypasses this dispatcher entirely, so
+// it is already exempt — only LLM-tool calls flow through executeTool
+// → runSafetyChecks.
+export const MIN_MANAGED_HOLD_MIN = 5;
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+function isSolMint(s) { return s === "SOL" || s === SOL_MINT; }
+
+// Pure helper extracted for testability. Returns { pass: true } when the
+// swap should be allowed, or { pass: false, reason } when blocked. The
+// `getTrackedPositionFn` arg lets tests inject a stub without bringing in
+// state.js's filesystem dependencies.
+export function checkManagedGuard(args = {}, getTrackedPositionFn = getTrackedPosition, opts = {}) {
+  const minHoldMin = opts.minHoldMin ?? MIN_MANAGED_HOLD_MIN;
+  const now = opts.now ?? Date.now();
+
+  // Only LLM-driven sells are subject to this guard.
+  const isSell = args.token_in && !isSolMint(args.token_in) && isSolMint(args.token_out);
+  if (!isSell || args.bypass_managed_guard) return { pass: true };
+
+  const tracked = getTrackedPositionFn(args.token_in, args.wallet_address || null);
+  if (!tracked) return { pass: true };
+
+  // Rug emergency overrides the guard entirely.
+  if (tracked.rug_force_exit) return { pass: true };
+
+  const ageMin = tracked.deployed_at
+    ? (now - new Date(tracked.deployed_at).getTime()) / 60000
+    : Infinity;
+  if (ageMin < minHoldMin) {
+    return {
+      pass: false,
+      reason: `Managed-window guard: ${args.token_in?.slice(0, 8)} only ${ageMin.toFixed(1)}min old (min ${minHoldMin}min). Use bypass_managed_guard:true only for rug emergencies — heartbeat handles dump detection.`,
+    };
+  }
+  if (tracked.partial_tp_done) {
+    return {
+      pass: false,
+      reason: `Managed-window guard: ${args.token_in?.slice(0, 8)} already past partial TP (${tracked.partial_tp_done_at || "unknown"}) — trailing stop owns the rest. Use bypass_managed_guard:true to override.`,
+    };
+  }
+  return { pass: true };
+}
+
 async function runSafetyChecks(name, args) {
   switch (name) {
     case "swap_token":
@@ -636,7 +721,7 @@ async function runSafetyChecks(name, args) {
           };
         }
         // Check token balance for sells (token_in is a non-SOL mint)
-        if (args.token_in && args.token_in !== "SOL" && args.token_in !== "So11111111111111111111111111111111111111112") {
+        if (args.token_in && !isSolMint(args.token_in)) {
           const tokenBal = (balance.tokens || []).find(t => t.mint === args.token_in);
           if (!tokenBal || tokenBal.balance <= 0) {
             return {
@@ -646,6 +731,14 @@ async function runSafetyChecks(name, args) {
           }
         }
       }
+
+      // ── MGMT-3: managed-position guard ───────────────────────
+      // Reject LLM-driven sells of positions still in their managed
+      // window. Deterministic exits go through jupiter.js directly so
+      // they're not subject to this dispatcher and stay exempt.
+      const managedGuard = checkManagedGuard(args);
+      if (!managedGuard.pass) return managedGuard;
+
       return { pass: true };
     }
     case "self_update": {
