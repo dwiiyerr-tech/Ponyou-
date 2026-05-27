@@ -498,9 +498,19 @@ function checkHardBlocks(token, rugMemory) {
   if (mcap > 0 && mcap < MIN_MCAP_USD)
     return { block: true, reason: `dust_mcap: $${mcap.toFixed(0)} < $${MIN_MCAP_USD}` };
 
-  const supply = Number(token.supply || 0);
-  if (!Number.isFinite(supply) || supply <= 0)
-    return { block: true, reason: "supply_invalid" };
+  // Supply check: only hard-block when supply is *explicitly* invalid
+  // (provided as 0/NaN/negative). When the source signal didn't carry a
+  // supply field at all (CoinGecko, social hunters, on-chain new-pool
+  // detections), let the token through this layer — downstream layers
+  // (Token-2022 extension check, RugCheck, Helius) will enrich and re-gate.
+  // Without this, every signal without pre-fetched supply was rejected
+  // (see audit log: BLOCKED 1/1 across legitimate tokens like JLP/USDG/WETH).
+  const hasSupplyField = token.supply !== undefined && token.supply !== null;
+  if (hasSupplyField) {
+    const supply = Number(token.supply);
+    if (!Number.isFinite(supply) || supply <= 0)
+      return { block: true, reason: "supply_invalid" };
+  }
 
   const launchpad = token.launchpad || "unknown";
   if (BLOCKED_LAUNCHPADS.has(launchpad))
