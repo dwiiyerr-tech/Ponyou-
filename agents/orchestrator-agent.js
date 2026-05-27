@@ -40,21 +40,44 @@ let _lastMarketCondition = null;
 let _fullAutomationMode = false;
 let _proIntel = null; // latest pro-orchestrator intelligence (regimes, narratives, strategies)
 let _tradeCount = 0;  // closed trades observed via management:llm_exit_executed
-const PRO_INTEL_MAX_AGE_MS = 10 * 60_000; // stale after 10 min
-const STRATEGY_HISTORY_CAP = 100;        // prevent unbounded growth in long-running bot
+let _injectedGetStrategy = null;     // stored at init — used by no-arg runOrchestratorCycle()
+let _injectedGetMarketIntel = null;
+const STRATEGY_HISTORY_CAP = 100;     // prevent unbounded growth in long-running bot
 
-// Strategy selection rules per market regime
+// Selector tuning — exported so config.js / tests can override. The values
+// below are the audited defaults; raise PRO_INTEL_MAX_AGE_MS if your
+// pro-orchestrator cron interval is longer than 30 min.
+export const SELECTOR_TUNING = {
+  PRO_INTEL_MAX_AGE_MS: 30 * 60_000,     // OA-6: was 10 min — too tight for cron lag
+  ACTIVE_WINRATE_FLOOR: 0.45,            // OA-8: minimum win-rate to be considered ACTIVE
+  PROVISIONAL_CONVICTION: 0.80,           // unused yet — documented from header
+  DEGRADATION_THRESHOLD: 0.75,            // unused yet — documented from header
+  AUTO_APPROVE_CONVICTION: 0.95,          // unused yet — documented from header
+};
+
+// Strategy selection rules per market regime. `reason` is set on every entry
+// so log lines and pause-event payloads never read `undefined`.
 const STRATEGY_RULES = {
   EXTREME: { trade: false, reason: "Market extreme — all trading paused" },
-  HOT:     { trade: true,  preferTypes: ["scalping", "momentum", "narrative"], maxPositions: 3, aggressiveness: "high" },
-  NORMAL:  { trade: true,  preferTypes: ["scalping", "fundamental", "conviction"], maxPositions: 2, aggressiveness: "normal" },
-  COLD:    { trade: true,  preferTypes: ["fundamental", "conviction"], maxPositions: 1, aggressiveness: "low" },
+  HOT:     { trade: true,  reason: "HOT market — aggressive trading",       preferTypes: ["scalping", "momentum", "narrative"], maxPositions: 3, aggressiveness: "high" },
+  NORMAL:  { trade: true,  reason: "NORMAL market — balanced trading",      preferTypes: ["scalping", "fundamental", "conviction"], maxPositions: 2, aggressiveness: "normal" },
+  COLD:    { trade: true,  reason: "COLD market — conservative trading",    preferTypes: ["fundamental", "conviction"], maxPositions: 1, aggressiveness: "low" },
   DEAD:    { trade: false, reason: "Market dead — no opportunities" },
 };
 
 export function initOrchestratorAgent({ getStrategyFn, getMarketIntelFn } = {}) {
-  if (_initialized) return;
+  if (_initialized) {
+    // OA-5: silent reinit used to mask startup-order bugs. Warn loudly and
+    // refresh injected fns in case caller wants to swap them.
+    log("orchestrator", "WARN: initOrchestratorAgent called twice — refreshing injected fns only");
+    if (getStrategyFn) _injectedGetStrategy = getStrategyFn;
+    if (getMarketIntelFn) _injectedGetMarketIntel = getMarketIntelFn;
+    return;
+  }
   _initialized = true;
+  // OA-3: store injected fns so no-arg cycles work.
+  _injectedGetStrategy = getStrategyFn || null;
+  _injectedGetMarketIntel = getMarketIntelFn || null;
 
   setAgentStatus(AGENT_NAME, "running", "Orchestrator active — full automation workflow manager");
 
@@ -150,7 +173,11 @@ export function initOrchestratorAgent({ getStrategyFn, getMarketIntelFn } = {}) 
  * Uses strategy runtime selector if available, falls back to rules.
  */
 export function getRecommendedStrategy(getStrategyFn, getMarketIntelFn) {
-  const marketIntel = getMarketIntelFn ? getMarketIntelFn() : null;
+  // OA-3: fall back to injected fns if caller didn't pass them.
+  const _getStrategy = getStrategyFn || _injectedGetStrategy;
+  const _getMarketIntel = getMarketIntelFn || _injectedGetMarketIntel;
+
+  const marketIntel = _getMarketIntel ? _getMarketIntel() : null;
   const condition = marketIntel?.condition || "NORMAL";
   const rules = STRATEGY_RULES[condition] || STRATEGY_RULES.NORMAL;
 
@@ -162,10 +189,10 @@ export function getRecommendedStrategy(getStrategyFn, getMarketIntelFn) {
   // avoid degraded ones for this regime.
   let proPreferred = null;
   let proAvoided = [];
-  const intelFresh = _proIntel && (Date.now() - _proIntel._receivedAt) < PRO_INTEL_MAX_AGE_MS;
+  const intelFresh = _proIntel && (Date.now() - _proIntel._receivedAt) < SELECTOR_TUNING.PRO_INTEL_MAX_AGE_MS;
   if (intelFresh && _proIntel.strategies) {
     const ranked = Object.entries(_proIntel.strategies)
-      .filter(([, s]) => s.recommendation === "ACTIVE" && s.winRate >= 0.45)
+      .filter(([, s]) => s.recommendation === "ACTIVE" && s.winRate >= SELECTOR_TUNING.ACTIVE_WINRATE_FLOOR)
       .sort((a, b) => (b[1].winRate || 0) - (a[1].winRate || 0));
     if (ranked.length > 0) {
       proPreferred = ranked[0][0]; // best performing strategy per pro intel
@@ -175,18 +202,32 @@ export function getRecommendedStrategy(getStrategyFn, getMarketIntelFn) {
       .map(([id]) => id);
   }
 
-  // Delegate to existing StrategyRuntimeSelector if available
+  // OA-1: when pro-intel has a fresh, ACTIVE-recommended strategy, prefer it
+  // over the regime fallback. The previous code computed `proPreferred` then
+  // discarded the recommendation by always going through the regime
+  // selector or auto-fallback — making the entire pro-orchestrator
+  // pipeline decorative.
   let strategy = null;
   try {
-    if (getStrategyFn) {
-      strategy = getStrategyFn(null, { regime: condition });
+    if (_getStrategy) {
+      const hint = proPreferred ? { regime: condition, prefer: proPreferred, avoid: proAvoided } : { regime: condition };
+      strategy = _getStrategy(null, hint);
     }
   } catch { /* fallback below */ }
 
+  // If the selector returned a strategy in the avoid list, AND we have a
+  // pro-preferred alternative, override its `id`. This lets the selector
+  // hand us the rich strategy object while ensuring we don't pick something
+  // pro flagged as DEGRADED.
+  if (strategy && proAvoided.includes(strategy.id) && proPreferred) {
+    log("orchestrator", `pro-intel override: ${strategy.id} (DEGRADED) → ${proPreferred} (ACTIVE)`);
+    strategy = { ...strategy, id: proPreferred, name: `${strategy.name || proPreferred} [pro]`, _pro_intel_overridden: true };
+  }
+
   if (!strategy) {
     strategy = {
-      id: `auto_${condition.toLowerCase()}`,
-      name: `Auto ${condition}`,
+      id: proPreferred || `auto_${condition.toLowerCase()}`,
+      name: proPreferred ? `Pro-preferred ${proPreferred}` : `Auto ${condition}`,
       regime: condition,
       preferTypes: rules.preferTypes,
       maxPositions: rules.maxPositions,
@@ -215,8 +256,12 @@ export function getRecommendedStrategy(getStrategyFn, getMarketIntelFn) {
 export async function runOrchestratorCycle({ getStrategyFn, getMarketIntelFn } = {}) {
   if (!_initialized || !_fullAutomationMode) return null;
 
+  // OA-3: fall back to stored injections.
+  const _getStrategy = getStrategyFn || _injectedGetStrategy;
+  const _getMarketIntel = getMarketIntelFn || _injectedGetMarketIntel;
+
   try {
-    const marketIntel = getMarketIntelFn ? getMarketIntelFn() : null;
+    const marketIntel = _getMarketIntel ? _getMarketIntel() : null;
     const condition = marketIntel?.condition || "NORMAL";
     const rules = STRATEGY_RULES[condition] || STRATEGY_RULES.NORMAL;
 
@@ -230,7 +275,7 @@ export async function runOrchestratorCycle({ getStrategyFn, getMarketIntelFn } =
     }
 
     // Select strategy for current regime — only emit if it actually changed
-    const strategy = getRecommendedStrategy(getStrategyFn, getMarketIntelFn);
+    const strategy = getRecommendedStrategy(_getStrategy, _getMarketIntel);
     if (strategy && strategy.id !== _activeStrategy?.id) {
       agentBus.emit("orchestrator:strategy_switch", {
         strategy,
@@ -240,7 +285,7 @@ export async function runOrchestratorCycle({ getStrategyFn, getMarketIntelFn } =
     }
 
     // Broadcast pipeline adaptation — enriched with pro intel if available
-    const intelFresh = _proIntel && (Date.now() - _proIntel._receivedAt) < PRO_INTEL_MAX_AGE_MS;
+    const intelFresh = _proIntel && (Date.now() - _proIntel._receivedAt) < SELECTOR_TUNING.PRO_INTEL_MAX_AGE_MS;
     const adaptPayload = {
       condition,
       strategy: strategy?.id,
