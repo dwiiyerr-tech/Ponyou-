@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { readConfig, writeConfig } from "../config-writer.js";
 import { writeWalletKeys, walletKeyStatus, WALLET_ENV_PATTERN } from "../env-writer.js";
+import { stripSensitive } from "../sensitive.js";
 
 const BS58_PRIVKEY_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{80,90}$/;
 
@@ -30,7 +31,11 @@ export function createWizardRouter() {
   const router = Router();
 
   router.get("/config", (req, res) => {
-    res.json(readConfig());
+    // Redact secret-shaped fields. The wizard UI shows empty inputs for
+    // [REDACTED] values, so users see "configured but hidden" — they must
+    // re-enter to overwrite. This protects against an attacker who gains
+    // loopback access during the first-time setup window.
+    res.json(stripSensitive(readConfig()));
   });
 
   router.get("/wallet-status", (req, res) => {
