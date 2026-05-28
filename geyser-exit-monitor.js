@@ -29,6 +29,10 @@ const WSOL_MINT = "So11111111111111111111111111111111111111112";
  *   - onSuspiciousActivity(mint, reason, detail)  Called for softer warnings
  * @returns {()=>void}  Cleanup function - call to detach the monitor
  */
+// Sentinel so we never re-wrap an already-monitored stream and create an
+// infinite chain on double-attach. Stored on the monitor function itself.
+const MONITOR_SENTINEL = Symbol("ponyouExitMonitorWrapped");
+
 export function attachExitMonitor(geyserStream, getPositions, {
   onEmergencyExit = () => {},
   onSuspiciousActivity = () => {},
@@ -36,9 +40,17 @@ export function attachExitMonitor(geyserStream, getPositions, {
   if (!geyserStream) return () => {};
 
   const readPositions = typeof getPositions === "function" ? getPositions : () => [];
-  const originalOnEvent = typeof geyserStream.onEvent === "function"
+  let originalOnEvent = typeof geyserStream.onEvent === "function"
     ? geyserStream.onEvent
     : () => {};
+
+  // GEM-5 / re-entry guard: if the current onEvent is already a monitor
+  // wrapper, peel it back to its `__originalOnEvent` so re-attaching
+  // never produces wrapper-of-wrapper-of-wrapper recursion.
+  if (originalOnEvent && originalOnEvent[MONITOR_SENTINEL]) {
+    log("geyser_exit_warn", "attachExitMonitor: stream already wrapped — peeling previous wrapper");
+    originalOnEvent = originalOnEvent.__originalOnEvent || (() => {});
+  }
 
   // Track sell-cluster counts per mint (reset every 60s)
   const sellCounts = new Map();
@@ -92,14 +104,18 @@ export function attachExitMonitor(geyserStream, getPositions, {
         }
       }
 
-      // Liquidity removal heuristic: large SOL outflow from a pool that holds our token.
+      // Heuristic: a single large dump of our token into the pool against
+      // SOL (i.e. token_in=mint, token_out=wSOL) is an exit signal — the
+      // bigger the in-amount, the bigger the dump. `amount_in` here is the
+      // tokens being SOLD; the variable was previously named `tokenOut`
+      // which inverted the mental model.
       if (isLiquidityRemoval) {
-        const tokenOut = Number(event.amount_in);
-        if (Number.isFinite(tokenOut) && tokenOut > LARGE_TOKEN_REMOVAL) {
+        const tokensDumped = Number(event.amount_in);
+        if (Number.isFinite(tokensDumped) && tokensDumped > LARGE_TOKEN_REMOVAL) {
           recordCounter("geyser_exit_emergency");
-          log("geyser_exit", `EMERGENCY: large token removal on ${mint.slice(0, 8)}: ${tokenOut.toLocaleString()} tokens`);
+          log("geyser_exit", `EMERGENCY: large dump on ${mint.slice(0, 8)}: ${tokensDumped.toLocaleString()} tokens sold in single tx`);
           try {
-            onEmergencyExit(mint, "liquidity_removal", `${tokenOut.toLocaleString()} tokens removed in single tx`);
+            onEmergencyExit(mint, "liquidity_removal", `${tokensDumped.toLocaleString()} tokens dumped in single tx`);
           } catch (e) {
             recordCounter("geyser_exit_callback_error");
             log("geyser_exit_error", `Emergency callback failed: ${e?.message || e}`);
@@ -108,6 +124,10 @@ export function attachExitMonitor(geyserStream, getPositions, {
       }
     }
   };
+
+  // Mark the wrapper so future attaches detect and peel it correctly.
+  monitorOnEvent[MONITOR_SENTINEL] = true;
+  monitorOnEvent.__originalOnEvent = originalOnEvent;
 
   geyserStream.onEvent = monitorOnEvent;
 
