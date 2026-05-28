@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { jsonrepair } from "jsonrepair";
 import { buildSystemPrompt } from "./prompt.js";
+import { optimizePrompt } from "./prompt-optimizer.js";
 import { executeTool } from "./tools/executor.js";
 import { tools } from "./tools/definitions.js";
 import {
@@ -145,19 +146,97 @@ function shouldRequireRealToolUse(goal, agentType, interactive = false) {
   return interactive && LIVE_DATA_TOOL_INTENTS.test(goal);
 }
 
-function buildMessages(systemPrompt, sessionHistory, goal, providerMode = "system") {
+// Marker inserted by prompt.js to split stable (cacheable) vs dynamic content.
+const STABLE_BOUNDARY = "\x00STABLE_END\x00";
+
+/**
+ * Provider-caching strategy map.
+ *
+ * There are three distinct caching mechanisms in the wild:
+ *
+ * A) EXPLICIT cache_control (Anthropic only)
+ *    - Claude models via Anthropic API or OpenRouter "anthropic/..." routes
+ *    - We send cache_control:{type:"ephemeral"} on the stable content block
+ *    - OpenRouter forwards it to Anthropic; Claude saves the KV state
+ *    - Saves ~60-90% of system-prompt token cost on repeated calls
+ *
+ * B) AUTOMATIC prefix caching (OpenAI, DeepSeek, Ollama, LM Studio)
+ *    - Provider caches the longest common prefix automatically
+ *    - No API change required — benefit is "free" as long as stable content
+ *      is at the TOP of the system prompt (which our STABLE_BOUNDARY ensures)
+ *    - OpenAI: requires >1024 token prefix, GPT-4o / o-series only
+ *    - DeepSeek: KV prefix cache per account
+ *    - Ollama/LM Studio: runtime KV cache, always active locally
+ *
+ * C) SEPARATE context-cache API (Google Gemini)
+ *    - Requires a pre-flight cachedContent.create() call and then referencing
+ *      the cache name in the request — completely different from A/B
+ *    - Not yet implemented; would need a separate Gemini adapter
+ *
+ * Our approach: only activate explicit cache_control (type A) for providers
+ * that understand it. Everyone else benefits from (B) for free because stable
+ * content is already at the top. No code needed for (B).
+ */
+function supportsExplicitCacheControl(provider, model) {
+  if (!model || typeof model !== "string") return false;
+  const m = model.toLowerCase();
+
+  // Gemini via OpenAI-compat endpoint: cache_control is NOT forwarded.
+  // Gemini Context Caching requires a native Gemini client (cachedContent API)
+  // which is a separate code path — not available here. Optimizer handles
+  // token reduction for Gemini via text transformations instead.
+  if (m.includes("gemini") || provider === "gemini") return false;
+
+  // Anthropic/Claude via any gateway — cache_control is forwarded to Anthropic.
+  if (m.includes("claude") || m.includes("anthropic/")) return true;
+  // OpenRouter with Claude model — OpenRouter passes cache_control through.
+  if (provider === "openrouter" && (m.includes("claude") || m.startsWith("anthropic/"))) return true;
+
+  return false;
+}
+
+function buildMessages(systemPrompt, sessionHistory, goal, providerMode = "system", enableCache = false) {
+  // Strip the boundary marker so it never reaches the provider.
+  // In cache mode we split on it; otherwise we just remove it.
+  const boundaryIdx = systemPrompt.indexOf(STABLE_BOUNDARY);
+  const hasMarker   = boundaryIdx >= 0;
+
   if (providerMode === "user_embedded") {
+    const cleanPrompt = hasMarker
+      ? systemPrompt.slice(0, boundaryIdx) + "\n" + systemPrompt.slice(boundaryIdx + STABLE_BOUNDARY.length)
+      : systemPrompt;
     return [
       ...sessionHistory,
-      {
-        role: "user",
-        content: `[SYSTEM INSTRUCTIONS]\n${systemPrompt}\n\n[USER REQUEST]\n${goal}`,
-      },
+      { role: "user", content: `[SYSTEM INSTRUCTIONS]\n${cleanPrompt}\n\n[USER REQUEST]\n${goal}` },
     ];
   }
 
+  // Explicit caching (type A) — Anthropic/Claude only.
+  // Sends stable block with cache_control so the KV state is saved server-side.
+  if (enableCache && hasMarker) {
+    const stablePart  = systemPrompt.slice(0, boundaryIdx).trimEnd();
+    const dynamicPart = systemPrompt.slice(boundaryIdx + STABLE_BOUNDARY.length).trimStart();
+    return [
+      {
+        role: "system",
+        content: [
+          { type: "text", text: stablePart, cache_control: { type: "ephemeral" } },
+          ...(dynamicPart ? [{ type: "text", text: dynamicPart }] : []),
+        ],
+      },
+      ...sessionHistory,
+      { role: "user", content: goal },
+    ];
+  }
+
+  // All other providers (OpenAI, DeepSeek, Groq, Gemini, etc.):
+  // Plain string system message. Stable content is still first in the string
+  // so OpenAI/DeepSeek automatic prefix caching fires without any extra code.
+  const cleanPrompt = hasMarker
+    ? systemPrompt.slice(0, boundaryIdx) + "\n" + systemPrompt.slice(boundaryIdx + STABLE_BOUNDARY.length)
+    : systemPrompt;
   return [
-    { role: "system", content: systemPrompt },
+    { role: "system", content: cleanPrompt },
     ...sessionHistory,
     { role: "user", content: goal },
   ];
@@ -183,15 +262,41 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   const positions = Object.fromEntries((stateSummary.positions || []).map(p => [p.position, p]));
   const lessons = getLessonsForPrompt({ agentType });
   const perfSummary = getPerformanceSummary();
-  const systemPrompt = systemPromptOverride || buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary);
+  const rawSystemPrompt = systemPromptOverride || buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary);
   const providerFeatures = getProviderFeatures(currentProvider, config) || {};
 
+  // Per-role timeout — manager needs fast decisions, screener can run longer.
+  // Falls back to the shared timeoutMs if the role-specific key is zero/missing.
+  const _roleTimeout =
+    agentType === "MANAGER"  ? (config.llm.managerTimeoutMs  || config.llm.timeoutMs || 60_000)  :
+    agentType === "SCREENER" ? (config.llm.screenerTimeoutMs || config.llm.timeoutMs || 90_000)  :
+                               (config.llm.generalTimeoutMs  || config.llm.timeoutMs || 120_000);
+
+  // ── Universal prompt optimization (all providers) ──────────────────────
+  // Reduces tokens via lesson truncation, role pruning, budget enforcement,
+  // and in-process dedup cache. Works for Minimax, GPT, Claude, Groq, etc.
+  const activeModel = model || DEFAULT_MODEL;
+  const optResult = !systemPromptOverride
+    ? optimizePrompt(rawSystemPrompt, agentType, activeModel)
+    : { text: rawSystemPrompt, fromCache: false, savedTokens: 0 };
+  const systemPrompt = optResult.text;
+  if (optResult.fromCache)        log("agent", `Prompt cache HIT ${agentType} — reusing cached system prompt`);
+  else if (optResult.savedTokens > 20) log("agent", `Prompt opt ${agentType}: -${optResult.savedTokens} tokens (${optResult.originalTokens}→${optResult.finalTokens})`);
+
+  // ── Explicit cache_control (Anthropic/Claude only) ─────────────────────
+  // OpenAI/DeepSeek/Ollama get automatic prefix caching for free — no code
+  // needed; universal optimizer already puts stable content first.
+  const _enableCache = !systemPromptOverride
+    && config.llm.promptCaching
+    && supportsExplicitCacheControl(currentProvider, activeModel);
+  if (_enableCache) log("agent", `Explicit prompt caching ON for ${agentType} (${currentProvider}/${activeModel})`);
+
   let providerMode = "system";
-  let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
+  let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode, _enableCache);
 
   if (providerFeatures.systemRole === false) {
     providerMode = "user_embedded";
-    messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
+    messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode, false);
   }
 
   const supportsToolChoice = providerFeatures.toolChoice !== false;
@@ -208,7 +313,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
     log("agent", `Step ${step + 1}/${maxSteps}`);
 
     try {
-      const activeModel = model || DEFAULT_MODEL;
+      // activeModel already computed above for cache detection; reuse it here.
       const FALLBACK_MODEL = "stepfun/step-3.5-flash:free";
       let response;
       let usedModel = activeModel;
@@ -218,7 +323,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
         log("agent", `Provider ${currentProvider} lacks trusted tool-choice support; using auto mode.`);
       }
 
-      const LLM_TIMEOUT_MS = config.llm.timeoutMs || 120_000;
+      const LLM_TIMEOUT_MS = _roleTimeout;
       for (let attempt = 0; attempt < 3; attempt++) {
         // AG-1: previously `const timeout` was declared inside the try block
         // and the catch block referenced it for cleanup — but `const`/`let`

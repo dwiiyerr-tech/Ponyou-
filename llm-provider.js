@@ -7,6 +7,10 @@ import OpenAI from "openai";
 import { log } from "./logger.js";
 
 // Provider configurations
+// promptCaching values:
+//   "explicit"   — send cache_control:{type:"ephemeral"} on stable content block (Anthropic)
+//   "automatic"  — provider caches longest prefix automatically; just keep stable content first
+//   false        — no caching support
 const PROVIDER_CONFIGS = {
   openrouter: {
     name: "OpenRouter",
@@ -18,6 +22,9 @@ const PROVIDER_CONFIGS = {
       toolChoice: true,
       vision: true,
       streaming: true,
+      // Depends on the underlying model: Claude → explicit, GPT → automatic.
+      // agent.js resolves this per-model via supportsExplicitCacheControl().
+      promptCaching: "model-dependent",
     },
     defaultModel: "openrouter/auto",
     fallbackModel: "gpt-3.5-turbo",
@@ -33,6 +40,9 @@ const PROVIDER_CONFIGS = {
       toolChoice: true,
       vision: true,
       streaming: true,
+      // GPT-4o / o-series: automatic prefix caching for prompts > 1024 tokens.
+      // No explicit API call needed; benefit is free when stable content is first.
+      promptCaching: "automatic",
     },
     defaultModel: "gpt-4o",
     fallbackModel: "gpt-3.5-turbo",
@@ -48,6 +58,9 @@ const PROVIDER_CONFIGS = {
       toolChoice: false, // Uses "tool_use" directly
       vision: false,
       streaming: true,
+      // Explicit cache_control per content block. Currently blocked because
+      // the agent loop is OpenAI-shaped — use via OpenRouter instead.
+      promptCaching: "explicit",
     },
     defaultModel: "claude-opus-4-1",
     fallbackModel: "claude-sonnet-4",
@@ -63,6 +76,7 @@ const PROVIDER_CONFIGS = {
       toolChoice: false,
       vision: false,
       streaming: true,
+      promptCaching: "automatic", // runtime KV cache, always active
     },
     defaultModel: "local-model",
     fallbackModel: "local-model",
@@ -78,6 +92,7 @@ const PROVIDER_CONFIGS = {
       toolChoice: false,
       vision: false,
       streaming: true,
+      promptCaching: "automatic", // runtime KV cache, always active
     },
     defaultModel: "mistral",
     fallbackModel: "mistral",
@@ -93,6 +108,7 @@ const PROVIDER_CONFIGS = {
       toolChoice: true,
       vision: false,
       streaming: true,
+      promptCaching: false, // no prefix caching support
     },
     defaultModel: "mixtral-8x7b-32768",
     fallbackModel: "llama2-70b-4096",
@@ -108,6 +124,7 @@ const PROVIDER_CONFIGS = {
       toolChoice: true,
       vision: false,
       streaming: true,
+      promptCaching: false,
     },
     defaultModel: "mistralai/Mistral-7B-Instruct-v0.1",
     fallbackModel: "mistralai/Mistral-7B-Instruct-v0.1",
@@ -123,6 +140,7 @@ const PROVIDER_CONFIGS = {
       toolChoice: true,
       vision: false,
       streaming: true,
+      promptCaching: false,
     },
     defaultModel: "mistral-large-latest",
     fallbackModel: "mistral-medium",

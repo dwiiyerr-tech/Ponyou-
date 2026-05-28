@@ -1,4 +1,5 @@
 import { listTrackedPositions } from "./state.js";
+import { config } from "./config.js";
 
 function round(value, digits = 4) {
   return Number(Number(value || 0).toFixed(digits));
@@ -109,5 +110,75 @@ export function planWalletExecution({
     stealth_summary: shouldSplit
       ? `${selected.length} wallets, ±${jitterPct}% jitter, ${delays.reduce((s,d) => s+d, 0)}ms total delay`
       : null,
+  };
+}
+
+/**
+ * Cast-Net (Tebar Jala) execution plan — high-conviction multi-wallet entry.
+ *
+ * Forces the split regardless of `splitThresholdSol` and uses cast-net-specific
+ * jitter ranges from config. Caller (pro-orchestrator) is responsible for:
+ *   1. Already verifying the cast-net gate passed (evaluateCastNet).
+ *   2. Computing totalBankrollSol so we can derive the actual amount.
+ *   3. Calling recordCastNetFire() AFTER this plan is dispatched.
+ *
+ * Returns the same shape as planWalletExecution() so executors don't need
+ * a separate code path — the only differences are amount, wallet count,
+ * jitter %, and delay range, all of which already flow through planning.
+ *
+ * @param {Object} args
+ * @param {Array}  args.wallets             All wallets from wallet-manager
+ * @param {string} args.tokenMint           Mint address
+ * @param {number} args.totalBankrollSol    Current total SOL across all wallets
+ * @returns {Object} same shape as planWalletExecution result
+ */
+export function planCastNetExecution({ wallets = [], tokenMint, totalBankrollSol = 0 } = {}) {
+  const cfg = config.castNet || {};
+  // Cast-net deploys a fraction of bankroll across N wallets simultaneously.
+  // The fraction + max wallets are clamped in config.js already, but re-clamp
+  // here defensively in case config was mutated at runtime.
+  const maxWallets = Math.min(10, Math.max(2, Number(cfg.maxWallets || 10)));
+  const bankrollPct = Math.min(50, Math.max(5, Number(cfg.maxBankrollPct || 30)));
+  const amountSol = Number(totalBankrollSol) * (bankrollPct / 100);
+
+  if (!Number.isFinite(amountSol) || amountSol <= 0) {
+    return {
+      mode: "cast_net",
+      split: false,
+      selected_wallets: [],
+      delays_ms: [],
+      wallets_with_position: [],
+      jitter_applied: false,
+      stealth_summary: null,
+      cast_net: { skipped: true, reason: `invalid bankroll: ${totalBankrollSol}` },
+    };
+  }
+
+  // Force-split: pass an artificially low splitThresholdSol so any amount
+  // above ~0 triggers the multi-wallet path. Combined with maxWallets=10
+  // and the cast-net jitter ranges, this gives us the tebar-jala behavior.
+  const plan = planWalletExecution({
+    wallets,
+    tokenMint,
+    amountSol,
+    mode: "entry",
+    maxWallets,
+    splitThresholdSol: 0.0001,
+    jitterPct: Number(cfg.amountJitterPct ?? 20),
+    delayBetweenWalletsMs: {
+      min: Math.max(0, Number(cfg.timingJitterMinSec ?? 2)) * 1000,
+      max: Math.max(1, Number(cfg.timingJitterMaxSec ?? 15)) * 1000,
+    },
+  });
+
+  return {
+    ...plan,
+    mode: "cast_net",
+    cast_net: {
+      requested_wallets: maxWallets,
+      actual_wallets: plan.selected_wallets.length,
+      bankroll_pct: bankrollPct,
+      total_amount_sol: round(amountSol),
+    },
   };
 }

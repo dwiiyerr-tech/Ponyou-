@@ -17,6 +17,7 @@ import { log } from "../logger.js";
 import { preScreenBatch } from "../tools/trash-filter.js";
 import { getRugCheckReport, rugCheckToSignals } from "../tools/rugcheck.js";
 import { getRugMemory, getPerformanceHistory } from "../lessons.js";
+import { loadLearnedNamePatterns } from "../tools/name-pattern-learner.js";
 
 const AGENT_NAME = "trash-layer";
 
@@ -27,6 +28,9 @@ let _stats = {
   noSocialBlocked: 0, devRepeatOffender: 0, honeypotBlocked: 0,
   lastRun: null, knownScamCache: [],
 };
+
+// Runtime-patchable learned name patterns (injected by learning-agent)
+let _learnedNamePatterns = [];
 
 // ── Known Scam Database (auto-enriched from research) ──────────
 
@@ -147,6 +151,25 @@ export function initTrashLayer() {
   if (_initialized) return;
   _initialized = true;
 
+  // Load persisted learned name patterns from disk on startup
+  try {
+    _learnedNamePatterns = loadLearnedNamePatterns();
+    if (_learnedNamePatterns.length > 0) {
+      log("trash_layer", `Loaded ${_learnedNamePatterns.length} learned name patterns from disk`);
+    }
+  } catch (e) {
+    log("trash_layer_error", `Failed to load learned name patterns: ${e.message}`);
+  }
+
+  // Hot-reload learned patterns when learning-agent recompiles
+  agentBus.subscribe("learning:patterns_updated", (payload) => {
+    if (Array.isArray(payload?.name_rules)) {
+      _learnedNamePatterns = payload.name_rules;
+      log("trash_layer", `Runtime patch: ${_learnedNamePatterns.length} learned name patterns injected`);
+      updateAgentHealth(AGENT_NAME, { learned_name_patterns: _learnedNamePatterns.length });
+    }
+  });
+
   setAgentStatus(AGENT_NAME, "running", "Trash layer v2 active — advanced garbage detection + internet research");
 
   agentBus.subscribe("hunters:prey_ready", async (payload) => {
@@ -175,15 +198,32 @@ export function initTrashLayer() {
   });
 }
 
+// ─── Block feedback helper ─────────────────────────────────────
+// Emit a bus event for every hard-block so learning-agent can count
+// which hunt sources produce the most garbage and downgrade their weights.
+
+function _emitTrashBlock(token, reason, type) {
+  agentBus.emit("learning:trash_blocked", {
+    mint:          token.mint,
+    symbol:        token.symbol || "",
+    name:          token.name   || "",
+    reason,
+    type,  // scam_name | research | prescreen | rugcheck | honeypot
+    _hunt_source:  token._hunt_source || token._hunter_source || "unknown",
+    timestamp:     Date.now(),
+  });
+}
+
 // ─── Advanced Filter Pipeline ──────────────────────────────────
 
 async function filterPreyAdvanced(preyTokens, marketCondition = "NORMAL") {
   const survivors = [];
 
   for (const token of preyTokens) {
-    // Step 1: Known scam pattern check (name/symbol)
+    // Step 1: Known scam pattern check (name/symbol) — curated + learned
     let scamBlocked = false;
-    for (const { pattern, weight } of KNOWN_SCAM_PATTERNS) {
+    const allNamePatterns = [...KNOWN_SCAM_PATTERNS, ..._learnedNamePatterns];
+    for (const { pattern, weight } of allNamePatterns) {
       try {
         const name = token.name || "";
         const symbol = token.symbol || "";
@@ -192,6 +232,7 @@ async function filterPreyAdvanced(preyTokens, marketCondition = "NORMAL") {
             _stats.scamNameBlocked++;
             log("trash_layer", `SCAM NAME BLOCK: ${token.symbol} — matched "${pattern.source}" (weight=${weight})`);
             scamBlocked = true;
+            _emitTrashBlock(token, `scam_name:${pattern.source}`, "scam_name");
             break;
           }
           // Lower weight = just flag
@@ -212,6 +253,7 @@ async function filterPreyAdvanced(preyTokens, marketCondition = "NORMAL") {
     if (criticalFlags.length > 0) {
       _stats.copycatBlocked++;
       log("trash_layer", `RESEARCH BLOCK: ${token.symbol} — ${criticalFlags[0].detail}`);
+      _emitTrashBlock(token, criticalFlags[0].detail, "research");
       continue;
     }
     // High severity flags are added to token for downstream scoring
@@ -228,6 +270,7 @@ async function filterPreyAdvanced(preyTokens, marketCondition = "NORMAL") {
 
     if (preScreen.stats.blocked > 0) {
       _stats.blocked++;
+      _emitTrashBlock(token, "prescreen_fail", "prescreen");
       continue;
     }
 
@@ -243,6 +286,7 @@ async function filterPreyAdvanced(preyTokens, marketCondition = "NORMAL") {
           if (signals.rug_score >= 60 || signals.critical_risks >= 1) {
             _stats.rugCheckBlocked++;
             log("trash_layer", `RugCheck BLOCK: ${token.symbol} score=${signals.rug_score}`);
+            _emitTrashBlock(token, `rugcheck_score:${signals.rug_score}`, "rugcheck");
             continue;
           }
 
@@ -250,10 +294,18 @@ async function filterPreyAdvanced(preyTokens, marketCondition = "NORMAL") {
           if (rugReport?.risks?.some(r => r.name?.includes("honeypot") || r.name?.includes("freeze") || r.name?.includes("mint"))) {
             _stats.honeypotBlocked++;
             log("trash_layer", `HONEYPOT BLOCK: ${token.symbol}`);
+            _emitTrashBlock(token, "honeypot_detected", "honeypot");
             continue;
           }
         }
-      } catch { /* RugCheck unavailable — pass through */ }
+      } catch {
+        // RugCheck API unavailable — apply conservative unknown-risk marker so
+        // downstream risk scoring knows the check was skipped. Old "pass through"
+        // silently let honeypots in when the API was down.
+        token._rugcheck_score = 25;
+        token._rugcheck_skipped = true;
+        log("trash_layer", `RugCheck unavailable for ${token.symbol} — unknown-risk marker applied`);
+      }
     }
 
     // Step 5: Token age anomaly — too new with too much liquidity = suspicious

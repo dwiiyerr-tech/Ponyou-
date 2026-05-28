@@ -27,7 +27,9 @@ import { config } from "../config.js";
 
 const DS_BASE = "https://api.dexscreener.com";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
-const JUPITER_QUOTE = "https://quote-api.jup.ag/v6";
+// Jupiter retired quote-api.jup.ag in 2025. /tokens endpoint moved to tokens/v2/tag.
+const JUPITER_QUOTE = "https://lite-api.jup.ag/swap/v1";
+const JUPITER_TOKENS = "https://lite-api.jup.ag/tokens/v2/tag?query=verified";
 const GECKO_BASE = "https://api.geckoterminal.com/api/v2";
 
 // ─── Expanded Hunting Queries ──────────────────────────────────
@@ -71,16 +73,26 @@ const MIN_TOKEN_AGE_MINUTES = 5; // 5 min — skip fresh-launch snipes
 
 // ─── HTTP Helpers ───────────────────────────────────────────────
 
-async function fetchDS(url, retries = 1) {
+async function fetchDS(url, retries = 2) {
   for (let i = 0; i <= retries; i++) {
     try {
       const res = await fetch(url);
+      if (res.status === 429) {
+        // Rate limited — exponential backoff with jitter before retrying.
+        // Cap at 30s so a single hunt doesn't block the expedition too long.
+        const backoffMs = Math.min(30_000, 1_000 * Math.pow(2, i) + Math.random() * 500);
+        if (i < retries) { await new Promise(r => setTimeout(r, backoffMs)); continue; }
+        return null;
+      }
       if (!res.ok) {
         if (i < retries) { await new Promise(r => setTimeout(r, 500 * (i + 1))); continue; }
         return null;
       }
       return await res.json();
-    } catch { if (i >= retries) return null; }
+    } catch {
+      if (i >= retries) return null;
+      await new Promise(r => setTimeout(r, 300));
+    }
   }
   return null;
 }
@@ -541,14 +553,14 @@ async function huntSmartMoney(strategy) {
  */
 async function huntJupiter(strategy) {
   try {
-    const res = await fetch(`${JUPITER_QUOTE}/tokens`);
+    const res = await fetch(JUPITER_TOKENS, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return [];
     const jupTokens = await res.json();
     if (!Array.isArray(jupTokens) || jupTokens.length === 0) return [];
 
-    // Get top tokens by some heuristic, fetch pair data
+    // New API: token mint is in `id` field
     const solTokens = jupTokens.slice(0, 50);
-    const mintStr = solTokens.map(t => t.address).slice(0, 25).join(",");
+    const mintStr = solTokens.map(t => t.id || t.address).filter(Boolean).slice(0, 25).join(",");
     const pairData = await fetchDS(`${DS_BASE}/latest/dex/tokens/${mintStr}`);
     if (!pairData?.pairs) return [];
 

@@ -53,3 +53,9 @@ export {
   initTrashLayer,
   getTrashLayerStats,
 } from "./trash-layer.js";
+
+export {
+  initLearningAgent,
+  getLearningStats,
+  getStrategyPerformance,
+} from "./learning-agent.js";

@@ -1,0 +1,89 @@
+{
+  "patterns": [
+    {
+      "id": "win_1767225600000_DECAY",
+      "mint": "mintDecay",
+      "symbol": "DECAY",
+      "name": "",
+      "pnl_pct": 55,
+      "hold_minutes": 0,
+      "strategy": "unknown",
+      "holder": {
+        "count": 0,
+        "top10_pct": 0,
+        "fresh_funded": 0,
+        "dust": 0,
+        "bundle_buyers_pct": 0,
+        "same_funder": 0,
+        "creator_pct": 0
+      },
+      "community": {
+        "is_quality": false,
+        "is_cto": false,
+        "dev_credibility": "UNKNOWN",
+        "dev_tier": "UNKNOWN",
+        "dev_engagement": 0,
+        "social_buzz": 0,
+        "signals": []
+      },
+      "wallet": {
+        "smart_present": false,
+        "tier": "none",
+        "count": 0
+      },
+      "token_structure": {
+        "mint_authority": false,
+        "freeze_authority": false,
+        "lp_locked": false,
+        "permanent_delegate": false,
+        "transfer_hook": false,
+        "rug_score": 0,
+        "rugcheck_score": 0
+      },
+      "market": {
+        "mcap_usd": 0,
+        "mcap_tier": "unknown",
+        "liquidity_usd": 0,
+        "volume_24h": 0,
+        "swaps": 0,
+        "age_minutes": 0,
+        "price_change_1h": 0,
+        "bonding_curve": 0,
+        "launchpad": "unknown",
+        "market_condition": "UNKNOWN"
+      },
+      "signals": {
+        "signal_score": 0,
+        "conviction": 0,
+        "momentum": 0,
+        "volatility_pct": 0,
+        "feature_aggregate": 0,
+        "narrative_velocity": 0,
+        "kelly_fraction": 0,
+        "social_buzz": 0
+      },
+      "narrative": {
+        "tags": [],
+        "strongest": null
+      },
+      "win_reasons": [
+        "few_fresh_wallets",
+        "low_bundle_buyers",
+        "no_mint_authority",
+        "no_freeze_authority",
+        "clean_rug_score",
+        "fast_pump"
+      ],
+      "temporal": {
+        "hour_utc": 19,
+        "day_of_week": 4,
+        "is_weekend": false,
+        "session": "new_york"
+      },
+      "recorded_at": "2026-05-28T19:06:28.792Z"
+    }
+  ],
+  "last_updated": "2026-05-28T19:06:28.792Z",
+  "total_wins": 1,
+  "avg_pnl": 55
+}

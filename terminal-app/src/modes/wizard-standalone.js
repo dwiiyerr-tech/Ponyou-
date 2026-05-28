@@ -11,6 +11,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '../../..');
 const CONFIG_PATH = resolve(ROOT, 'user-config.json');
 
+// WS-1: pull in the same atomic + lock primitives the rest of the codebase
+// uses for user-config.json. Without these, a wizard save was a raw
+// writeFileSync — non-atomic (partial write on process kill) and racing
+// against dashboard / executor writes. Loaded dynamically so the wizard
+// keeps working in dev environments where the module path resolves
+// differently.
+let _atomicWriteJson = null;
+let _withFileLock = null;
+try {
+  const aw = await import(`${ROOT}/atomic-write.js`);
+  _atomicWriteJson = aw.atomicWriteJson;
+  _withFileLock = aw.withFileLock;
+} catch {
+  // Fall back to raw writeFileSync below if the import fails.
+}
+
 // ── Load strategy presets dynamically ─────────────────────────────────────
 let STRATEGY_OPTIONS = [];
 try {
@@ -165,7 +181,7 @@ const SECTIONS = [
     ],
   },
   {
-    id: 'positions', label: 'Positions & Kelly', icon: '◈', type: 'fields',
+    id: 'positions', label: 'Positions', icon: '◈', type: 'fields',
     description: 'Open position limits and Kelly position-count formula',
     fields: [
       // ── Position Mode ─────────────────────────────────────────
@@ -290,9 +306,12 @@ const SECTIONS = [
 
 // ── Screen ─────────────────────────────────────────────────────────────────
 const screen = blessed.screen({ smartCSR: true, title: 'PONYOU', fullUnicode: true, dockBorders: false });
-const { rows: H, cols: W } = screen;
 const SIDEBAR_W = 20;
-const CONTENT_W = W - SIDEBAR_W;
+
+// Dynamic dimensions — always read current terminal size
+function W() { return Math.max(40, screen.cols); }
+function H() { return Math.max(12, screen.rows); }
+function CW() { return W() - SIDEBAR_W; }
 
 let sectionIdx = 0;
 let fieldIdx = 0;
@@ -302,51 +321,50 @@ let message = '';
 
 // ── Widgets ────────────────────────────────────────────────────────────────
 const headerBar = blessed.box({
-  top: 0, left: 0, width: W, height: 4, tags: true,
-  style: { fg: 'white', bg: 'black' },
+  top: 0, left: 0, width: '100%', height: 4, tags: true,
+  style: { fg: 'white' },
 });
 
 const divTop = blessed.box({
-  top: 4, left: 0, width: W, height: 1, tags: true,
-  content: `{white-fg}${'─'.repeat(W)}{/white-fg}`,
-  style: { bg: 'black' },
+  top: 4, left: 0, width: '100%', height: 1, tags: true,
+  style: {},
 });
 
 const sidebar = blessed.box({
-  top: 5, left: 0, width: SIDEBAR_W, height: Math.max(1, H - 8), tags: true,
-  style: { fg: 'white', bg: 'black' },
+  top: 5, left: 0, width: SIDEBAR_W, height: '100%-9', tags: true,
+  style: { fg: 'white' },
 });
 
 const divVert = blessed.box({
-  top: 5, left: SIDEBAR_W, width: 1, height: Math.max(1, H - 8), tags: true,
-  content: Array(Math.max(1, H - 8)).fill('{white-fg}│{/white-fg}').join('\n'),
-  style: { bg: 'black' },
+  top: 5, left: SIDEBAR_W, width: 1, height: '100%-9', tags: true,
+  style: {},
 });
 
 const contentBox = blessed.box({
-  top: 5, left: SIDEBAR_W + 1, width: CONTENT_W - 1, height: Math.max(1, H - 8), tags: true,
+  top: 5, left: SIDEBAR_W + 1, width: '100%-' + (SIDEBAR_W + 1), height: '100%-9', tags: true,
   scrollable: true, alwaysScroll: true, keys: false,
-  style: { fg: 'white', bg: 'black' },
+  style: { fg: 'white' },
+});
+
+// divBottom BEFORE inputBar so inputBar renders on top
+const divBottom = blessed.box({
+  bottom: 3, left: 0, width: '100%', height: 1, tags: true,
+  style: {},
 });
 
 const inputBar = blessed.textbox({
-  bottom: 2, left: SIDEBAR_W + 3, width: CONTENT_W - 6, height: 1, tags: false,
-  style: { fg: 'yellow', bg: 'black', focus: { fg: 'yellow' } },
+  bottom: 3, left: SIDEBAR_W + 3, width: '100%-' + (SIDEBAR_W + 6), height: 1, tags: false,
+  style: { fg: 'yellow', focus: { fg: 'yellow' } },
   inputOnFocus: true, keys: true, vi: false,
 });
 
-const divBottom = blessed.box({
-  bottom: 2, left: 0, width: W, height: 1, tags: true,
-  content: `{white-fg}${'─'.repeat(W)}{/white-fg}`,
-  style: { bg: 'black' },
-});
-
 const statusBar = blessed.box({
-  bottom: 0, left: 0, width: W, height: 2, tags: true,
-  style: { fg: 'gray', bg: 'black' },
+  bottom: 0, left: 0, width: '100%', height: 3, tags: true,
+  style: { fg: 'gray' },
 });
 
-[headerBar, divTop, sidebar, divVert, contentBox, inputBar, divBottom, statusBar]
+// divBottom appended before inputBar — inputBar renders on top
+[headerBar, divTop, sidebar, divVert, contentBox, divBottom, inputBar, statusBar]
   .forEach(w => screen.append(w));
 inputBar.hide();
 
@@ -378,7 +396,7 @@ function fmtVal(val, field) {
 function renderProgress() {
   const n = sectionIdx + 1;
   const total = SECTIONS.length;
-  const bw = Math.max(12, Math.floor(W * 0.25));
+  const bw = Math.max(12, Math.floor(W() * 0.25));
   const filled = Math.round(bw * n / total);
   const bar = '{yellow-fg}' + '█'.repeat(filled) + '{/yellow-fg}' + '{gray-fg}' + '░'.repeat(bw - filled) + '{/gray-fg}';
   return `${bar}  {white-fg}${n}/${total}{/white-fg}`;
@@ -387,6 +405,19 @@ function renderProgress() {
 // ── Render ─────────────────────────────────────────────────────────────────
 function render() {
   const sec = SECTIONS[sectionIdx];
+  const w = W();
+  const h = H();
+  const cw = CW();
+
+  // Update dynamic separator lines with current width
+  divTop.setContent(`{gray-fg}${'─'.repeat(w)}{/gray-fg}`);
+  divBottom.setContent(`{gray-fg}${'─'.repeat(w)}{/gray-fg}`);
+  // Update vertical divider height
+  const midH = Math.max(1, h - 9);
+  divVert.setContent(Array(midH).fill('{gray-fg}│{/gray-fg}').join('\n'));
+
+  // Show input prompt in status when in input mode
+  const inputPrompt = inputMode ? `  {yellow-fg}❯  {/yellow-fg}` : '';
 
   headerBar.setContent([
     `  {yellow-fg}╔═╗ ╔═╗ ╔╗╔ ╦ ╦ ╔═╗ ╦ ╦{/yellow-fg}  {white-fg}Setup Wizard{/white-fg}`,
@@ -409,32 +440,36 @@ function render() {
   sidebar.setContent(sLines.join('\n'));
 
   // Content
-  renderSection(sec);
+  renderSection(sec, cw);
 
-  // Status
+  // Status bar — 3 rows: message / input hint / key hints
   const msgLine = message ? `  {yellow-fg}${message}{/yellow-fg}` : '';
+  const inputLine = inputMode
+    ? `  {gray-fg}Type value and press{/gray-fg} {white-fg}Enter{/white-fg} {gray-fg}to confirm ·{/gray-fg} {white-fg}Esc{/white-fg} {gray-fg}to cancel{/gray-fg}`
+    : '';
   const keyHints = inputMode
-    ? `  {white-fg}Enter{/white-fg} confirm  {white-fg}Esc{/white-fg} cancel input`
+    ? ''
     : (sec.type === 'review'
       ? `  {white-fg}Enter{/white-fg} save & exit  {white-fg}Tab{/white-fg} back  {white-fg}q{/white-fg} quit`
-      : `  {white-fg}↑ ↓{/white-fg} navigate  {white-fg}Enter{/white-fg} select / edit  {white-fg}Tab{/white-fg} next section  {white-fg}Esc{/white-fg} back  {white-fg}q{/white-fg} quit`);
-  statusBar.setContent((msgLine ? msgLine + '\n' : '\n') + keyHints);
+      : `  {white-fg}↑ ↓{/white-fg} navigate  {white-fg}Enter{/white-fg} edit  {white-fg}Tab{/white-fg} next section  {white-fg}Esc{/white-fg} back  {white-fg}q{/white-fg} quit`);
+  statusBar.setContent([msgLine || '', inputLine || keyHints, ''].join('\n'));
 
   screen.render();
 }
 
-function renderSection(sec) {
+function renderSection(sec, cw) {
+  const contentW = cw || CW();
   const lines = [];
   lines.push('');
   lines.push(`  {bold}{white-fg}${sec.label}{/white-fg}{/bold}`);
   if (sec.description) lines.push(`  {gray-fg}${sec.description}{/gray-fg}`);
-  lines.push(`  {gray-fg}${'─'.repeat(Math.max(1, CONTENT_W - 5))}{/gray-fg}`);
+  lines.push(`  {gray-fg}${'─'.repeat(Math.max(1, contentW - 5))}{/gray-fg}`);
   lines.push('');
 
   switch (sec.type) {
     case 'profile':  renderProfileContent(lines, sec); break;
     case 'select':   renderSelectContent(lines, sec); break;
-    case 'fields':   renderFieldsContent(lines, sec); break;
+    case 'fields':   renderFieldsContent(lines, sec, contentW); break;
     case 'toggles':  renderTogglesContent(lines, sec); break;
     case 'review':   renderReviewContent(lines); break;
   }
@@ -476,7 +511,8 @@ function renderSelectContent(lines, sec) {
   });
 }
 
-function renderFieldsContent(lines, sec) {
+function renderFieldsContent(lines, sec, contentW) {
+  const cw = contentW || CW();
   // find the real (non-divider) field at fieldIdx
   const activeField = sec.fields[fieldIdx];
 
@@ -488,15 +524,17 @@ function renderFieldsContent(lines, sec) {
     lines.push('');
     lines.push(`  {gray-fg}Current:{/gray-fg}  ${fmtVal(cur !== undefined ? cur : f.default, f)}`);
     lines.push('');
-    lines.push(`  {yellow-fg}New value (Enter to confirm, Esc to cancel):{/yellow-fg}`);
-    lines.push(`  {gray-fg}${'─'.repeat(Math.max(1, Math.min(40, CONTENT_W - 6)))}{/gray-fg}`);
+    lines.push(`  {yellow-fg}New value — type below and press Enter:{/yellow-fg}`);
+    lines.push(`  {gray-fg}${'─'.repeat(Math.max(1, Math.min(40, cw - 6)))}{/gray-fg}`);
+    lines.push('');
+    lines.push(`  {gray-fg}(input bar is at the bottom of this panel){/gray-fg}`);
   } else {
     const colW = 26;
     sec.fields.forEach((f, i) => {
       // ── divider row ──
       if (f.type === 'divider') {
         lines.push('');
-        lines.push(`  {gray-fg}${f.label.toUpperCase()}${' ─'.repeat(Math.max(1, Math.floor((CONTENT_W - f.label.length - 6) / 2)))}{/gray-fg}`);
+        lines.push(`  {gray-fg}${f.label.toUpperCase()}  ${'─'.repeat(Math.max(2, cw - f.label.length - 8))}{/gray-fg}`);
         return;
       }
 
@@ -656,7 +694,7 @@ function handleActivate() {
   if (inputMode) return;
   const s = sec();
 
-  if (s.type === 'review') { saveConfig(); return; }
+  if (s.type === 'review') { saveConfig().catch(() => {}); return; }
 
   if (s.type === 'profile') {
     const p = s.profiles[selectCursor];
@@ -700,12 +738,23 @@ function handleActivate() {
   }
 }
 
-function saveConfig() {
+async function saveConfig() {
+  // WS-1: atomic + locked write so a wizard crash mid-save doesn't leave a
+  // corrupt user-config.json half-file, and a concurrent write from the
+  // dashboard or executor's update_config doesn't race us. Falls back to
+  // raw writeFileSync only if the atomic-write helper failed to load
+  // (preserves wizard usability in degraded environments).
   try {
-    writeFileSync(CONFIG_PATH, JSON.stringify(formData, null, 2));
+    if (_atomicWriteJson && _withFileLock) {
+      await _withFileLock(CONFIG_PATH, async () => {
+        _atomicWriteJson(CONFIG_PATH, formData);
+      });
+    } else {
+      writeFileSync(CONFIG_PATH, JSON.stringify(formData, null, 2));
+    }
     message = '{green-fg}✓ Saved to user-config.json{/green-fg}';
     render();
-    setTimeout(() => { screen.destroy(); process.exit(0); }, 1200);
+    setTimeout(() => { screen.destroy(); process.stdout.write('\x1b[2J\x1b[3J\x1b[H'); process.exit(0); }, 1200);
   } catch (e) {
     message = `{red-fg}✗ Save failed: ${e.message}{/red-fg}`;
     render();
@@ -751,7 +800,13 @@ screen.key(['tab'],   () => { if (!inputMode) navNext(); });
 screen.key(['S-tab'], () => { if (!inputMode) navBack(); });
 
 screen.key(['enter'], () => {
-  if (!inputMode) handleActivate();
+  if (inputMode) {
+    // screen.key intercepts Enter before the textbox — manually trigger submit
+    const val = inputBar.getValue();
+    inputBar.emit('submit', val);
+    return;
+  }
+  handleActivate();
 });
 screen.key(['space'], () => {
   if (!inputMode) {
@@ -775,11 +830,25 @@ screen.key(['escape'], () => {
     navBack();
   } else {
     screen.destroy();
+    process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
     process.exit(0);
   }
 });
 
-screen.key(['q', 'C-c'], () => { if (!inputMode) { screen.destroy(); process.exit(0); } });
+screen.key(['q', 'C-c'], () => {
+  if (!inputMode) {
+    screen.destroy();
+    process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
+    process.exit(0);
+  }
+});
+
+// ── Resize handler ─────────────────────────────────────────────────────────
+screen.on('resize', () => {
+  // Update inputBar width dynamically on resize
+  inputBar.width = '100%-' + (SIDEBAR_W + 6);
+  render();
+});
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 contentBox.focus();

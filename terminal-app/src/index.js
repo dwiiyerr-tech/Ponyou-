@@ -50,7 +50,12 @@ async function runChatLoop() {
     }
   }
 
+  clearTerminal();
   process.exit(0);
+}
+
+function clearTerminal() {
+  process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
 }
 
 async function runInkApp(initialMessage) {
@@ -73,5 +78,5 @@ async function runBlessed(relPath) {
   });
 }
 
-process.on('SIGINT', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
+process.on('SIGINT', () => { clearTerminal(); process.exit(0); });
+process.on('SIGTERM', () => { clearTerminal(); process.exit(0); });

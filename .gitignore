@@ -58,6 +58,10 @@ strategy-registry.json
 exec-quality.json
 day-phase-cache.json
 daily-trade-guard-state.json
+cast-net-state.json
+slow-rug-history.json
+dev-wallet-state.json
+volume-divergence-history.json
 darwin-weights.json
 perf-memory.json
 holder-memory.json
