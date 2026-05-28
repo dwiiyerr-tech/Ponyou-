@@ -246,7 +246,13 @@ export async function sendBundle({
     // Track for dedup
     if (dedupKey) {
       _submittedBundles.set(dedupKey, { bundleId, region, ts: Date.now() });
-      if (!_idempotencyPruneTimer) _idempotencyPruneTimer = setInterval(pruneIdempotencyCache, 60_000);
+      // JT-2: schedule the prune sweep once, and unref() so the timer
+      // doesn't keep the process alive on shutdown when no bundles are
+      // in flight.
+      if (!_idempotencyPruneTimer) {
+        _idempotencyPruneTimer = setInterval(pruneIdempotencyCache, 60_000);
+        _idempotencyPruneTimer.unref?.();
+      }
     }
 
     log("jito", `Bundle submitted: ${bundleId} (${signedTxs.length} tx, region=${region})`);
