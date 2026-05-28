@@ -77,6 +77,13 @@ export const PRESETS = {
     use_llm: true,
     llm_min_confidence: 50,
     staged_entry: { enabled: false },
+    roi_presets: {
+      EXTREME: { "0": 0.50, "2": 0.30, "8": 0.15, "20": 0.0 },
+      HOT:     { "0": 0.50, "3": 0.30, "10": 0.15, "20": 0.05 },
+      NORMAL:  { "0": 0.40, "3": 0.25, "10": 0.12, "25": 0.0 },
+      COLD:    { "0": 0.25, "5": 0.15, "15": 0.05, "30": -0.05 },
+      DEAD:    { "0": 0.15, "5": 0.08, "15": 0.0, "30": -0.15 },
+    },
   },
 
   dip_buy: {
@@ -106,6 +113,13 @@ export const PRESETS = {
       stage_pct: [35, 35, 30],     // 35% first, 35% at -5%, 30% at -10%
       trigger_type: "price",
       price_trigger_pct: -5,        // buy next stage every -5% from last entry avg
+    },
+    roi_presets: {
+      EXTREME: { "0": 0.30, "5": 0.20, "20": 0.10, "45": 0.0 },
+      HOT:     { "0": 0.30, "10": 0.20, "30": 0.10, "60": 0.03 },
+      NORMAL:  { "0": 0.25, "15": 0.15, "45": 0.08, "90": 0.0 },
+      COLD:    { "0": 0.20, "30": 0.10, "60": 0.05, "120": -0.05 },
+      DEAD:    { "0": 0.12, "30": 0.05, "60": 0.0, "120": -0.15 },
     },
   },
 
@@ -137,6 +151,13 @@ export const PRESETS = {
       trigger_type: "price",
       price_trigger_pct: -8,
     },
+    roi_presets: {
+      EXTREME: { "0": 1.0, "10": 0.50, "30": 0.20, "60": 0.05 },
+      HOT:     { "0": 1.0, "15": 0.50, "45": 0.20 },
+      NORMAL:  { "0": 0.80, "20": 0.40, "60": 0.15, "120": 0.0 },
+      COLD:    { "0": 0.50, "30": 0.25, "90": 0.10, "180": -0.05 },
+      DEAD:    { "0": 0.30, "30": 0.15, "90": 0.0, "180": -0.15 },
+    },
   },
 
   degen: {
@@ -159,6 +180,13 @@ export const PRESETS = {
     use_llm: false,
     llm_min_confidence: 0,
     staged_entry: { enabled: false },
+    roi_presets: {
+      EXTREME: { "0": 0.30, "3": 0.20, "10": 0.10, "20": 0.0 },
+      HOT:     { "0": 0.30, "5": 0.15, "15": 0.05 },
+      NORMAL:  { "0": 0.25, "5": 0.12, "15": 0.03, "30": -0.05 },
+      COLD:    { "0": 0.15, "10": 0.05, "20": 0.0, "30": -0.10 },
+      DEAD:    { "0": 0.10, "10": 0.0, "20": -0.05, "30": -0.15 },
+    },
   },
 
   day_phase_trading: {
@@ -219,6 +247,14 @@ export const PRESETS = {
       trigger_type: "time",
       time_trigger_min: 1440,            // 24 jam antar stage
     },
+    // Swing presets — agresif di HOT/NORMAL, lebih sabar di COLD/DEAD.
+    roi_presets: {
+      EXTREME: { "0": 0.80, "1440": 0.50, "4320": 0.30, "7200": 0.0, "10080": -0.99 },
+      HOT:     { "0": 0.70, "4320": 0.40, "7200": 0.55, "10080": 0.70, "10081": -0.99 },
+      NORMAL:  { "0": 0.70, "4320": 0.35, "7200": 0.50, "10080": 0.65, "10081": -0.99 },
+      COLD:    { "0": 0.50, "4320": 0.25, "7200": 0.35, "10080": 0.50, "10081": -0.99 },
+      DEAD:    { "0": 0.30, "4320": 0.15, "7200": 0.20, "10080": 0.30, "10081": -0.99 },
+    },
   },
 };
 
@@ -250,10 +286,19 @@ function writeJson(file, data) {
   _readCache.delete(file);
 }
 
+let _fallbackWarned = false;
+
 export function getActiveStrategyId() {
   const data = readJsonSafe(ACTIVE_FILE);
   const id = data?.id;
   if (id && PRESETS[id]) return id;
+  // Warn once per process when the active-strategy file is missing or
+  // points at an invalid id — operator may have wiped state by accident.
+  if (!_fallbackWarned) {
+    _fallbackWarned = true;
+    const cause = !data ? "file missing/unreadable" : `unknown id "${id}"`;
+    log("strategy", `WARN: active-strategy fallback to "${DEFAULT_STRATEGY}" (${cause})`);
+  }
   return DEFAULT_STRATEGY;
 }
 
@@ -294,6 +339,12 @@ const BOOL_KEYS = new Set(["trailing_enabled", "partial_tp_enabled", "use_llm"])
  */
 export function setStrategyOverride(id, key, rawValue) {
   if (!PRESETS[id]) throw new Error(`Unknown strategy: ${id}`);
+  // Reject typos before persisting. Without this, an unrecognized key was
+  // stringified and stored, never taking effect — operator gets no signal.
+  if (!isKnownOverrideKey(key)) {
+    const all = [...ROOT_OVERRIDE_KEYS, ...FILTER_OVERRIDE_KEYS].sort();
+    throw new Error(`Unknown override key "${key}". Known keys: ${all.join(", ")}`);
+  }
   let value;
   if (NUMERIC_KEYS.has(key)) {
     value = Number(rawValue);
@@ -318,14 +369,47 @@ export function clearStrategyOverrides(id) {
   saveOverrides(overrides);
 }
 
+// Keys that map cleanly to a nested preset path. Used both by applyOverrides
+// (dispatch) and by setStrategyOverride (input validation). When adding a
+// new override key, list it here AND add a case in applyOverrides.
+const ROOT_OVERRIDE_KEYS = new Set([
+  "stoploss",
+  "trailing_enabled", "trailing_offset", "trailing_distance",
+  "partial_tp_enabled", "partial_tp_at", "partial_tp_sell",
+  "use_llm", "llm_min_confidence",
+]);
+
+// Keys that may legitimately land inside `preset.filters`. Snapshot from the
+// six built-in presets; new filter keys should be added here too. Anything
+// outside ROOT_OVERRIDE_KEYS ∪ FILTER_OVERRIDE_KEYS is treated as a typo
+// and rejected by setStrategyOverride / warned-about by applyOverrides.
+const FILTER_OVERRIDE_KEYS = new Set([
+  "maxGasFeeLevel", "minHolderAgeHours", "minTopHolderSol",
+  "maxEntryPumpMc", "maxAllowedFlags",
+  "min_mcap_usd", "max_mcap_usd",
+  "min_token_fees_sol", "min_fee_claim_sol",
+  "min_holders", "max_top10_pct",
+  "max_ath_distance_pct",
+]);
+
+export function isKnownOverrideKey(key) {
+  return ROOT_OVERRIDE_KEYS.has(key) || FILTER_OVERRIDE_KEYS.has(key);
+}
+
 /**
  * Apply flat-key overrides to a nested preset shape.
  * Maps friendly keys (e.g. "trailing_offset") into preset paths
  * (trailing_stop.positive_offset, partial_tp.at_pct, etc).
+ *
+ * Always returns a fresh deep-clone so callers can safely attach metadata
+ * (e.g. _runtime_source, _evolved_id) without mutating the global PRESETS
+ * registry. Previously this short-circuited and returned the preset itself
+ * when no overrides existed — that leaked mutation into PRESETS and caused
+ * cross-call regime metadata pollution.
  */
 function applyOverrides(preset, override) {
-  if (!override) return preset;
   const out = JSON.parse(JSON.stringify(preset));
+  if (!override) return out;
   for (const [key, value] of Object.entries(override)) {
     switch (key) {
       case "stoploss":             out.stoploss = value; break;
@@ -338,8 +422,14 @@ function applyOverrides(preset, override) {
       case "use_llm":              out.use_llm = value; break;
       case "llm_min_confidence":   out.llm_min_confidence = value; break;
       default:
-        if (key in out.filters) out.filters[key] = value;
-        else out[key] = value;
+        if (FILTER_OVERRIDE_KEYS.has(key)) {
+          out.filters[key] = value;
+        } else {
+          // Unknown key — log warn so typos surface instead of being silently
+          // dropped on a non-existent root field. Common cause: snake_case
+          // vs camelCase confusion, or trailing-letter typos.
+          log("strategy", `WARN: unknown override key "${key}" ignored (preset=${preset.id}, value=${JSON.stringify(value)})`);
+        }
     }
   }
   return out;
