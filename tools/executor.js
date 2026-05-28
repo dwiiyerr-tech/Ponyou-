@@ -56,6 +56,58 @@ import { listTrackedPositions } from "../state.js";
 let _cronRestarter = null;
 export function registerCronRestarter(fn) { _cronRestarter = fn; }
 
+// EX-6/EX-9 bounds. The LLM can call update_config and advance_day with
+// arbitrary values; without bounds, a single bad call could disable
+// trading (e.g. managementIntervalMin=0 → invalid cron pattern `*/0 * * * *`
+// → cron job fails to start → management cycle silently stops) or corrupt
+// plan tracking. Tuned to operationally safe ranges.
+export const CONFIG_BOUNDS = {
+  managementIntervalMin: { min: 1, max: 60 },
+  screeningIntervalMin:  { min: 1, max: 60 },
+  maxPositions:          { min: 1, max: 50 },
+  maxDeployAmount:       { min: 0.01, max: 1000 },
+  deployAmountSol:       { min: 0.001, max: 100 },
+  gasReserve:            { min: 0.001, max: 5 },        // never let LLM zero this
+  positionSizePct:       { min: 0.01, max: 1.0 },
+  minSolToOpen:          { min: 0.001, max: 100 },
+  stopLossPct:           { min: -90, max: 0 },          // SL is negative percent
+  takeProfitPct:         { min: 0, max: 1000 },
+  trailingTriggerPct:    { min: 0, max: 500 },
+  trailingDropPct:       { min: 0, max: 100 },
+  pilotCapitalUsd:       { min: 1, max: 100000 },
+  dailyTargetPct:        { min: 1, max: 500 },
+  dailyStopLossPct:      { min: -90, max: 0 },
+  sessionPauseDurationMin: { min: 1, max: 1440 },
+  learningModeDurationMin: { min: 1, max: 1440 },
+  planDays:              { min: 1, max: 365 },
+  vaultPct:              { min: 0, max: 0.95 },
+  vaultIntervalDays:     { min: 1, max: 365 },
+  temperature:           { min: 0, max: 2 },
+  minTvl:                { min: 0, max: 1e9 },
+  maxTvl:                { min: 0, max: 1e10 },
+  minVolume:             { min: 0, max: 1e9 },
+  minMcap:               { min: 0, max: 1e10 },
+  maxMcap:               { min: 0, max: 1e10 },
+};
+
+export function clampConfigValue(key, value) {
+  const b = CONFIG_BOUNDS[key];
+  if (!b) return { value, clamped: false };
+  if (typeof value !== "number" || !Number.isFinite(value)) return { value, clamped: false };
+  if (value < b.min) return { value: b.min, clamped: true, original: value, reason: `clamped to min ${b.min}` };
+  if (value > b.max) return { value: b.max, clamped: true, original: value, reason: `clamped to max ${b.max}` };
+  return { value, clamped: false };
+}
+
+// EX-10: process-local mutex serializing update_config's read-modify-write
+// so concurrent LLM tool calls cannot race on user-config.json.
+let _configWriteChain = Promise.resolve();
+function _configWriteLock(work) {
+  const next = _configWriteChain.then(() => work());
+  _configWriteChain = next.catch(() => {}); // chain continues even on rejection
+  return next;
+}
+
 // ─── Ponyou Control Registry ────────────────────────────────────────────────
 // General agent registers control functions here so the LLM can call them
 // as native tools without creating circular imports.
@@ -255,7 +307,14 @@ const toolMap = {
     return { paused: ok, gate: checkSessionGate() };
   },
   advance_day: ({ actualCapitalUsd } = {}) => {
-    const result = advanceDay(actualCapitalUsd || 0);
+    // EX-9: reject non-numeric or negative capital so an LLM can't corrupt
+    // plan tracking by passing arbitrary values. Operator should call this
+    // tool with a value derived from real wallet snapshot, not free-form.
+    const cap = Number(actualCapitalUsd);
+    if (actualCapitalUsd != null && (!Number.isFinite(cap) || cap < 0)) {
+      return { error: `advance_day rejected: actualCapitalUsd must be a non-negative number (got ${JSON.stringify(actualCapitalUsd)})` };
+    }
+    const result = advanceDay(cap || 0);
     return { result, next_plan: getPlanSummary() };
   },
   // ─── Market Intelligence Tools ───────────────────────────
@@ -417,11 +476,21 @@ const toolMap = {
       return { success: false, error: "changes must be an object", reason };
     }
 
+    const clamped = {};
     for (const [key, val] of Object.entries(changes)) {
       const match = CONFIG_MAP[key] ? [key, CONFIG_MAP[key]] : CONFIG_MAP_LOWER[key.toLowerCase()];
       if (!match) { unknown.push(key); continue; }
       try {
-        applied[match[0]] = normalizeConfigValue(match[0], val);
+        const normalized = normalizeConfigValue(match[0], val);
+        // EX-6: clamp to operationally safe bounds. Without this, an LLM
+        // could disable management cycles entirely by setting an interval
+        // out of cron's valid range, or zero gasReserve.
+        const guard = clampConfigValue(match[0], normalized);
+        applied[match[0]] = guard.value;
+        if (guard.clamped) {
+          clamped[match[0]] = { original: guard.original, used: guard.value, note: guard.reason };
+          log("config_warn", `update_config: ${match[0]} ${guard.reason} (requested=${guard.original})`);
+        }
       } catch (error) {
         return { success: false, error: error.message, key: match[0], reason };
       }
@@ -429,28 +498,38 @@ const toolMap = {
 
     if (Object.keys(applied).length === 0) return { success: false, unknown, reason };
 
-    let userConfig = {};
-    if (fs.existsSync(USER_CONFIG_PATH)) {
-      try {
-        userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
-      } catch (error) {
-        return { success: false, error: `Invalid user-config.json: ${error.message}`, reason };
+    // EX-10: serialize the read-modify-write under a process-local mutex
+    // so concurrent update_config calls cannot lose changes.
+    return _configWriteLock(async () => {
+      let userConfig = {};
+      if (fs.existsSync(USER_CONFIG_PATH)) {
+        try {
+          userConfig = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+        } catch (error) {
+          return { success: false, error: `Invalid user-config.json: ${error.message}`, reason };
+        }
       }
-    }
 
-    for (const [key, val] of Object.entries(applied)) {
-      const [section, field] = CONFIG_MAP[key];
-      config[section][field] = val;
-    }
+      for (const [key, val] of Object.entries(applied)) {
+        const [section, field] = CONFIG_MAP[key];
+        // EX-14: only write into existing sections so an LLM can't pollute
+        // config with novel sections that downstream code doesn't read.
+        if (!config[section]) {
+          log("config_warn", `update_config: section "${section}" not in runtime config — skipping ${key}`);
+          continue;
+        }
+        config[section][field] = val;
+      }
 
-    Object.assign(userConfig, applied);
-    atomicWriteJson(USER_CONFIG_PATH, userConfig);
+      Object.assign(userConfig, applied);
+      atomicWriteJson(USER_CONFIG_PATH, userConfig);
 
-    const intervalChanged = applied.managementIntervalMin != null || applied.screeningIntervalMin != null;
-    if (intervalChanged && _cronRestarter) _cronRestarter();
+      const intervalChanged = applied.managementIntervalMin != null || applied.screeningIntervalMin != null;
+      if (intervalChanged && _cronRestarter) _cronRestarter();
 
-    log("config", `Agent self-tuned: ${JSON.stringify(applied)} — ${reason}`);
-    return { success: true, applied, unknown, reason };
+      log("config", `Agent self-tuned: ${JSON.stringify(applied)} — ${reason}`);
+      return { success: true, applied, clamped, unknown, reason };
+    });
   },
 
   // ─── Ponyou Control Tools (wired via registerPonyouControls) ─
@@ -560,10 +639,13 @@ export async function executeTool(name, args) {
     // Post-execution TOCTOU guard: verify balance didn't drop below safe level
     _maybePostCheck(success);
 
+    // EX-12: log both `result` and `error` consistently so downstream
+    // consumers can filter by either without missing rows.
     logAction({
       tool: name,
       args,
       result: summarizeResult(result),
+      error: success ? null : (result?.error || null),
       duration_ms: duration,
       success,
     });
@@ -599,7 +681,8 @@ export async function executeTool(name, args) {
     return result;
   } catch (error) {
     const duration = Date.now() - startTime;
-    logAction({ tool: name, args, error: error.message, duration_ms: duration, success: false });
+    // EX-12: include `result: null` so the shape matches the success path.
+    logAction({ tool: name, args, result: null, error: error.message, duration_ms: duration, success: false });
     if (isSwapTool(name)) {
       const activeWallet = getActiveWallet();
       if (activeWallet?.address) markWalletError(activeWallet.address);
