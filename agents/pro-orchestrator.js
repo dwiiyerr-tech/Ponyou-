@@ -1009,7 +1009,7 @@ export function proCutlossDecision({ pnlPct, holdMinutes, marketCondition, convi
  *   - All 7 green-flag categories
  *   - Conviction floor + minimum memory samples
  */
-export function proCastNetDecision({
+export async function proCastNetDecision({
   token,
   conviction,
   totalMemorySamples = 0,
@@ -1055,7 +1055,7 @@ export function proCastNetDecision({
     walletContext = null;
   }
 
-  return evaluateCastNet({
+  return await evaluateCastNet({
     token,
     activeStrategy,
     proOrchestratorOn: true,

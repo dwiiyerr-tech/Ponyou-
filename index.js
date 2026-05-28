@@ -3629,7 +3629,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
           // total_experience is populated by getExperienceScore — represents
           // the size of the profit-patterns memory used to derive the score.
           const totalMem = Number(boostedConviction?.experience_score?.total_experience ?? 0);
-          castNetEval = proCastNetDecision({
+          castNetEval = await proCastNetDecision({
             token: enhancedToken,
             conviction: boostedConviction,
             totalMemorySamples: totalMem,

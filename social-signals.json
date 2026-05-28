@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-05-28T19:02:00.412Z",
+  "updatedAt": "2026-05-28T19:32:00.470Z",
   "signals": [
     {
       "symbol": "BONK",
@@ -9,8 +9,8 @@
       "sources": [
         "coingecko::15"
       ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
       "texts": [],
       "gate": {
         "pass": true,
@@ -36,8 +36,8 @@
       "sources": [
         "coingecko::14"
       ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
       "texts": [],
       "gate": {
         "pass": true,
@@ -63,8 +63,8 @@
       "sources": [
         "coingecko::13"
       ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
       "texts": [],
       "gate": {
         "pass": true,
@@ -90,170 +90,8 @@
       "sources": [
         "coingecko::12"
       ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
-      "texts": [],
-      "gate": {
-        "pass": true,
-        "tier": "PASS",
-        "trashScore": 5,
-        "flags": [
-          "low_coingecko_rank"
-        ],
-        "reason": "low_coingecko_rank"
-      },
-      "floodCount": 1,
-      "text": "",
-      "source": "coingecko",
-      "socialScore": 22,
-      "_hunt_source": "social",
-      "_social_source": "coingecko"
-    },
-    {
-      "symbol": "SUI",
-      "mint": null,
-      "mentions": 1,
-      "engagement": 10,
-      "sources": [
-        "coingecko::10"
-      ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
-      "texts": [],
-      "gate": {
-        "pass": true,
-        "tier": "PASS",
-        "trashScore": 5,
-        "flags": [
-          "low_coingecko_rank"
-        ],
-        "reason": "low_coingecko_rank"
-      },
-      "floodCount": 1,
-      "text": "",
-      "source": "coingecko",
-      "socialScore": 22,
-      "_hunt_source": "social",
-      "_social_source": "coingecko"
-    },
-    {
-      "symbol": "VVV",
-      "mint": null,
-      "mentions": 1,
-      "engagement": 9,
-      "sources": [
-        "coingecko::9"
-      ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
-      "texts": [],
-      "gate": {
-        "pass": true,
-        "tier": "PASS",
-        "trashScore": 5,
-        "flags": [
-          "low_coingecko_rank"
-        ],
-        "reason": "low_coingecko_rank"
-      },
-      "floodCount": 1,
-      "text": "",
-      "source": "coingecko",
-      "socialScore": 22,
-      "_hunt_source": "social",
-      "_social_source": "coingecko"
-    },
-    {
-      "symbol": "QAIT",
-      "mint": null,
-      "mentions": 1,
-      "engagement": 8,
-      "sources": [
-        "coingecko::8"
-      ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
-      "texts": [],
-      "gate": {
-        "pass": true,
-        "tier": "PASS",
-        "trashScore": 5,
-        "flags": [
-          "low_coingecko_rank"
-        ],
-        "reason": "low_coingecko_rank"
-      },
-      "floodCount": 1,
-      "text": "",
-      "source": "coingecko",
-      "socialScore": 22,
-      "_hunt_source": "social",
-      "_social_source": "coingecko"
-    },
-    {
-      "symbol": "XPL",
-      "mint": null,
-      "mentions": 1,
-      "engagement": 6,
-      "sources": [
-        "coingecko::6"
-      ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
-      "texts": [],
-      "gate": {
-        "pass": true,
-        "tier": "PASS",
-        "trashScore": 5,
-        "flags": [
-          "low_coingecko_rank"
-        ],
-        "reason": "low_coingecko_rank"
-      },
-      "floodCount": 1,
-      "text": "",
-      "source": "coingecko",
-      "socialScore": 22,
-      "_hunt_source": "social",
-      "_social_source": "coingecko"
-    },
-    {
-      "symbol": "CC",
-      "mint": null,
-      "mentions": 1,
-      "engagement": 5,
-      "sources": [
-        "coingecko::5"
-      ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
-      "texts": [],
-      "gate": {
-        "pass": true,
-        "tier": "PASS",
-        "trashScore": 5,
-        "flags": [
-          "low_coingecko_rank"
-        ],
-        "reason": "low_coingecko_rank"
-      },
-      "floodCount": 1,
-      "text": "",
-      "source": "coingecko",
-      "socialScore": 22,
-      "_hunt_source": "social",
-      "_social_source": "coingecko"
-    },
-    {
-      "symbol": "DEUS",
-      "mint": null,
-      "mentions": 1,
-      "engagement": 4,
-      "sources": [
-        "coingecko::4"
-      ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
       "texts": [],
       "gate": {
         "pass": true,
@@ -275,12 +113,120 @@
       "symbol": "PENGU",
       "mint": null,
       "mentions": 1,
-      "engagement": 3,
+      "engagement": 11,
       "sources": [
-        "coingecko::3"
+        "coingecko::11"
       ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
+      "texts": [],
+      "gate": {
+        "pass": true,
+        "tier": "PASS",
+        "trashScore": 5,
+        "flags": [
+          "low_coingecko_rank"
+        ],
+        "reason": "low_coingecko_rank"
+      },
+      "floodCount": 1,
+      "text": "",
+      "source": "coingecko",
+      "socialScore": 22,
+      "_hunt_source": "social",
+      "_social_source": "coingecko"
+    },
+    {
+      "symbol": "VVV",
+      "mint": null,
+      "mentions": 1,
+      "engagement": 10,
+      "sources": [
+        "coingecko::10"
+      ],
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
+      "texts": [],
+      "gate": {
+        "pass": true,
+        "tier": "PASS",
+        "trashScore": 5,
+        "flags": [
+          "low_coingecko_rank"
+        ],
+        "reason": "low_coingecko_rank"
+      },
+      "floodCount": 1,
+      "text": "",
+      "source": "coingecko",
+      "socialScore": 22,
+      "_hunt_source": "social",
+      "_social_source": "coingecko"
+    },
+    {
+      "symbol": "SUI",
+      "mint": null,
+      "mentions": 1,
+      "engagement": 9,
+      "sources": [
+        "coingecko::9"
+      ],
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
+      "texts": [],
+      "gate": {
+        "pass": true,
+        "tier": "PASS",
+        "trashScore": 5,
+        "flags": [
+          "low_coingecko_rank"
+        ],
+        "reason": "low_coingecko_rank"
+      },
+      "floodCount": 1,
+      "text": "",
+      "source": "coingecko",
+      "socialScore": 22,
+      "_hunt_source": "social",
+      "_social_source": "coingecko"
+    },
+    {
+      "symbol": "ZEC",
+      "mint": null,
+      "mentions": 1,
+      "engagement": 8,
+      "sources": [
+        "coingecko::8"
+      ],
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
+      "texts": [],
+      "gate": {
+        "pass": true,
+        "tier": "PASS",
+        "trashScore": 5,
+        "flags": [
+          "low_coingecko_rank"
+        ],
+        "reason": "low_coingecko_rank"
+      },
+      "floodCount": 1,
+      "text": "",
+      "source": "coingecko",
+      "socialScore": 22,
+      "_hunt_source": "social",
+      "_social_source": "coingecko"
+    },
+    {
+      "symbol": "CTR",
+      "mint": null,
+      "mentions": 1,
+      "engagement": 7,
+      "sources": [
+        "coingecko::7"
+      ],
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
       "texts": [],
       "gate": {
         "pass": true,
@@ -302,12 +248,12 @@
       "symbol": "NEAR",
       "mint": null,
       "mentions": 1,
-      "engagement": 2,
+      "engagement": 5,
       "sources": [
-        "coingecko::2"
+        "coingecko::5"
       ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
       "texts": [],
       "gate": {
         "pass": true,
@@ -326,15 +272,69 @@
       "_social_source": "coingecko"
     },
     {
-      "symbol": "ALLO",
+      "symbol": "TAO",
+      "mint": null,
+      "mentions": 1,
+      "engagement": 4,
+      "sources": [
+        "coingecko::4"
+      ],
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
+      "texts": [],
+      "gate": {
+        "pass": true,
+        "tier": "PASS",
+        "trashScore": 5,
+        "flags": [
+          "low_coingecko_rank"
+        ],
+        "reason": "low_coingecko_rank"
+      },
+      "floodCount": 1,
+      "text": "",
+      "source": "coingecko",
+      "socialScore": 22,
+      "_hunt_source": "social",
+      "_social_source": "coingecko"
+    },
+    {
+      "symbol": "QAIT",
+      "mint": null,
+      "mentions": 1,
+      "engagement": 3,
+      "sources": [
+        "coingecko::3"
+      ],
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
+      "texts": [],
+      "gate": {
+        "pass": true,
+        "tier": "PASS",
+        "trashScore": 5,
+        "flags": [
+          "low_coingecko_rank"
+        ],
+        "reason": "low_coingecko_rank"
+      },
+      "floodCount": 1,
+      "text": "",
+      "source": "coingecko",
+      "socialScore": 22,
+      "_hunt_source": "social",
+      "_social_source": "coingecko"
+    },
+    {
+      "symbol": "XRP",
       "mint": null,
       "mentions": 1,
       "engagement": 1,
       "sources": [
         "coingecko::1"
       ],
-      "firstSeen": "2026-05-28T19:01:56.971Z",
-      "lastSeen": "2026-05-28T19:01:56.971Z",
+      "firstSeen": "2026-05-28T19:31:56.957Z",
+      "lastSeen": "2026-05-28T19:31:56.957Z",
       "texts": [],
       "gate": {
         "pass": true,

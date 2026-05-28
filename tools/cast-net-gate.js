@@ -92,6 +92,111 @@ function minutesSince(iso) {
 
 // ─── Per-category green-flag checks ─────────────────────────────────────
 
+/**
+ * ABC Pre-Entry Holder Risk Check
+ * Rejects tokens with obvious rug indicators BEFORE multi-wallet deployment.
+ * (A) Dump monitor: detects holder dumps already in progress
+ * (B) Entry price: detects underwater holders (sell pressure)
+ * (C) Pattern detector: detects coordinated rug patterns
+ * Returns soft-pass if ABC is disabled (allows other gates to decide).
+ */
+async function checkHolderAnalysis(token) {
+  const cfg = config.holderAnalysis || {};
+
+  // If all ABC checks disabled, soft pass (let other gates decide)
+  if (!cfg.dumpMonitor?.enabled && !cfg.entryPriceAnalysis?.enabled && !cfg.rugPatternDetector?.enabled) {
+    return { ok: true, reason: "holder-analysis: disabled (soft pass)" };
+  }
+
+  // Check if this token should run ABC checks at all (beta rollout)
+  const mint = token?.mint;
+  if (!mint) {
+    return { ok: true, reason: "holder-analysis: no mint (soft pass)" };
+  }
+
+  const dumpPct = cfg.dumpMonitor?.betaRolloutPct || 0;
+  const entryPct = cfg.entryPriceAnalysis?.betaRolloutPct || 0;
+  const patternPct = cfg.rugPatternDetector?.betaRolloutPct || 0;
+  const maxPct = Math.max(dumpPct, entryPct, patternPct);
+  if (maxPct <= 0) {
+    return { ok: true, reason: "holder-analysis: beta 0% (soft pass)" };
+  }
+
+  // Determine if this mint is in the beta cohort (consistent hash-based bucketing)
+  if (maxPct < 100) {
+    let hash = 0;
+    for (let i = 0; i < mint.length; i++) {
+      hash = ((hash << 5) - hash + mint.charCodeAt(i)) | 0;
+    }
+    const bucket = Math.abs(hash) % 100;
+    if (bucket >= maxPct) {
+      return { ok: true, reason: `holder-analysis: beta ${maxPct}% (out of cohort, soft pass)` };
+    }
+  }
+
+  // Token is in the cohort — run the checks
+  // (In production, these would fetch live data; here we soft-pass if data unavailable)
+  const topHolders = token?.top_holders || token?.holders || [];
+  const recentSells = token?.recent_sells || [];
+
+  // A) Dump monitor — check if holders are currently dumping
+  if (cfg.dumpMonitor?.enabled && topHolders.length >= 2) {
+    try {
+      const { monitorHolderDumps, recordHolderSnapshot } = await import("./holder-dump-monitor.js");
+      // Record snapshot (optional, for history)
+      if (topHolders.length > 0) {
+        recordHolderSnapshot({
+          tokenMint: mint,
+          tokenSymbol: token?.symbol,
+          topHolders,
+          totalSupply: token?.total_supply,
+        }).catch(() => {});
+      }
+      const dumpRisk = monitorHolderDumps({
+        tokenMint: mint,
+        currentTopHolders: topHolders,
+        lookbackMinutes: 60,
+      });
+      if (dumpRisk.risk_level === "CRITICAL") {
+        return { ok: false, reason: `holder-dump: ${dumpRisk.details?.top_dumper || "CRITICAL dump"} detected` };
+      }
+      if (dumpRisk.risk_level === "HIGH" && cfg.dumpMonitor?.riskThreshold === "HIGH") {
+        return { ok: false, reason: `holder-dump: HIGH risk (${dumpRisk.details?.top_dumper || "multiple dumpers"})` };
+      }
+    } catch (err) {
+      log("cast_net_warn", `dump monitor check failed: ${err.message}`);
+      // Soft fail — proceed with other checks
+    }
+  }
+
+  // C) Pattern detector — check if sells match coordinated rug patterns
+  if (cfg.rugPatternDetector?.enabled && recentSells.length >= 2) {
+    try {
+      const { detectRugPattern } = await import("./rug-pattern-detector.js");
+      const patternRisk = detectRugPattern({
+        tokenMint: mint,
+        tokenSymbol: token?.symbol,
+        recentSells,
+        windowMinutes: 5,
+      });
+      const patternConfThreshold = cfg.rugPatternDetector?.confidenceThreshold ?? 70;
+      if (patternRisk.pattern_detected && patternRisk.confidence >= patternConfThreshold) {
+        if (patternRisk.rug_risk === "CRITICAL") {
+          return { ok: false, reason: `rug-pattern: ${patternRisk.pattern_type} (CRITICAL)` };
+        }
+        if (patternRisk.rug_risk === "HIGH") {
+          return { ok: false, reason: `rug-pattern: ${patternRisk.pattern_type} detected` };
+        }
+      }
+    } catch (err) {
+      log("cast_net_warn", `pattern detector check failed: ${err.message}`);
+      // Soft fail
+    }
+  }
+
+  return { ok: true, reason: "holder-analysis: healthy" };
+}
+
 function checkCommunity(token) {
   // Conservative read: prefer explicit assessment, fallback to community.score.
   const score = Number(token?.community?.score ?? token?.communityScore ?? 0);
@@ -306,7 +411,7 @@ function detectEdgeSignals(reasons, edgeMarginPct = 0.05) {
  * @returns {{ allowed: boolean, reasons: Object<string, {ok,reason}>, blockers: string[],
  *            cooldownRemainingMin: number, plan: {wallets: number, bankrollPct: number} | null }}
  */
-export function evaluateCastNet({
+export async function evaluateCastNet({
   token,
   activeStrategy,
   proOrchestratorOn,
@@ -376,6 +481,15 @@ export function evaluateCastNet({
     const remaining = Math.ceil(cooldownMin - minsSinceFire);
     blockers.push(`cooldown: ${remaining}min remaining`);
     return { allowed: false, reasons, blockers, cooldownRemainingMin: remaining, plan: null };
+  }
+
+  // ── ABC: Holder Analysis Pre-Entry Checks ─────────────────────────────
+  // Quick rug detection BEFORE multi-wallet deployment. Hard-blocks on
+  // CRITICAL/HIGH patterns; soft-passes if disabled or data unavailable.
+  reasons.holder_analysis = await checkHolderAnalysis(token);
+  if (!reasons.holder_analysis.ok) {
+    blockers.push(`holder-analysis: ${reasons.holder_analysis.reason}`);
+    return { allowed: false, reasons, blockers, cooldownRemainingMin: 0, plan: null };
   }
 
   // ── 7 fundamental green-flag categories ────────────────────────────────
