@@ -92,10 +92,19 @@ export class StrategyEvolutionEngine {
     }
   }
 
-  async checkDegradation({ strategyId, currentLiveWinRate }) {
+  async checkDegradation({ strategyId, currentLiveWinRate, liveTrades = null }) {
+    // SEE-1: require a minimum sample before deactivating. Previously a
+    // strategy with only 4 trades (1 loss = 75% WR → 2 losses = 50% WR)
+    // could be flagged DEGRADED purely from noise. scanAllDegradations
+    // already enforces 25+ trades — this entrypoint now matches.
+    const MIN_TRADES_FOR_DEGRADATION = 25;
+    if (liveTrades != null && liveTrades < MIN_TRADES_FOR_DEGRADATION) {
+      return false;
+    }
     if (currentLiveWinRate < this.#degradationThreshold) {
-      this.#registry.deactivate(strategyId, `degraded: live win rate ${currentLiveWinRate} < ${this.#degradationThreshold}`);
-      this.#bus.emit("strategy_degraded", { id: strategyId, currentLiveWinRate });
+      const sampleSuffix = liveTrades != null ? ` (${liveTrades} trades)` : "";
+      this.#registry.deactivate(strategyId, `degraded: live win rate ${currentLiveWinRate} < ${this.#degradationThreshold}${sampleSuffix}`);
+      this.#bus.emit("strategy_degraded", { id: strategyId, currentLiveWinRate, liveTrades });
       return true;
     }
     return false;
