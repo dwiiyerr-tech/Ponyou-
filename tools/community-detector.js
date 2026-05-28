@@ -21,7 +21,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "../atomic-write.js";
+import { atomicWriteJson, withFileLock } from "../atomic-write.js";
 import { log } from "../logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -184,6 +184,12 @@ function buildDevReason(dev) {
  */
 export function markDevCoinOutcome({ creatorWallet, mint, outcome, longevityHours = 0 }) {
   if (!creatorWallet || !mint) return null;
+  // CD-1: serialize the read-modify-write on dev-reputation.json. Both
+  // scoreDevReputation (screening path) and markDevCoinOutcome (learning
+  // path) write here, and they can fire concurrently when a screening
+  // cycle overlaps with a trade resolution. Without a lock one set of
+  // changes is lost.
+  return withFileLock(DEV_REPUTATION_FILE, async () => {
   const store = loadDevReputation();
   let dev = store.devs[creatorWallet];
   if (!dev) {
@@ -225,6 +231,7 @@ export function markDevCoinOutcome({ creatorWallet, mint, outcome, longevityHour
   store.devs[creatorWallet] = dev;
   saveDevReputation(store);
   return dev;
+  }); // end withFileLock
 }
 
 export function getDevReputation(creatorWallet) {
