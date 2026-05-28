@@ -32,6 +32,16 @@ export function initStagedEntry(position, strategyConfig, initialAmountSol, init
   if (stagePcts[0] <= 0) {
     throw new Error(`staged_entry: invalid stage_pct[0]=${stagePcts[0]} — must be > 0`);
   }
+  // SE-1: validate stage_pct sums to ~100%. Without this, a misconfigured
+  // preset like [50, 30, 30] (sum 110%) silently inflated totalAllocated
+  // because we divide by stage_pct[0] — leading to over-deploys on
+  // subsequent stages. Tolerate small rounding (±2%); reject otherwise.
+  const sum = stagePcts.reduce((s, p) => s + Number(p || 0), 0);
+  if (sum < 98 || sum > 102) {
+    throw new Error(
+      `staged_entry: stage_pct sums to ${sum}% (expected ~100%) — check strategy preset ${strategyConfig?.id || "?"}`,
+    );
+  }
   const totalAllocated = initialAmountSol / (stagePcts[0] / 100);
   const stageAmounts = stagePcts.map(pct => (totalAllocated * pct / 100));
 

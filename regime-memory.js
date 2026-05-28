@@ -112,7 +112,12 @@ export async function recordRegimeTradeOutcome({
   marketCondition = "UNKNOWN",
   tier = "UNKNOWN",
   narrative = "OTHER",
-  verdict = "active",
+  // RGM-5: align with recordRegimeObservation's default ("watch") so a
+  // token that wasn't explicitly verdict-tagged at observation time
+  // updates the SAME regime slot when it later closes a trade. Before
+  // this, the default mismatch ("watch" obs vs "active" trade) split
+  // stats across two keys and the regime win-rate math was broken.
+  verdict = "watch",
   pnl_pct = 0,
   nowMs = Date.now(),
 } = {}) {

@@ -88,12 +88,21 @@ export function computeFractionalKellySize({
   }
 
   const effectiveKelly = clamp(rawKelly * fraction, 0, maxFraction);
+  // KL-2: minFraction is a tradability floor — if Kelly suggests something
+  // below it, we still deploy at minFraction. That's anti-Kelly in spirit
+  // (Kelly says scale DOWN when edge is thin), so we tag the result with
+  // `floor_applied: true` so the caller / dashboard can see when this
+  // override is active and operator can lower minFraction if the bot is
+  // over-sizing on thin-edge candidates.
+  const floorApplied = effectiveKelly < minFraction;
   const boundedKelly = Math.max(minFraction, effectiveKelly);
   const sized = bankrollSol * boundedKelly;
   return {
     deploy_amount_sol: Number(Math.min(baseDeployAmountSol, sized).toFixed(4)),
     kelly_fraction: Number(rawKelly.toFixed(4)),
     effective_fraction: Number(boundedKelly.toFixed(4)),
+    floor_applied: floorApplied,
+    raw_kelly_fraction_after_fraction: Number(effectiveKelly.toFixed(4)),
     inputs,
     used_fallback: false,
     should_skip: false,

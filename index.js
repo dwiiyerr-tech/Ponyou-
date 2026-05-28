@@ -732,7 +732,10 @@ async function stopTradingForDailyGuard(source = "telegram") {
 }
 
 async function handleDailyTradeGuardOutcome(isWin, meta = {}) {
-  const result = recordDailyTradeOutcome(isWin, meta, config.dailyTradeGuard);
+  // recordDailyTradeOutcome is now async (file-locked). Await so the
+  // threshold-trigger metadata is final before the Telegram notification
+  // uses it.
+  const result = await recordDailyTradeOutcome(isWin, meta, config.dailyTradeGuard);
   if (!result.enabled) return result;
   if (!result.triggered) return result;
 

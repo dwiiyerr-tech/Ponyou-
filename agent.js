@@ -29,6 +29,13 @@ const GENERAL_INTENT_ONLY_TOOLS = new Set([
   "list_lessons",
 ]);
 
+// ── Ponyou control tools — always available to GENERAL role ──────────────
+const PONYOU_CONTROL_TOOLS = new Set([
+  "ponyou_get_status", "ponyou_toggle_automation", "ponyou_switch_strategy",
+  "ponyou_toggle_feature", "ponyou_get_agents", "ponyou_get_open_positions",
+  "ponyou_set_confirm_mode",
+]);
+
 // Intent → tool subsets for GENERAL role
 const INTENT_TOOLS = {
   deploy:      new Set(["swap_token", "discover_tokens", "get_token_security_details", "get_solana_gas_fee", "get_token_holders", "get_token_info", "get_wallet_balance"]),
@@ -46,6 +53,7 @@ const INTENT_TOOLS = {
   rugscan:     new Set(["score_rug_risk", "learn_rug_patterns", "list_rug_patterns", "harvest_market_rugs", "get_rug_memory_summary", "report_rug", "get_token_security_details", "list_blacklist", "list_blocked_deployers", "analyze_dex_visibility_risk", "analyze_cabal_play"]),
   narrative:   new Set(["classify_narrative", "get_narrative_heat", "get_trending_narratives", "discover_tokens", "analyze_day_phase"]),
   ticker:      new Set(["resolve_ticker", "list_tickers", "register_ticker", "get_token_info"]),
+  ponyou:      new Set([...PONYOU_CONTROL_TOOLS]),
 };
 
 const INTENT_PATTERNS = [
@@ -62,6 +70,8 @@ const INTENT_PATTERNS = [
   { intent: "ticker",      re: /\b(ticker|symbol|resolve|disambig|mint\s*for|which\s*pepe|which\s*bonk)\b/i },
   { intent: "screen",      re: /\b(screen|candidate|find|search|research|token|dex\s*visibility|three\s*candle|candle|fomo)\b/i },
   { intent: "lessons",     re: /\b(lesson|learned|teach|what did you learn)\b/i },
+  // Ponyou control — status/automation/strategy queries
+  { intent: "ponyou",      re: /\b(status|bot|automation|start bot|stop bot|aktifkan|matikan|pause|resume|strategi|strategy|fitur|feature|agent|posisi|position|pnl hari|performa|gimana|bagaimana|confirm mode)\b/i },
 ];
 
 function getToolsForRole(agentType, goal = "") {
@@ -78,7 +88,16 @@ function getToolsForRole(agentType, goal = "") {
     }
   }
 
-  if (matched.size === 0) return tools.filter(t => !GENERAL_INTENT_ONLY_TOOLS.has(t.function.name));
+  // Always include ponyou control tools for GENERAL role
+  for (const tName of PONYOU_CONTROL_TOOLS) {
+    const tool = tools.find(t => t.function.name === tName);
+    if (tool) matched.add(tool);
+  }
+
+  if (matched.size === PONYOU_CONTROL_TOOLS.size) {
+    // No other intents matched — return all non-restricted tools + control tools
+    return tools.filter(t => !GENERAL_INTENT_ONLY_TOOLS.has(t.function.name));
+  }
   return Array.from(matched);
 }
 import { getWalletBalances } from "./tools/wallet.js";
@@ -158,13 +177,13 @@ function isToolChoiceRequiredError(error) {
  * Core ReAct agent loop.
  */
 export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHistory = [], agentType = "GENERAL", model = null, maxOutputTokens = null, options = {}) {
-  const { interactive = false, onToolStart = null, onToolFinish = null } = options;
+  const { interactive = false, onToolStart = null, onToolFinish = null, systemPromptOverride = null } = options;
   const [portfolio] = await Promise.all([getWalletBalances()]);
   const stateSummary = getStateSummary();
   const positions = Object.fromEntries((stateSummary.positions || []).map(p => [p.position, p]));
   const lessons = getLessonsForPrompt({ agentType });
   const perfSummary = getPerformanceSummary();
-  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary);
+  const systemPrompt = systemPromptOverride || buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary);
   const providerFeatures = getProviderFeatures(currentProvider, config) || {};
 
   let providerMode = "system";
@@ -201,9 +220,16 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
 
       const LLM_TIMEOUT_MS = config.llm.timeoutMs || 120_000;
       for (let attempt = 0; attempt < 3; attempt++) {
+        // AG-1: previously `const timeout` was declared inside the try block
+        // and the catch block referenced it for cleanup — but `const`/`let`
+        // are block-scoped to the try, so `clearTimeout(timeout)` in the
+        // catch threw `ReferenceError: timeout is not defined`. That masked
+        // the real LLM error on every failure. Hoist the binding so both
+        // branches can see it.
+        let timeout = null;
         try {
           const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+          timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
           response = await client.chat.completions.create({
             model: usedModel,
             messages,
@@ -214,7 +240,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           }, { signal: controller.signal });
           clearTimeout(timeout);
         } catch (error) {
-          clearTimeout(timeout); // ensure cleanup even if error thrown during clearTimeout
+          if (timeout) clearTimeout(timeout);
           // Handle LLM timeout / abort
           if (error.name === "AbortError" || error.message?.includes("abort") || error.message?.includes("timeout")) {
             log("agent_error", `LLM call timed out after ${LLM_TIMEOUT_MS}ms (attempt ${attempt + 1}/3)`);

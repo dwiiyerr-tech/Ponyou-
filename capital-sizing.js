@@ -71,8 +71,14 @@ export function getCapitalAwareSizing({
         capped_at: null,
       };
     }
+    // CS-2: previously `baseDeployAmountSol > 0 ? baseDeployAmountSol : Infinity`
+    // — an operator who set baseDeployAmountSol=0 (e.g. to disable trading)
+    // would inadvertently uncap sizing. Treat 0/falsy as "no explicit cap"
+    // but still enforce a hard ceiling at the regime-flat fraction itself,
+    // so the unbounded path is impossible.
+    const cap = baseDeployAmountSol > 0 ? baseDeployAmountSol : bankrollSol * flatFraction;
     const deployAmount = Number(
-      Math.min(bankrollSol * flatFraction, baseDeployAmountSol > 0 ? baseDeployAmountSol : Infinity).toFixed(4)
+      Math.min(bankrollSol * flatFraction, cap).toFixed(4)
     );
     return {
       deploy_amount_sol: deployAmount,
@@ -97,8 +103,10 @@ export function getCapitalAwareSizing({
     }
 
     const fallbackFraction = cfg.growthFallbackFraction;
+    // CS-2: same protection in growth-tier fallback.
+    const cap = baseDeployAmountSol > 0 ? baseDeployAmountSol : bankrollSol * fallbackFraction;
     const fallbackAmount = Number(
-      Math.min(bankrollSol * fallbackFraction, baseDeployAmountSol > 0 ? baseDeployAmountSol : Infinity).toFixed(4)
+      Math.min(bankrollSol * fallbackFraction, cap).toFixed(4)
     );
     return {
       deploy_amount_sol: fallbackAmount,
