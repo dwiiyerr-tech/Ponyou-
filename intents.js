@@ -13,7 +13,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 import { log } from "./logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,23 +46,29 @@ function isExpired(intent, now = Date.now()) {
  * @returns {{id: number, expires_at: string}}
  */
 export function createPendingIntent({ type, args, meta = {}, ttl_min = TTL_MIN_DEFAULT } = {}) {
-  const intents = loadAll();
-  const id = nextId(intents);
-  const created_at = new Date().toISOString();
-  const expires_at = new Date(Date.now() + ttl_min * 60_000).toISOString();
-  const intent = {
-    id,
-    type,
-    args,
-    meta,
-    status: "pending",
-    created_at,
-    expires_at,
-  };
-  intents.push(intent);
-  saveAll(intents);
-  log("intent", `Created pending intent #${id} (${type})`);
-  return intent;
+  // INT-1: serialize the load → max-id → write under a file lock. Two
+  // parallel callers (e.g., LLM and operator both creating a BUY intent
+  // in the same tick) used to read the same baseline max and emit the
+  // SAME id — money-related path, so the dedup must be tight.
+  return withFileLock(FILE, async () => {
+    const intents = loadAll();
+    const id = nextId(intents);
+    const created_at = new Date().toISOString();
+    const expires_at = new Date(Date.now() + ttl_min * 60_000).toISOString();
+    const intent = {
+      id,
+      type,
+      args,
+      meta,
+      status: "pending",
+      created_at,
+      expires_at,
+    };
+    intents.push(intent);
+    saveAll(intents);
+    log("intent", `Created pending intent #${id} (${type})`);
+    return intent;
+  });
 }
 
 export function listPendingIntents() {
@@ -98,17 +104,22 @@ export function getIntent(id) {
  * @returns {object|null} updated intent or null if not found / already consumed
  */
 export function consumeIntent(id, status, extra = {}) {
-  const intents = loadAll();
-  const idx = intents.findIndex(i => Number(i.id) === Number(id));
-  if (idx === -1) return null;
-  const intent = intents[idx];
-  if (intent.status !== "pending") return null;
-  intent.status = status;
-  intent.resolved_at = new Date().toISOString();
-  Object.assign(intent, extra);
-  saveAll(intents);
-  log("intent", `Intent #${id} → ${status}`);
-  return intent;
+  // INT-1 (companion): consumeIntent also does load-modify-save and could
+  // race with createPendingIntent or other consumeIntent calls. Lock so
+  // the status transition is atomic.
+  return withFileLock(FILE, async () => {
+    const intents = loadAll();
+    const idx = intents.findIndex(i => Number(i.id) === Number(id));
+    if (idx === -1) return null;
+    const intent = intents[idx];
+    if (intent.status !== "pending") return null;
+    intent.status = status;
+    intent.resolved_at = new Date().toISOString();
+    Object.assign(intent, extra);
+    saveAll(intents);
+    log("intent", `Intent #${id} → ${status}`);
+    return intent;
+  });
 }
 
 /**

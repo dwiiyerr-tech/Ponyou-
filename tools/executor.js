@@ -714,7 +714,9 @@ async function maybeParkAsConfirmIntent(args) {
   if (!args?.token_out || args.token_out === "SOL") return null;
 
   const strat = getStrategy();
-  const intent = createPendingIntent({
+  // createPendingIntent is now async (withFileLock). Await so the intent
+  // is durably persisted before we return its id to the caller.
+  const intent = await createPendingIntent({
     type: "buy",
     args,
     meta: { strategy_id: strat.id, requested_at: new Date().toISOString() },

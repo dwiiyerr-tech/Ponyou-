@@ -126,6 +126,11 @@ const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 function sanitizeTrashWallets(arr) {
   if (!Array.isArray(arr)) return [];
+  // CW-1: dedup case-SENSITIVELY. Solana base58 addresses are case-sensitive;
+  // "Aa..." and "aa..." are different on-chain accounts. Previously this
+  // used toLowerCase() for dedup, which would collapse two legitimately
+  // different addresses to one (lost entry) or wrongly preserve a
+  // collision pair.
   const seen = new Set();
   const out = [];
   for (const entry of arr) {
@@ -142,9 +147,8 @@ function sanitizeTrashWallets(arr) {
       continue;
     }
     if (!SOLANA_ADDRESS_RE.test(addr)) continue;
-    const lower = addr.toLowerCase();
-    if (seen.has(lower)) continue;
-    seen.add(lower);
+    if (seen.has(addr)) continue;     // case-sensitive
+    seen.add(addr);
     out.push(label ? { address: addr, label } : { address: addr });
   }
   return out;
