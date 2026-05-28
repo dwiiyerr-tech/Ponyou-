@@ -415,13 +415,21 @@ export function getFeeTrackerDashboard() {
 
 /**
  * Extract slippage from Jupiter swap result.
- * Jupiter returns priceImpactPct in the quote response.
+ *
+ * Jupiter V6 returns `priceImpactPct` as a decimal fraction
+ * (e.g., "0.0042" = 0.42% impact). Previously this function did
+ * `* 100` which would give 0.42 — that's percent, not bps, off by 100x.
+ * Now we route the field through normalizePriceImpactToPercent (which
+ * also handles legacy callers that already pass percent) and convert
+ * percent → bps with `* 100`.
  */
+import { normalizePriceImpactToPercent } from "./jupiter.js";
+
 export function extractSlippageFromSwapResult(swapResult, amountInSol) {
   if (!swapResult) return { slippage_bps: 0, slippage_sol: 0 };
 
-  const priceImpactPct = Number(swapResult?.priceImpactPct || 0);
-  const slippageBps = Math.round(Math.abs(priceImpactPct) * 100);
+  const priceImpactPct = normalizePriceImpactToPercent(swapResult?.priceImpactPct) || 0;
+  const slippageBps = Math.round(Math.abs(priceImpactPct) * 100); // percent → bps
   const actualOut = Number(swapResult?.outAmount || 0) / 1e9;
   const expectedOut = amountInSol || 0;
   const slippageSol = actualOut > 0 ? Math.abs(expectedOut - actualOut) : 0;
