@@ -48,8 +48,8 @@ describe("conviction memory", () => {
       }, { minIntervalMs: 0 });
     }
 
-    recordObservationOutcomes([{ mint: "mintB", symbol: "BBB", performance: "GEM" }]);
-    recordTradeConvictionOutcome({ mint: "mintB", symbol: "BBB", pnl_pct: 65, exit_reason: "ROI TP" });
+    await recordObservationOutcomes([{ mint: "mintB", symbol: "BBB", performance: "GEM" }]);
+    await recordTradeConvictionOutcome({ mint: "mintB", symbol: "BBB", pnl_pct: 65, exit_reason: "ROI TP" });
 
     const conviction = getCoinConviction("mintB");
     expect(conviction.gem_count).toBe(1);
@@ -70,8 +70,8 @@ describe("conviction memory", () => {
       kelly: { effective_fraction: 0, should_skip: true },
     }, { minIntervalMs: 0 });
 
-    recordObservationOutcomes([{ mint: "mintC", symbol: "CCC", performance: "TRASH" }]);
-    recordTradeConvictionOutcome({ mint: "mintC", symbol: "CCC", pnl_pct: -42, exit_reason: "Stop Loss" });
+    await recordObservationOutcomes([{ mint: "mintC", symbol: "CCC", performance: "TRASH" }]);
+    await recordTradeConvictionOutcome({ mint: "mintC", symbol: "CCC", pnl_pct: -42, exit_reason: "Stop Loss" });
 
     const conviction = getCoinConviction("mintC");
     expect(conviction.trash_count).toBe(1);
@@ -114,8 +114,8 @@ describe("conviction memory", () => {
         market_condition: "HOT",
         kelly: { effective_fraction: 0.25, should_skip: false },
       }, { minIntervalMs: 0 });
-      recordObservationOutcomes([{ mint: `ai-${i}`, symbol: `AI${i}`, performance: "GEM" }]);
-      recordTradeConvictionOutcome({ mint: `ai-${i}`, symbol: `AI${i}`, pnl_pct: 40, exit_reason: "TP" });
+      await recordObservationOutcomes([{ mint: `ai-${i}`, symbol: `AI${i}`, performance: "GEM" }]);
+      await recordTradeConvictionOutcome({ mint: `ai-${i}`, symbol: `AI${i}`, pnl_pct: 40, exit_reason: "TP" });
     }
 
     const narrative = getNarrativeConviction("AI");
@@ -141,8 +141,8 @@ describe("conviction memory", () => {
         market_condition: "HOT",
         kelly: { effective_fraction: 0.3, should_skip: false },
       }, { minIntervalMs: 0 });
-      recordObservationOutcomes([{ mint: "mintDecay", symbol: "DECAY", performance: "GEM" }]);
-      recordTradeConvictionOutcome({ mint: "mintDecay", symbol: "DECAY", pnl_pct: 55, exit_reason: "TP" });
+      await recordObservationOutcomes([{ mint: "mintDecay", symbol: "DECAY", performance: "GEM" }]);
+      await recordTradeConvictionOutcome({ mint: "mintDecay", symbol: "DECAY", pnl_pct: 55, exit_reason: "TP" });
     } finally {
       Date.now = realNow;
     }

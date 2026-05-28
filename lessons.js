@@ -344,11 +344,21 @@ export function recordRug({ mint, symbol, creator, launchpad, rug_signals, patte
     mem.blacklisted_tokens.push(mint);
   }
   // Blacklist the creator/dev
-  if (creator && !mem.blacklisted_devs.includes(creator)) {
-    mem.blacklisted_devs.push(creator);
-    // Also add a lesson
+  // LS-6: only add the "Block this dev" lesson when the dev is FIRST
+  // blacklisted. The previous code only added a lesson on first blacklist
+  // already (it's inside the `!mem.blacklisted_devs.includes(creator)`
+  // branch), but the same dev could land in our system with a different
+  // capitalization or trailing whitespace from an upstream source — leading
+  // to duplicate "block this dev" lessons. Normalize the comparison.
+  const normalizedCreator = creator ? String(creator).trim() : null;
+  const devAlreadyKnown = normalizedCreator
+    ? mem.blacklisted_devs.some(d => String(d).trim() === normalizedCreator)
+    : false;
+  if (normalizedCreator && !devAlreadyKnown) {
+    mem.blacklisted_devs.push(normalizedCreator);
+    // Also add a lesson — only the FIRST time we see this dev
     addLesson(
-      `DEV ${creator.slice(0, 12)} created rug token ${symbol || mint?.slice(0, 8)}. Block this dev.`,
+      `DEV ${normalizedCreator.slice(0, 12)} created rug token ${symbol || mint?.slice(0, 8)}. Block this dev.`,
       ["rug", "dev", "auto"],
       { role: "SCREENER" }
     );
@@ -680,13 +690,25 @@ function saveDarwinWeights(data) {
  * Update signal weights based on trade outcome.
  * Called when a trade closes: boost winning signals, decay losing signals.
  */
+// LS-4: track unknown-signal occurrences so the operator sees once per
+// process that a signal name we just received isn't in the Darwin registry.
+// Without this, typo'd or newly-introduced signal names were silently
+// dropped from the weighting loop and the operator had no clue.
+const _unknownDarwinSignalsSeen = new Set();
+
 export function updateDarwinWeights(signalsTriggered = [], tradePnl = 0, config = {}) {
   const { boostFactor = 1.05, decayFactor = 0.95, weightFloor = 0.3, weightCeiling = 2.5 } = config;
   const data = loadDarwinWeights();
   const isWin = tradePnl > 0;
 
   for (let signal of signalsTriggered) {
-    if (!data.signals[signal]) continue;
+    if (!data.signals[signal]) {
+      if (signal && !_unknownDarwinSignalsSeen.has(signal)) {
+        _unknownDarwinSignalsSeen.add(signal);
+        console.warn(`[darwin] unknown signal "${signal}" — not in registry; add it to darwin-weights.json or check for a typo`);
+      }
+      continue;
+    }
 
     if (isWin) {
       data.signals[signal].success_count++;

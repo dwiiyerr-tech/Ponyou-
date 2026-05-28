@@ -33,6 +33,25 @@ const HUNTER_SCHEDULE = {
 let _currentSchedule = null;
 let _initialized = false;
 
+// Source-level minScore overrides from learning agent.
+// Key = source string (e.g. "social", "pumpfun"), value = adjusted minScore.
+// High rug-rate sources get their threshold raised; low-rug sources stay at base.
+const _sourceThresholds = {};
+
+// Cap how much learning can raise/lower a source threshold vs the base schedule
+const THRESHOLD_RAISE_CAP = 25; // max +25 on top of base minScore for bad sources
+const THRESHOLD_LOWER_CAP = 10; // max -10 below base minScore for good sources
+
+export function getSourceMinScore(source, baseMinScore) {
+  // HA-1: _sourceThresholds now stores offsets, not absolute thresholds.
+  // Apply the offset against the CURRENT regime baseline so changing
+  // market conditions still tightens / loosens the source uniformly.
+  const offset = _sourceThresholds[source];
+  if (offset === undefined) return baseMinScore;
+  const proposed = baseMinScore + offset;
+  return Math.max(baseMinScore - THRESHOLD_LOWER_CAP, Math.min(baseMinScore + THRESHOLD_RAISE_CAP, proposed));
+}
+
 export function initHuntersAgent() {
   if (_initialized) return;
   _initialized = true;
@@ -70,6 +89,59 @@ export function initHuntersAgent() {
     _currentSchedule = { active: false, sources: [], reason: payload?.reason || "gate_blocked" };
     updateAgentHealth(AGENT_NAME, { lastGateBlock: payload?.reason, gateBlockedAt: new Date().toISOString() });
   });
+
+  // ── Learning feedback loop — adjust per-source minScore based on rug rates ──
+  // High rug-rate source → raise threshold (harder to pass)
+  // High win-rate source → lower threshold slightly (easier to pass)
+  agentBus.subscribe("learning:hunter_weights", ({ ranking } = {}) => {
+    if (!Array.isArray(ranking) || ranking.length === 0) return;
+
+    // HA-1: previously cached `baseMinScore` from whatever `_currentSchedule`
+    // happened to hold at this moment. If learning fired before any
+    // `market:update` (cold start) baseMinScore was the fallback 30, and
+    // `_sourceThresholds` got pinned to that floor even though the regime
+    // might later be COLD (base 45). Store raw OFFSETS instead so they
+    // can be re-applied against the CURRENT regime base whenever a token
+    // is filtered.
+    let changed = 0;
+
+    for (const entry of ranking) {
+      const src = entry.source;
+      if (!src || src === "unknown") continue;
+
+      // Need at least 5 closed trades from this source to trust the stats
+      const closed = (entry.won || 0) + (entry.lost || 0) + (entry.rugged || 0);
+      if (closed < 5) continue;
+
+      const rugRate = entry.rug_rate || 0;
+      const winRate = entry.win_rate || 0;
+
+      // HA-1: compute OFFSET from baseline rather than an absolute threshold.
+      // The offset gets applied to whatever regime base is current when
+      // getSourceMinScore() is called, so changing regimes doesn't strand
+      // the old learned rule at a stale baseline.
+      let offset = 0;
+      if (rugRate >= 0.60)      offset = 25;   // very bad — choke hard
+      else if (rugRate >= 0.45) offset = 18;
+      else if (rugRate >= 0.30) offset = 10;
+      else if (rugRate >= 0.20) offset = 5;
+      else if (winRate >= 0.55) offset = -8;   // great source — open up
+      else if (winRate >= 0.40) offset = -4;
+
+      if (_sourceThresholds[src] !== offset) {
+        _sourceThresholds[src] = offset;
+        log("hunters", `Learning: source "${src}" offset → ${offset >= 0 ? "+" + offset : offset} (rug=${(rugRate * 100).toFixed(0)}% win=${(winRate * 100).toFixed(0)}% n=${closed})`);
+        changed++;
+      }
+    }
+
+    if (changed > 0) {
+      updateAgentHealth(AGENT_NAME, {
+        source_thresholds: { ..._sourceThresholds },
+        thresholds_updated_at: new Date().toISOString(),
+      });
+    }
+  });
 }
 
 export async function runHuntersExpedition({ strategy = null } = {}) {
@@ -94,27 +166,51 @@ export async function runHuntersExpedition({ strategy = null } = {}) {
   try {
     const prey = await runHunterExpedition({ strategy: huntingStrategy });
 
-    if (prey.length > 0) {
-      // Emit prey to bus for Screening Agent
+    // Tag each token with its hunt source for learning-agent attribution
+    for (const token of prey) {
+      if (!token._hunt_source) {
+        token._hunt_source = token._source || huntingStrategy.sources?.[0] || "hunters";
+      }
+    }
+
+    // Apply per-source learned thresholds — filter out tokens from high-rug sources
+    const baseMinScore = huntingStrategy.minScore || 30;
+    const filteredPrey = prey.filter(token => {
+      const src = token._hunt_source;
+      const effectiveMin = getSourceMinScore(src, baseMinScore);
+      const score = token._hunter_score ?? token.score ?? 0;
+      if (score < effectiveMin) {
+        log("hunters", `Source filter: ${token.symbol || token.mint?.slice(0, 8)} from "${src}" score=${score} < threshold=${effectiveMin} — dropped`);
+        return false;
+      }
+      return true;
+    });
+
+    if (filteredPrey.length < prey.length) {
+      log("hunters", `Source thresholds dropped ${prey.length - filteredPrey.length}/${prey.length} tokens`);
+    }
+
+    if (filteredPrey.length > 0) {
       agentBus.emit("hunters:prey_ready", {
-        prey,
+        prey: filteredPrey,
         source: huntingStrategy.sources,
         marketCondition: _currentSchedule?.marketCondition || "UNKNOWN",
         timestamp: Date.now(),
       });
 
-      const priority = prey.filter(p => p._hunter_score >= 50).length;
-      log("hunters", `Prey dispatched: ${prey.length} tokens (${priority} priority) → bus`);
+      const priority = filteredPrey.filter(p => p._hunter_score >= 50).length;
+      log("hunters", `Prey dispatched: ${filteredPrey.length} tokens (${priority} priority) → bus`);
     }
 
     updateAgentHealth(AGENT_NAME, {
       lastExpedition: new Date().toISOString(),
-      lastPreyCount: prey.length,
+      lastPreyCount: filteredPrey.length,
       lastDurationMs: Date.now() - startTime,
       hunterStats: getHunterStats(),
+      source_thresholds: Object.keys(_sourceThresholds).length > 0 ? { ..._sourceThresholds } : undefined,
     });
 
-    return prey;
+    return filteredPrey;
   } catch (e) {
     log("hunters_error", `Expedition failed: ${e.message}`);
     updateAgentHealth(AGENT_NAME, { lastError: e.message });
