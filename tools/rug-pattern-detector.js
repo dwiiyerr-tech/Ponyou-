@@ -21,7 +21,9 @@ import { atomicWriteJson, withFileLock } from "../atomic-write.js";
 import { log } from "../logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PATTERN_DETECTIONS_FILE = path.join(__dirname, "..", "rug-patterns.json");
+// rug-patterns.js (clustering) already owns rug-patterns-seed.json +
+// rug-patterns-learned.json. Use a distinct filename to avoid confusion.
+const PATTERN_DETECTIONS_FILE = path.join(__dirname, "..", "rug-pattern-detections.json");
 
 function safeNum(v, fallback = 0) {
   const n = Number(v);
@@ -71,8 +73,26 @@ export function detectRugPattern({
     };
   }
 
+  // Drop sells with invalid timestamps before sorting so NaN doesn't poison
+  // the timing math below (a single invalid timestamp would make timeSpan NaN
+  // and silently disable the timing-cluster + ladder signals).
+  const validSells = recentSells.filter((s) => {
+    const t = new Date(s?.timestamp).getTime();
+    return Number.isFinite(t) && t > 0;
+  });
+  if (validSells.length < 2) {
+    return {
+      pattern_detected: false,
+      pattern_type: "UNKNOWN",
+      confidence: 0,
+      rug_risk: "LOW",
+      signals: [],
+      details: { sells_analyzed: validSells.length, dropped: recentSells.length - validSells.length },
+    };
+  }
+
   // Sort by timestamp
-  const sortedSells = [...recentSells].sort(
+  const sortedSells = [...validSells].sort(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
 
@@ -95,29 +115,34 @@ export function detectRugPattern({
   }
 
   // 2. Amount Correlation: Are amounts similar (indicating coordinated wallets)?
+  // Skip the check entirely when avgAmount is 0 — otherwise CV is 0 and we'd
+  // incorrectly fire "uniform_dump_amounts" on a list of zero-value sells.
   const amounts = sortedSells.map((s) => safeNum(s.amountUsd || s.amount));
   const avgAmount = amounts.reduce((a, b) => a + b, 0) / amounts.length;
-  const amountDeviation = Math.sqrt(
-    amounts.reduce((sum, a) => sum + Math.pow(a - avgAmount, 2), 0) / amounts.length
-  );
-  const coefficientOfVariation = avgAmount > 0 ? amountDeviation / avgAmount : 0;
+  let coefficientOfVariation = 1; // sentinel: "high variation" = no signal
+  if (avgAmount > 0) {
+    const amountDeviation = Math.sqrt(
+      amounts.reduce((sum, a) => sum + Math.pow(a - avgAmount, 2), 0) / amounts.length
+    );
+    coefficientOfVariation = amountDeviation / avgAmount;
 
-  if (coefficientOfVariation < 0.15) {
-    // CV < 15% = very consistent amounts
-    signals.push({
-      signal: "uniform_dump_amounts",
-      detail: `All sells within ±${(coefficientOfVariation * 100).toFixed(0)}% of avg`,
-      strength: "HIGH",
-    });
-    score += 20;
-  } else if (coefficientOfVariation < 0.3) {
-    // CV < 30% = moderately consistent
-    signals.push({
-      signal: "similar_dump_amounts",
-      detail: `Amounts vary ~${(coefficientOfVariation * 100).toFixed(0)}%`,
-      strength: "MEDIUM",
-    });
-    score += 10;
+    if (coefficientOfVariation < 0.15) {
+      // CV < 15% = very consistent amounts
+      signals.push({
+        signal: "uniform_dump_amounts",
+        detail: `All sells within ±${(coefficientOfVariation * 100).toFixed(0)}% of avg`,
+        strength: "HIGH",
+      });
+      score += 20;
+    } else if (coefficientOfVariation < 0.3) {
+      // CV < 30% = moderately consistent
+      signals.push({
+        signal: "similar_dump_amounts",
+        detail: `Amounts vary ~${(coefficientOfVariation * 100).toFixed(0)}%`,
+        strength: "MEDIUM",
+      });
+      score += 10;
+    }
   }
 
   // 3. Sequence Pattern: Check for ladder (sequential) or staged exits
@@ -145,8 +170,12 @@ export function detectRugPattern({
     score += 20;
   }
 
-  // 4. Flash dump: many holders sell >50% in very short time
-  const largeExits = amounts.filter((a) => a >= avgAmount * 0.5).length;
+  // 4. Flash dump: many holders sell >=50% of avg amount in very short time.
+  // Requires a non-zero avgAmount — otherwise "a >= 0" matches every sell and
+  // flash_dump triggers on noise.
+  const largeExits = avgAmount > 0
+    ? amounts.filter((a) => a >= avgAmount * 0.5).length
+    : 0;
   if (largeExits >= 3 && timeSpan < 30000) {
     signals.push({
       signal: "flash_dump",
@@ -157,12 +186,15 @@ export function detectRugPattern({
   }
 
   // 5. Diversity check: Are these wallets likely coordinated or independent?
-  const uniqueAddresses = new Set(sortedSells.map((s) => s.address)).size;
-  if (uniqueAddresses !== sortedSells.length) {
+  // Exclude empty / missing addresses so an unknown-wallet batch doesn't get
+  // mis-flagged as "same wallet sold multiple times".
+  const nonEmptyAddrs = sortedSells.map((s) => s?.address).filter(Boolean);
+  const uniqueAddresses = new Set(nonEmptyAddrs).size;
+  if (nonEmptyAddrs.length >= 2 && uniqueAddresses !== nonEmptyAddrs.length) {
     // Duplicate addresses = same wallet selling multiple times
     signals.push({
       signal: "duplicate_wallet_sells",
-      detail: `${sortedSells.length} sells from only ${uniqueAddresses} unique wallets`,
+      detail: `${nonEmptyAddrs.length} sells from only ${uniqueAddresses} unique wallets`,
       strength: "MEDIUM",
     });
     score += 15;
@@ -198,25 +230,28 @@ export function detectRugPattern({
     recommendation = "OK";
   }
 
-  // Persist detection
-  const store = loadPatterns();
+  // Persist detection — only log high-confidence patterns. Serialize the
+  // read-modify-write under file lock so concurrent positions don't race.
+  // Fire-and-forget: caller doesn't depend on persistence to read result.
   if (score >= 30) {
-    // Only log high-confidence patterns
-    store.detections.push({
-      mint: tokenMint,
-      symbol: tokenSymbol,
-      pattern_type,
-      confidence: score,
-      rug_risk,
-      signals: signals.slice(0, 3),
-      sells_count: sortedSells.length,
-      time_window_sec: (timeSpan / 1000).toFixed(0),
-      detected_at: nowIso(),
-    });
-    if (store.detections.length > 200) {
-      store.detections = store.detections.slice(-200);
-    }
-    savePatterns(store);
+    withFileLock(PATTERN_DETECTIONS_FILE, async () => {
+      const store = loadPatterns();
+      store.detections.push({
+        mint: tokenMint,
+        symbol: tokenSymbol,
+        pattern_type,
+        confidence: score,
+        rug_risk,
+        signals: signals.slice(0, 3),
+        sells_count: sortedSells.length,
+        time_window_sec: (timeSpan / 1000).toFixed(0),
+        detected_at: nowIso(),
+      });
+      if (store.detections.length > 200) {
+        store.detections = store.detections.slice(-200);
+      }
+      savePatterns(store);
+    }).catch((err) => log("rug_pattern_warn", `persist failed: ${err.message}`));
   }
 
   return {

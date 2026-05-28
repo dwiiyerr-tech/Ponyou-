@@ -1792,6 +1792,7 @@ async function checkDeterministicExits(tokens) {
 
       const holderSignal = await checkHolderExitSignals({
         position: tracked,
+        mint: token.mint,
         currentPrice,
         topHolders,
         recentSells,
@@ -1801,10 +1802,12 @@ async function checkDeterministicExits(tokens) {
       });
 
       if (holderSignal && holderSignal.risk_level === "CRITICAL") {
+        const topSig = holderSignal.signals?.[0];
+        const reasonDetail = topSig?.reason || topSig?.details?.top_dumper || "large dump";
         exits.push({
           mint: token.mint,
           symbol: token.symbol,
-          reason: `holder_analysis: ${holderSignal.signals?.[0]?.tool || "critical"} — ${holderSignal.details?.top_dumper || "large dump"} (${holderSignal.confidence}% confidence)`,
+          reason: `holder_analysis: ${topSig?.tool || "critical"} — ${reasonDetail} (${holderSignal.confidence}% confidence)`,
           pnl_pct: currentPnlPct,
           is_loss: currentPnlPct < 0,
           wallet_address: token.wallet_address || null,
@@ -1814,20 +1817,22 @@ async function checkDeterministicExits(tokens) {
         });
         log(
           "holder_exit",
-          `🚨 CRITICAL holder risk on ${token.symbol}: ${holderSignal.details?.top_dumper || "coordinated dump"} detected — EXITING`
+          `🚨 CRITICAL holder risk on ${token.symbol}: ${reasonDetail} — EXITING`
         );
         if (telegramEnabled()) {
           sendHTML(
-            `🚨 <b>HOLDER ALERT</b> — ${token.symbol}\n<code>${holderSignal.signals?.[0]?.tool || "Risk"}</code>\n${holderSignal.signals?.[0]?.reason || "Critical holder risk"}`
+            `🚨 <b>HOLDER ALERT</b> — ${htmlEscape(token.symbol || "")}\n<code>${htmlEscape(topSig?.tool || "Risk")}</code>\n${htmlEscape(reasonDetail)}`
           ).catch(() => {});
         }
         continue;
       } else if (holderSignal && holderSignal.risk_level === "HIGH" && holderSignal.confidence >= 80) {
         // HIGH risk with strong confidence — also exit but log for review
+        const topSig = holderSignal.signals?.[0];
+        const reasonDetail = topSig?.reason || "high dump risk";
         exits.push({
           mint: token.mint,
           symbol: token.symbol,
-          reason: `holder_analysis_high: ${holderSignal.signals?.[0]?.tool || "high risk"} (${holderSignal.confidence}%)`,
+          reason: `holder_analysis_high: ${topSig?.tool || "high risk"} (${holderSignal.confidence}%)`,
           pnl_pct: currentPnlPct,
           is_loss: currentPnlPct < 0,
           wallet_address: token.wallet_address || null,
@@ -1837,11 +1842,11 @@ async function checkDeterministicExits(tokens) {
         });
         log(
           "holder_exit",
-          `⚠️ HIGH holder risk on ${token.symbol}: ${holderSignal.signals?.[0]?.reason || "high dump risk"} — EXITING`
+          `⚠️ HIGH holder risk on ${token.symbol}: ${reasonDetail} — EXITING`
         );
         if (telegramEnabled()) {
           sendHTML(
-            `⚠️ <b>HOLDER RISK</b> — ${token.symbol}\n${holderSignal.signals?.[0]?.tool || "Risk detected"}`
+            `⚠️ <b>HOLDER RISK</b> — ${htmlEscape(token.symbol || "")}\n${htmlEscape(topSig?.tool || "Risk detected")}`
           ).catch(() => {});
         }
         continue;
@@ -1853,7 +1858,7 @@ async function checkDeterministicExits(tokens) {
         );
       }
     } catch (e) {
-      recordError("holder_analysis_error", e);
+      recordError("holder_analysis_error");
       log("holder_exit_error", `${token?.mint?.slice(0, 8)}: ${e.message || e}`);
     }
 
