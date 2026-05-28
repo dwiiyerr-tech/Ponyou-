@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(__dirname, "daily-trade-guard-state.json");
@@ -30,7 +30,19 @@ function loadState(nowMs = Date.now()) {
   try {
     const parsed = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
     if (!parsed || typeof parsed !== "object") return defaultState(nowMs);
-    if (parsed.date !== dateKey(nowMs)) return defaultState(nowMs);
+    if (parsed.date !== dateKey(nowMs)) {
+      // DTG-4: surface that a pending decision crossed the day boundary
+      // and is being discarded. Without this log, operators didn't know
+      // an unresolved /continue|/stop went away after midnight UTC.
+      if (parsed.pendingDecision) {
+        // Best-effort log; this module avoids importing logger to keep
+        // it lightweight for tests.
+        try {
+          console.warn(`[daily_trade_guard] Date rolled (${parsed.date} → ${dateKey(nowMs)}) with pending decision ${parsed.pendingDecision.id || "?"} — discarded`);
+        } catch (_) {}
+      }
+      return defaultState(nowMs);
+    }
     return {
       ...defaultState(nowMs),
       ...parsed,
@@ -108,60 +120,66 @@ export function getDailyTradeGuardStatus(guardConfig = {}, options = {}) {
 }
 
 export function recordDailyTradeOutcome(isWin, meta = {}, guardConfig = {}, options = {}) {
-  const cfg = normalizeDailyTradeGuardConfig(guardConfig);
-  const nowMs = options.nowMs ?? Date.now();
-  let state = loadState(nowMs);
+  // DTG-1: serialize the read-modify-write under a file lock so two parallel
+  // exits resolving in the same tick can't both load the same baseline,
+  // both increment, and both save — losing one increment. Without this
+  // the daily guard could miss a threshold and let the bot over-trade.
+  return withFileLock(STATE_FILE, async () => {
+    const cfg = normalizeDailyTradeGuardConfig(guardConfig);
+    const nowMs = options.nowMs ?? Date.now();
+    let state = loadState(nowMs);
 
-  if (!cfg.enabled || typeof isWin !== "boolean") {
-    return { ...publicStatus(state, cfg), triggered: false };
-  }
+    if (!cfg.enabled || typeof isWin !== "boolean") {
+      return { ...publicStatus(state, cfg), triggered: false };
+    }
 
-  const outcomeType = isWin ? "win" : "loss";
-  state.trades = (state.trades || 0) + 1;
-  if (isWin) state.wins = (state.wins || 0) + 1;
-  else state.losses = (state.losses || 0) + 1;
+    const outcomeType = isWin ? "win" : "loss";
+    state.trades = (state.trades || 0) + 1;
+    if (isWin) state.wins = (state.wins || 0) + 1;
+    else state.losses = (state.losses || 0) + 1;
 
-  const count = isWin ? state.wins : state.losses;
-  const limit = isWin ? cfg.maxWinsPerDay : cfg.maxLossesPerDay;
-  const key = thresholdKey(outcomeType, limit);
-  const alreadyAcknowledged = (state.acknowledgedThresholds || []).includes(key);
-  const canTrigger = state.status !== "pending_decision" && state.status !== "stopped";
-  const triggered = count >= limit && !alreadyAcknowledged && canTrigger;
+    const count = isWin ? state.wins : state.losses;
+    const limit = isWin ? cfg.maxWinsPerDay : cfg.maxLossesPerDay;
+    const key = thresholdKey(outcomeType, limit);
+    const alreadyAcknowledged = (state.acknowledgedThresholds || []).includes(key);
+    const canTrigger = state.status !== "pending_decision" && state.status !== "stopped";
+    const triggered = count >= limit && !alreadyAcknowledged && canTrigger;
 
-  if (triggered) {
-    state.status = "pending_decision";
-    state.pendingDecision = {
-      id: `${state.date}-${outcomeType}-${limit}`,
-      threshold: outcomeType,
+    if (triggered) {
+      state.status = "pending_decision";
+      state.pendingDecision = {
+        id: `${state.date}-${outcomeType}-${limit}`,
+        threshold: outcomeType,
+        count,
+        limit,
+        triggeredAt: new Date(nowMs).toISOString(),
+        symbol: meta.symbol || null,
+        mint: meta.mint || null,
+        pnl_pct: Number.isFinite(meta.pnl_pct) ? meta.pnl_pct : null,
+        exit_reason: meta.exit_reason || null,
+      };
+      state.events.push(compactEvent({
+        ts: new Date(nowMs).toISOString(),
+        type: "threshold_hit",
+        threshold: outcomeType,
+        count,
+        limit,
+        symbol: meta.symbol || null,
+        mint: meta.mint || null,
+        pnl_pct: Number.isFinite(meta.pnl_pct) ? meta.pnl_pct : null,
+      }));
+    }
+
+    if (state.events.length > 100) state.events = state.events.slice(-100);
+    state = saveState(state, nowMs);
+    return {
+      ...publicStatus(state, cfg),
+      triggered,
+      threshold: triggered ? outcomeType : null,
       count,
       limit,
-      triggeredAt: new Date(nowMs).toISOString(),
-      symbol: meta.symbol || null,
-      mint: meta.mint || null,
-      pnl_pct: Number.isFinite(meta.pnl_pct) ? meta.pnl_pct : null,
-      exit_reason: meta.exit_reason || null,
     };
-    state.events.push(compactEvent({
-      ts: new Date(nowMs).toISOString(),
-      type: "threshold_hit",
-      threshold: outcomeType,
-      count,
-      limit,
-      symbol: meta.symbol || null,
-      mint: meta.mint || null,
-      pnl_pct: Number.isFinite(meta.pnl_pct) ? meta.pnl_pct : null,
-    }));
-  }
-
-  if (state.events.length > 100) state.events = state.events.slice(-100);
-  state = saveState(state, nowMs);
-  return {
-    ...publicStatus(state, cfg),
-    triggered,
-    threshold: triggered ? outcomeType : null,
-    count,
-    limit,
-  };
+  });
 }
 
 export function decideDailyTradeGuard(action, guardConfig = {}, options = {}) {
