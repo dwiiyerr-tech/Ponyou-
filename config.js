@@ -568,12 +568,14 @@ jupiter: {
   // B) Entry Price Analysis: detect underwater holders = sell pressure
   // C) Rug Pattern Detector: identify coordinated multi-wallet rugs
   //
-  // Start with low beta rollout % to monitor false positives before expanding.
+  // ABC improvements enabled by default, starting with low beta rollout %
+  // to monitor false positives before expanding (5% → 25% → 100%).
+  // Override via user-config.json: { holderAnalysis: { dumpMonitor: { enabled: false } } }
   holderAnalysis: {
-    // A) Holder Dump Monitor — detect large holder exits
+    // A) Holder Dump Monitor — detect large holder exits (>20% in 1h)
     dumpMonitor: {
       enabled: u.holderAnalysis?.dumpMonitor?.enabled ??
-               u.holderDumpMonitorEnabled ?? false,
+               u.holderDumpMonitorEnabled ?? true,
       betaRolloutPct: Math.max(0, Math.min(100,
         Number(u.holderAnalysis?.dumpMonitor?.betaRolloutPct ??
                u.holderDumpMonitorBetaPct ?? 5)
@@ -581,10 +583,10 @@ jupiter: {
       riskThreshold: u.holderAnalysis?.dumpMonitor?.riskThreshold ?? "HIGH",
     },
 
-    // B) Entry Price Analysis — detect underwater holders (sell pressure)
+    // B) Entry Price Analysis — detect underwater holders (>80% at loss = high sell pressure)
     entryPriceAnalysis: {
       enabled: u.holderAnalysis?.entryPriceAnalysis?.enabled ??
-               u.holderEntryPriceEnabled ?? false,
+               u.holderEntryPriceEnabled ?? true,
       betaRolloutPct: Math.max(0, Math.min(100,
         Number(u.holderAnalysis?.entryPriceAnalysis?.betaRolloutPct ??
                u.holderEntryPriceBetaPct ?? 10)
@@ -594,10 +596,10 @@ jupiter: {
       )),
     },
 
-    // C) Rug Pattern Detector — identify coordinated rug patterns
+    // C) Rug Pattern Detector — identify coordinated rug patterns (flash dump, ladder, etc)
     rugPatternDetector: {
       enabled: u.holderAnalysis?.rugPatternDetector?.enabled ??
-               u.holderRugPatternDetectorEnabled ?? false,
+               u.holderRugPatternDetectorEnabled ?? true,
       betaRolloutPct: Math.max(0, Math.min(100,
         Number(u.holderAnalysis?.rugPatternDetector?.betaRolloutPct ??
                u.holderRugPatternBetaPct ?? 3)
