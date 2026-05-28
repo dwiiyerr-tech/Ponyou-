@@ -245,8 +245,13 @@ export function writeEnv(env) {
       continue;
     }
     const value = env[key];
-    if (value == null || value === "") continue; // drop empty
-    out.push(`${key}=${value}`);
+    // LLM-1: previously empty values for existing keys silently DROPPED the
+    // line entirely — an operator clearing a field via the wizard would
+    // find the env var deleted, not set to "". Treat undefined as drop
+    // (explicit "remove this key"); empty-string keeps the key with empty
+    // value so semantics are consistent with "value cleared, not removed".
+    if (value == null) continue;      // explicit deletion
+    out.push(`${key}=${value}`);       // empty-string is preserved as `KEY=`
     written.add(key);
   }
 

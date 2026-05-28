@@ -131,6 +131,14 @@ export function runProAnalysis() {
     recommendations: [],
   };
 
+  // PO-4/PO-5: minimum sample thresholds for recommendation labels.
+  // Without these, a 1-win/1-trade regime got tagged "PREFERRED" purely
+  // from noise, and a narrative with obs=100, rugs=2 (2% rug rate) got
+  // tagged "AVOID" just because the absolute count crossed 2.
+  const MIN_REGIME_TRADES = 10;
+  const MIN_NARRATIVE_OBS = 10;
+  const HIGH_RUG_RATE = 0.10;        // 10% rug rate triggers AVOID
+
   // 1. Regime analysis — which regimes produce best returns?
   const regimeMem = tryReadJson("regime-memory.json") || {};
   const regimes = regimeMem.regimes || regimeMem.observations || {};
@@ -139,12 +147,16 @@ export function runProAnalysis() {
     const wins = data.wins || 0;
     const wr = trades > 0 ? wins / trades : 0;
     const avgPnl = data.avg_pnl_pct || data.cumulative_pnl || 0;
+    const hasSample = trades >= MIN_REGIME_TRADES;
     intelligence.regimes[name] = {
       trades,
       winRate: wr,
       avgPnl,
       score: wr * 0.6 + (avgPnl > 0 ? 0.4 : 0),
-      recommendation: wr >= 0.55 ? "PREFERRED" : wr >= 0.40 ? "NEUTRAL" : "AVOID",
+      recommendation: !hasSample ? "INSUFFICIENT_DATA"
+        : wr >= 0.55 ? "PREFERRED"
+        : wr >= 0.40 ? "NEUTRAL"
+        : "AVOID",
     };
   }
 
@@ -157,15 +169,18 @@ export function runProAnalysis() {
     const gems = data.gem_count || 0;
     const rugs = data.rug_count || 0;
     const wr = obs > 0 ? wins / obs : 0;
+    const rugRate = obs > 0 ? rugs / obs : 0;
+    const hasSample = obs >= MIN_NARRATIVE_OBS;
     intelligence.narratives[name] = {
       observations: obs,
       winRate: wr,
       gems,
       rugs,
-      riskScore: rugs > 0 ? rugs / obs : 0,
-      recommendation: wr >= 0.50 && rugs === 0 ? "STRONG_BUY"
+      riskScore: rugRate,
+      recommendation: !hasSample ? "INSUFFICIENT_DATA"
+        : wr >= 0.50 && rugRate === 0 ? "STRONG_BUY"
         : wr >= 0.40 ? "BUY"
-        : rugs >= 2 ? "AVOID"
+        : rugRate >= HIGH_RUG_RATE ? "AVOID"   // PO-5: rate, not absolute count
         : "NEUTRAL",
     };
   }
@@ -1014,11 +1029,24 @@ export function initProOrchestrator() {
   });
 
   // Listen for trade outcomes → continuous learning
+  // PO-6: previously this incremented `_tradesSinceLastAnalysis` but never
+  // acted on it. Now actually refreshes pro-intel every N trades and emits
+  // the result so the orchestrator-agent's selector consumes it.
+  const ANALYSIS_REFRESH_EVERY = 10;
   agentBus.subscribe("management:llm_exit_executed", () => {
     if (!_proModeActive) return;
-    // Refresh analysis after every 10 trades
     _tradesSinceLastAnalysis += 1;
     updateAgentHealth(AGENT_NAME, { tradesSinceLastAnalysis: _tradesSinceLastAnalysis });
+    if (_tradesSinceLastAnalysis >= ANALYSIS_REFRESH_EVERY) {
+      _tradesSinceLastAnalysis = 0;
+      // Invalidate the cache so runProAnalysis re-reads disk.
+      clearProAnalysisCache();
+      const intel = runProAnalysis();
+      if (intel) {
+        agentBus.emit("pro:intelligence_ready", intel);
+        log("pro_orchestrator", `Auto-refreshed analysis after ${ANALYSIS_REFRESH_EVERY} trades`);
+      }
+    }
   });
 }
 
