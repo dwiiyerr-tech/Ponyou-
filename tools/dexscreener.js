@@ -14,8 +14,9 @@ import { discoverBirdeyeTokens, enrichTokensWithBirdeye, isBirdeyeEnabled } from
 
 const DS_BASE = "https://api.dexscreener.com";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
-const JUPITER_TOKEN_API = "https://token.jup.ag/strict";
-const JUPITER_QUOTE_API = "https://quote-api.jup.ag/v6";
+// Jupiter retired token.jup.ag and quote-api.jup.ag in 2025.
+const JUPITER_TOKEN_API = "https://lite-api.jup.ag/tokens/v2/tag?query=verified";
+const JUPITER_QUOTE_API = "https://lite-api.jup.ag/swap/v1";
 
 // Quality floor for discovery pre-filter — rejects obvious dust/scams
 // before they reach the trash filter, saving API calls and cycles.
@@ -36,6 +37,7 @@ function getSolanaConnection() {
 
 async function fetchDS(url, retries = 2) {
   let lastErr;
+  let saw429 = false;
   for (let i = 0; i <= retries; i++) {
     if (i > 0) await new Promise(r => setTimeout(r, 1200 * i));
     try {
@@ -47,6 +49,10 @@ async function fetchDS(url, retries = 2) {
         signal: AbortSignal.timeout(8000),
       });
       if (res.status === 429) {
+        // DS-2: remember 429 separately so the final throw can name it
+        // even when the 429 branch never set lastErr.
+        saw429 = true;
+        lastErr = new Error("HTTP 429 rate-limited by DexScreener");
         await new Promise(r => setTimeout(r, 3000 * (i + 1)));
         continue;
       }
@@ -56,6 +62,7 @@ async function fetchDS(url, retries = 2) {
       lastErr = e;
     }
   }
+  if (saw429 && !lastErr) lastErr = new Error("HTTP 429 rate-limited by DexScreener (exhausted retries)");
   throw lastErr || new Error("DexScreener fetch failed");
 }
 
@@ -293,18 +300,16 @@ export async function discoverTokens({ timeframe = "1m", limit = 20 } = {}) {
 
 async function discoverJupiterTokens() {
   try {
-    const res = await fetch(JUPITER_TOKEN_API);
+    const res = await fetch(JUPITER_TOKEN_API, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return [];
-    const strictList = await res.json();
-    if (!Array.isArray(strictList) || strictList.length === 0) return [];
+    const tokens = await res.json();
+    if (!Array.isArray(tokens) || tokens.length === 0) return [];
 
-    // Fetch price data for the top tokens by market cap
-    const solanaTokens = strictList
-      .filter(t => t.chainId === 101 || t.tags?.includes("verified"))
-      .slice(0, 50);
+    // New API returns mint as `id` and is already verified-tagged
+    const solanaTokens = tokens.slice(0, 50);
     if (solanaTokens.length === 0) return [];
 
-    const mintStr = solanaTokens.map(t => t.address).slice(0, 30).join(",");
+    const mintStr = solanaTokens.map(t => t.id || t.address).filter(Boolean).slice(0, 30).join(",");
     const pairData = await fetchDS(`${DS_BASE}/latest/dex/tokens/${mintStr}`).catch(() => null);
     if (!pairData?.pairs) return [];
 
@@ -642,7 +647,10 @@ async function getTopPool(mint) {
   if (cached && Date.now() - cached.ts < POOL_TTL_MS) return cached.pool;
   const data = await gtFetch(`${GT_BASE}/networks/solana/tokens/${mint}/pools?page=1`);
   const top = data.data?.[0]?.attributes?.address;
-  if (top) _poolCache.set(mint, { pool: top, ts: Date.now() });
+  // DS-6: cache the result EITHER way so an unknown mint doesn't get
+  // re-queried on every kline / market-info call. `pool: null` signals
+  // a confirmed not-found; callers downstream already handle null.
+  _poolCache.set(mint, { pool: top || null, ts: Date.now() });
   return top || null;
 }
 
@@ -680,14 +688,42 @@ export async function getTokenKlines({ mint, pair_address = null, resolution = "
 
 // ─── Market Info ──────────────────────────────────────────────
 
+// DS-5: shadow-watchlist + heartbeat callers can hit this per-mint at
+// short intervals, racking up dozens of redundant DexScreener fetches
+// every cycle. Cache the result for a short window so duplicate queries
+// in the same management/heartbeat sweep coalesce. TTL kept short so
+// the price reading stays fresh enough for rug detection.
+const _marketInfoCache = new Map(); // mint → { ts, info }
+const MARKET_INFO_TTL_MS = 30_000;  // 30s — shorter than any caller's poll cadence
+const MARKET_INFO_CACHE_MAX = 500;  // hard cap to bound memory
+
+function _cacheMarketInfo(mint, info) {
+  _marketInfoCache.set(mint, { ts: Date.now(), info });
+  if (_marketInfoCache.size > MARKET_INFO_CACHE_MAX) {
+    // Drop oldest ~10% on overflow.
+    const entries = [..._marketInfoCache.entries()].sort((a, b) => a[1].ts - b[1].ts);
+    for (const [k] of entries.slice(0, Math.floor(MARKET_INFO_CACHE_MAX / 10))) {
+      _marketInfoCache.delete(k);
+    }
+  }
+}
+
 export async function getTokenMarketInfo({ mint }) {
+  const cached = _marketInfoCache.get(mint);
+  if (cached && Date.now() - cached.ts < MARKET_INFO_TTL_MS) return cached.info;
   try {
     const data = await fetchDS(`${DS_BASE}/latest/dex/tokens/${mint}`);
     const pairs = (data.pairs || []).filter(p => p.chainId === "solana");
-    if (!pairs.length) return { mint, error: "Token not found on DexScreener" };
+    if (!pairs.length) {
+      const miss = { mint, error: "Token not found on DexScreener" };
+      // Cache the not-found too so we don't hammer DS for unknown mints —
+      // but shorter TTL so it can recover quickly once indexed.
+      _cacheMarketInfo(mint, miss);
+      return miss;
+    }
 
     const pair = pairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
-    return {
+    const info = {
       mint,
       price:            parseFloat(pair.priceUsd || 0),
       mcap:             pair.marketCap || pair.fdv || 0,
@@ -700,6 +736,8 @@ export async function getTokenMarketInfo({ mint }) {
       price_change_24h: pair.priceChange?.h24,
       launchpad:        normalizeDex(pair.dexId),
     };
+    _cacheMarketInfo(mint, info);
+    return info;
   } catch (error) {
     log("market_info_error", error.message);
     return { mint, error: error.message };
@@ -740,13 +778,38 @@ async function fetchHeliusTxns(address, apiKey, limit = 50) {
   if (heliusCircuitOpen()) throw new Error("Helius circuit open — smart money degraded");
   await heliusAcquire();
   const url = `${HELIUS_BASE}/addresses/${address}/transactions?api-key=${apiKey}&limit=${limit}&type=SWAP`;
+  // DS-3: retry transient failures up to 2 attempts. Helius returns 5xx /
+  // 429 under load; a single shot was hostile to the surrounding smart-
+  // money flow (every transient blip nuked the whole batch).
+  const MAX_ATTEMPTS = 3;
+  let lastErr;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) throw new Error(`Helius ${res.status}`);
-    return res.json();
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        if (res.status === 429 || res.status >= 500) {
+          lastErr = new Error(`Helius ${res.status}`);
+          if (attempt < MAX_ATTEMPTS) {
+            await new Promise(r => setTimeout(r, 800 * attempt)); // 0.8s, 1.6s
+            continue;
+          }
+          throw lastErr;
+        }
+        if (!res.ok) throw new Error(`Helius ${res.status}`);
+        return res.json();
+      } catch (e) {
+        lastErr = e;
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise(r => setTimeout(r, 800 * attempt));
+          continue;
+        }
+        throw lastErr;
+      }
+    }
   } finally {
     heliusRelease();
   }
+  throw lastErr || new Error("Helius fetch failed");
 }
 
 function numberOrZero(value) {
