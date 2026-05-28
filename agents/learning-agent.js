@@ -34,7 +34,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PERFORMANCE_FILE = path.join(__dirname, "../hunter-performance.json");
+const PERFORMANCE_FILE   = path.join(__dirname, "../hunter-performance.json");
+const STRATEGY_PERF_FILE = path.join(__dirname, "../strategy-performance.json");
 const AGENT_NAME = "learning";
 
 // Recompile name patterns after this many new rugs accumulated
@@ -46,6 +47,26 @@ let _rugsSinceLastCompile = 0;
 // In-memory map: mint → { source, social_source, entry_ts }
 // Populated when a BUY happens, consumed when EXIT happens.
 const _openTrades = new Map();
+
+// ─── Strategy performance persistence ─────────────────────────────────────
+
+function loadStratPerf() {
+  if (!fs.existsSync(STRATEGY_PERF_FILE)) return { strategies: {}, last_updated: null };
+  try { return JSON.parse(fs.readFileSync(STRATEGY_PERF_FILE, "utf8")); }
+  catch { return { strategies: {}, last_updated: null }; }
+}
+
+function saveStratPerf(data) {
+  data.last_updated = new Date().toISOString();
+  atomicWriteJson(STRATEGY_PERF_FILE, data);
+}
+
+export function getStrategyPerformance() {
+  const perf = loadStratPerf();
+  return Object.entries(perf.strategies)
+    .map(([id, s]) => ({ id, ...s }))
+    .sort((a, b) => (b.win_rate || 0) - (a.win_rate || 0) || (b.avg_pnl_pct || 0) - (a.avg_pnl_pct || 0));
+}
 
 // ─── Persistence ────────────────────────────────────────────────────────────
 
@@ -196,12 +217,63 @@ export function initLearningAgent() {
     await _recompileAndPatch();
   });
 
+  // ── Strategy performance feedback loop ──
+  // Receives management:strategy_outcome when a position closes so we can
+  // track per-preset win/loss/rug rates and surface degrading strategies.
+  agentBus.subscribe("management:strategy_outcome", (payload) => {
+    const stratId = payload?.strategy_id;
+    if (!stratId) return;
+    const perf = loadStratPerf();
+    if (!perf.strategies[stratId]) {
+      perf.strategies[stratId] = {
+        traded: 0, won: 0, lost: 0, rugged: 0,
+        win_rate: 0, rug_rate: 0, avg_pnl_pct: 0, pnl_sum: 0,
+        last_trade_at: null,
+      };
+    }
+    const s = perf.strategies[stratId];
+    s.traded++;
+    if (payload.is_rug)       s.rugged++;
+    else if (payload.is_win)  s.won++;
+    else                      s.lost++;
+    s.pnl_sum    = (s.pnl_sum || 0) + Number(payload.pnl_pct || 0);
+    s.avg_pnl_pct = parseFloat((s.pnl_sum / Math.max(1, s.traded)).toFixed(2));
+    const closed = s.won + s.lost + s.rugged;
+    s.win_rate   = closed > 0 ? parseFloat((s.won    / closed).toFixed(3)) : 0;
+    s.rug_rate   = closed > 0 ? parseFloat((s.rugged / closed).toFixed(3)) : 0;
+    s.last_trade_at = new Date().toISOString();
+    saveStratPerf(perf);
+    log("learning", `strategy:${stratId} pnl=${Number(payload.pnl_pct || 0).toFixed(1)}% → WR=${(s.win_rate * 100).toFixed(0)}% rug=${(s.rug_rate * 100).toFixed(0)}% (${s.traded} trades)`);
+    agentBus.emit("learning:strategy_performance", {
+      strategies: perf.strategies,
+      updated_at: new Date().toISOString(),
+    });
+  });
+
+  // ── Trash-layer block feedback — free learning from prevented trades ──
+  agentBus.subscribe("learning:trash_blocked", (payload) => {
+    const { symbol = "", name = "", type = "unknown" } = payload;
+    if (!symbol && !name) return;
+    // Count as a loss-signal for the hunt source so sources that produce
+    // lots of trash get their weights downgraded over time.
+    const source = payload._hunt_source || "unknown";
+    if (type === "scam_name" || type === "honeypot" || type === "rugcheck") {
+      bumpSource(source, "rug");
+    }
+    log("learning", `TRASH BLOCK free learn: ${symbol} type=${type} source=${source}`);
+  });
+
   // ── Periodic health report every 30 minutes ──
   setInterval(() => {
     const ranking = getSourceRanking();
     if (ranking.length > 0) {
       log("learning", `Hunter performance: ${ranking.map(s => `${s.source} rug=${(s.rug_rate * 100).toFixed(0)}% win=${(s.win_rate * 100).toFixed(0)}%`).join(" | ")}`);
       agentBus.emit("learning:hunter_weights", { ranking, updated_at: new Date().toISOString() });
+    }
+    // Also log strategy performance
+    const stratRanking = getStrategyPerformance();
+    if (stratRanking.length > 0) {
+      log("learning", `Strategy performance: ${stratRanking.map(s => `${s.id} WR=${(s.win_rate * 100).toFixed(0)}% avg=${s.avg_pnl_pct}%`).join(" | ")}`);
     }
   }, 30 * 60 * 1000);
 

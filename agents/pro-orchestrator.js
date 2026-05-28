@@ -32,6 +32,12 @@ import { agentBus } from "./agent-bus.js";
 import { setAgentStatus, updateAgentHealth } from "./agent-registry.js";
 import { isAutomationActive } from "./automation-rules.js";
 import { log } from "../logger.js";
+import { evaluateCastNet } from "../tools/cast-net-gate.js";
+import { getActiveStrategy } from "../strategies.js";
+import { scoreTrash } from "../tools/trash-filter.js";
+import { getExperienceScore } from "../conviction-memory.js";
+import { getAllWallets } from "../tools/wallet-manager.js";
+import { config as _runtimeConfig } from "../config.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -985,6 +991,82 @@ export function proCutlossDecision({ pnlPct, holdMinutes, marketCondition, convi
   return { action: "HOLD" };
 }
 
+/**
+ * Pro Cast-Net decision — gate for high-conviction multi-wallet (tebar jala) entry.
+ *
+ * Called AFTER proBuyDecision returns BUY. If allowed, the candidate should
+ * be marked for cast-net dispatch (planCastNetExecution + recordCastNetFire
+ * in the executor path). If not allowed, the buy proceeds normally as a
+ * single-wallet entry.
+ *
+ * This function consolidates the operator + signal gates so callers don't
+ * need to wire 7 sub-checks themselves. All hard rules from the spec are
+ * enforced here:
+ *   - Cast-net config + manual toggle
+ *   - Pro-orch active
+ *   - Strategy whitelist
+ *   - Cooldown
+ *   - All 7 green-flag categories
+ *   - Conviction floor + minimum memory samples
+ */
+export function proCastNetDecision({
+  token,
+  conviction,
+  totalMemorySamples = 0,
+  smartMoneyMinHolders = 2,
+} = {}) {
+  // Auto-disabled if pro-orch is not active — sesuai spec "jika ponyou
+  // sudah bisa menggunakan mode pro orhestra".
+  if (!_proModeActive) {
+    return {
+      allowed: false,
+      reasons: {},
+      blockers: ["pro-orchestrator inactive"],
+      cooldownRemainingMin: 0,
+      plan: null,
+    };
+  }
+
+  const activeStrategy = (() => {
+    try { return getActiveStrategy()?.id || null; }
+    catch { return null; }
+  })();
+
+  // Map the running conviction signal into the shape evaluateCastNet expects.
+  // `conviction` here is the in-flight conviction object from screening — we
+  // prefer its experience_score field but fall back to a fresh computation
+  // if needed.
+  let experienceScore = conviction?.experience_score ?? null;
+  if (!experienceScore && token?.mint) {
+    try { experienceScore = getExperienceScore(token); }
+    catch { experienceScore = null; }
+  }
+
+  // G1: feed runtime wallet context so the gate can block when only 1 hot
+  // wallet is available (cast-net is meaningless single-wallet).
+  let walletContext = null;
+  try {
+    const all = getAllWallets() || [];
+    walletContext = {
+      multiWalletEnabled: Boolean(_runtimeConfig.multiWallet?.enabled),
+      viableWalletCount: all.filter((w) => w?.status === "hot").length,
+    };
+  } catch {
+    walletContext = null;
+  }
+
+  return evaluateCastNet({
+    token,
+    activeStrategy,
+    proOrchestratorOn: true,
+    experienceScore,
+    totalMemorySamples,
+    trashFilter: scoreTrash,
+    smartMoneyOpts: { minHolders: smartMoneyMinHolders },
+    walletContext,
+  });
+}
+
 // ─── Pro Mode Lifecycle ───────────────────────────────────────
 
 export function initProOrchestrator() {
@@ -1079,6 +1161,7 @@ export default {
   proBuyDecision,
   proSellDecision,
   proCutlossDecision,
+  proCastNetDecision,
   isProModeActive,
   getProDashboard,
   PRO_THRESHOLDS,

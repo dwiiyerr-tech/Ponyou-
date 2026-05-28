@@ -822,5 +822,88 @@ export const tools = [
         required: ["mint"]
       }
     }
+  },
+
+  // ─── Ponyou Control (General Agent only) ─────────────────────
+  {
+    type: "function",
+    function: {
+      name: "ponyou_get_status",
+      description: "Get Ponyou's full real-time status: automation state, open positions, market condition, agent health, today P&L, active strategy. Use this when user asks about bot status, what is happening, or how things are going.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "ponyou_toggle_automation",
+      description: "Start or stop Ponyou's automated trading (screening + management cycles). Use when user says 'start bot', 'stop bot', 'aktifkan', 'matikan', 'pause', 'resume'.",
+      parameters: {
+        type: "object",
+        required: ["enable"],
+        properties: {
+          enable: { type: "boolean", description: "true = start automation, false = stop automation" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "ponyou_switch_strategy",
+      description: "Switch Ponyou's active trading strategy. Available strategies: sniper, scalper, conservative, balanced, aggressive.",
+      parameters: {
+        type: "object",
+        required: ["strategy_id"],
+        properties: {
+          strategy_id: { type: "string", description: "Strategy ID: sniper | scalper | conservative | balanced | aggressive" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "ponyou_toggle_feature",
+      description: "Enable or disable a specific feature in Ponyou's feature registry. Features: conviction, narrative_velocity, cross_batch_velocity, kelly_edge, technicals, rug_risk, workflow_verdict, cabal_risk.",
+      parameters: {
+        type: "object",
+        required: ["feature_name", "enable"],
+        properties: {
+          feature_name: { type: "string" },
+          enable: { type: "boolean", description: "true = enable, false = disable" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "ponyou_get_agents",
+      description: "Get detailed status of all Ponyou agents (hunters, screening, management, general, learning, trash-layer). Use when user asks about agents or sub-systems.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "ponyou_get_open_positions",
+      description: "Get list of currently open trading positions with entry price, current P&L, and hold time.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "ponyou_set_confirm_mode",
+      description: "Toggle confirm mode (bot asks before each trade). When on, bot pauses before buying and asks user to approve.",
+      parameters: {
+        type: "object",
+        required: ["enable"],
+        properties: {
+          enable: { type: "boolean" }
+        }
+      }
+    }
   }
 ];

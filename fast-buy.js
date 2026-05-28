@@ -18,6 +18,9 @@
  */
 
 import { swapToken } from "./tools/jupiter.js";
+import { planCastNetExecution } from "./wallet-strategy.js";
+import { recordCastNetFire } from "./tools/cast-net-gate.js";
+import { getAllWallets, getWalletByAddress } from "./tools/wallet-manager.js";
 import { trackPosition } from "./state.js";
 import { recordSwapOutcome } from "./kill-switch.js";
 import {
@@ -91,6 +94,9 @@ export async function executeFastBuy({
   solPriceUsd = 0,
   wallet = null,
   walletAddress = null,
+  castNetGroupId = null,
+  castNetSlot = null,
+  strategyUsed = null,
 } = {}) {
   if (!token?.mint) {
     return { success: false, error: "missing token.mint" };
@@ -160,6 +166,9 @@ export async function executeFastBuy({
         },
       },
       wallet_address: walletAddress,
+      cast_net_group_id: castNetGroupId,
+      cast_net_slot: castNetSlot,
+      strategy_used: strategyUsed,
     });
     log(
       "fast_buy",
@@ -194,6 +203,7 @@ export async function runFastTrackBatch({
   solPriceUsd = 0,
   maxNew = 1,
   walletPlan = [],
+  totalBankrollSol = 0,
 } = {}) {
   const deployed = [];
   const skipped = [];
@@ -210,6 +220,95 @@ export async function runFastTrackBatch({
       remaining.push(token);
       continue;
     }
+
+    // ── Cast-Net (Tebar Jala) dispatch ───────────────────────────────
+    // Pro-orch annotated this candidate as cast-net-eligible. Replace the
+    // default walletPlan with a 10-wallet cast-net spread, dispatched with
+    // amount + timing jitter so the 10 buys don't look templated on-chain.
+    // Fires recordCastNetFire BEFORE deploying so cooldown engages even if
+    // the swap layer later rejects.
+    const castNetReady = token.cast_net?.allowed === true && token.cast_net?.plan;
+    let castNetUsed = false;
+    if (castNetReady && totalBankrollSol > 0) {
+      const allWallets = getAllWallets();
+      const castNetPlan = planCastNetExecution({
+        wallets: allWallets,
+        tokenMint: token.mint,
+        totalBankrollSol,
+      });
+      if (castNetPlan.selected_wallets?.length > 1) {
+        // G2: unique group id so every position from this fire shares lineage
+        // and management can stagger their exits later.
+        const castNetGroupId = `cn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const edgeSignals = Array.isArray(token.cast_net.edge_signals) ? token.cast_net.edge_signals : [];
+
+        // Execute wallet slots FIRST — recordCastNetFire is called only after
+        // ≥1 swap succeeds. Calling it before would create an orphaned fire
+        // record (with cooldown engaged) even when all swaps failed, causing
+        // a 4-hour blackout for a trade that never happened.
+        castNetUsed = true;
+        let walletDeployedCount = 0;
+        for (let i = 0; i < castNetPlan.selected_wallets.length; i++) {
+          const slot = castNetPlan.selected_wallets[i];
+          if (i > 0 && castNetPlan.delays_ms[i - 1] > 0) {
+            await new Promise(r => setTimeout(r, castNetPlan.delays_ms[i - 1]));
+          }
+          const walletObj = getWalletByAddress(slot.address);
+          const result = await executeFastBuy({
+            token,
+            deployAmountSol: slot.amount_sol,
+            solPriceUsd,
+            wallet: walletObj?.keypair || null,
+            walletAddress: slot.address,
+            castNetGroupId,
+            castNetSlot: i + 1,
+            strategyUsed: token.selected_strategy || null,
+          });
+          if (result?.success || result?.dry_run) {
+            deployed.push({ ...token, wallet_address: slot.address, cast_net_slot: i + 1, cast_net_group_id: castNetGroupId });
+            walletDeployedCount++;
+          }
+        }
+
+        if (walletDeployedCount > 0) {
+          // Record fire AFTER confirmed execution — cooldown starts now.
+          await recordCastNetFire({
+            mint:        token.mint,
+            symbol:      token.symbol,
+            walletCount: walletDeployedCount,          // actual wallets, not planned
+            bankrollPct: castNetPlan.cast_net.bankroll_pct,
+            reasons:     token.cast_net.reasons,
+            groupId:     castNetGroupId,
+            edgeSignals,
+          });
+          // C4: edge-signal Telegram alert — warn operator this was marginal.
+          if (edgeSignals.length > 0) {
+            try {
+              const { sendHTML, isEnabled } = await import("./telegram.js");
+              if (isEnabled()) {
+                const edgeLines = edgeSignals.map((e) =>
+                  `  • <b>${e.category}</b>: ${Number(e.value).toFixed(2)} (floor ${Number(e.floor).toFixed(2)}, margin ${(e.margin * 100).toFixed(1)}%)`
+                ).join("\n");
+                await sendHTML(
+                  `⚠️ <b>Cast-Net EDGE Fire</b>\n` +
+                  `<b>${token.symbol || token.mint?.slice(0, 8)}</b> · ${walletDeployedCount} wallets · ${castNetPlan.cast_net.bankroll_pct}% bankroll\n` +
+                  `Group: <code>${castNetGroupId.slice(-6)}</code>\n` +
+                  `Marginal categories:\n${edgeLines}\n` +
+                  `→ Borderline trigger. Watch closely.`
+                );
+              }
+            } catch (e) {
+              log("cast_net_err", `edge alert send failed: ${e.message || e}`);
+            }
+          }
+        } else {
+          remaining.push(token);
+        }
+        continue; // move to next candidate; cast-net consumed this one
+      }
+    }
+
+    // ── Default single/auto-spread dispatch path ─────────────────────
     const executionSlots = walletPlan.length > 0
       ? walletPlan.slice(0, Math.max(1, maxNew - deployed.length))
       : [null];
@@ -227,6 +326,7 @@ export async function runFastTrackBatch({
         solPriceUsd,
         wallet: walletSlot?.keypair || null,
         walletAddress: walletSlot?.address || null,
+        strategyUsed: token.selected_strategy || null,
       });
       if (result?.success || result?.dry_run) {
         deployed.push({ ...token, wallet_address: walletSlot?.address || result?.wallet_address || null });
@@ -236,6 +336,7 @@ export async function runFastTrackBatch({
         break;
       }
     }
+    if (!castNetUsed && executionSlots.length === 0) remaining.push(token);
   }
 
   return { deployed, remaining, skipped };

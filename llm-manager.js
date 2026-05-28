@@ -21,8 +21,19 @@ export const CUSTOM_PRESETS = {
     name: "Google Gemini (OpenAI-compat)",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
     apiKeyEnv: "GEMINI_API_KEY",
-    defaultModel: "gemini-2.0-flash-exp",
-    features: { systemRole: true, toolChoice: true, vision: true, streaming: true },
+    defaultModel: "gemini-2.0-flash",
+    features: {
+      systemRole: true,
+      toolChoice: true,
+      vision: true,
+      streaming: true,
+      // Gemini has a separate Context Caching API (cachedContent.create) that
+      // requires a native Gemini client — NOT compatible with OpenAI-compat
+      // endpoint. Ponyou uses the OpenAI-compat path, so explicit caching
+      // is not available here. The universal prompt optimizer (prompt-optimizer.js)
+      // still reduces token usage via lesson truncation + role pruning + dedup.
+      promptCaching: false,
+    },
   },
   deepseek: {
     id: "deepseek",
@@ -30,7 +41,16 @@ export const CUSTOM_PRESETS = {
     baseUrl: "https://api.deepseek.com/v1",
     apiKeyEnv: "DEEPSEEK_API_KEY",
     defaultModel: "deepseek-chat",
-    features: { systemRole: true, toolChoice: true, vision: false, streaming: true },
+    features: {
+      systemRole: true,
+      toolChoice: true,
+      vision: false,
+      streaming: true,
+      // DeepSeek applies KV prefix caching automatically — no explicit API
+      // call needed. Benefit is free when stable content is at the top of
+      // the system prompt (which prompt-optimizer.js ensures).
+      promptCaching: "automatic",
+    },
   },
   xai: {
     id: "xai",

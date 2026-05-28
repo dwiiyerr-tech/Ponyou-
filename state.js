@@ -163,6 +163,9 @@ export function trackPosition({
   active_lessons = [],
   active_signals = [],
   wallet_address = null,
+  cast_net_group_id = null,
+  cast_net_slot = null,
+  strategy_used = null,
 }) {
   const state = load();
   const position_key = buildPositionKey(position, wallet_address);
@@ -204,6 +207,14 @@ export function trackPosition({
     notes: [],
     peak_pnl_pct: 0,
     sync_misses: 0,
+    // G2: cast-net group tagging. Positions opened via the same cast-net
+    // fire share a group_id so management can coordinate staggered exits.
+    cast_net_group_id: cast_net_group_id || null,
+    cast_net_slot: cast_net_slot != null ? Number(cast_net_slot) : null,
+    // G3: per-coin strategy selection — the strategy actually used to open
+    // this position. Management reads this so exit params follow the same
+    // strategy preset the entry used, not the globally-active strategy.
+    strategy_used: strategy_used || null,
   };
   pushEvent(state, { action: "deploy", position, position_key, pool_name: pool_name || pool, wallet_address });
   const saved = save(state);

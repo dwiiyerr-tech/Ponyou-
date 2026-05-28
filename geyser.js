@@ -66,6 +66,7 @@ export class GeyserStream {
     this._closed = false;
     this._nextRpcId = 1;
     this._reconnectTimer = null;
+    this._subConfirmTimer = null; // subscription confirmation watchdog
   }
 
   connect() {
@@ -103,6 +104,10 @@ export class GeyserStream {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
     }
+    if (this._subConfirmTimer) {
+      clearTimeout(this._subConfirmTimer);
+      this._subConfirmTimer = null;
+    }
     if (this._ws) {
       try { this._ws.close(); } catch { /* no-op */ }
     }
@@ -130,9 +135,10 @@ export class GeyserStream {
       log("geyser", "No accounts to subscribe — leaving stream idle");
       return;
     }
+    const rpcId = this._nextRpcId++;
     const payload = {
       jsonrpc: "2.0",
-      id: this._nextRpcId++,
+      id: rpcId,
       method: "transactionSubscribe",
       params: [
         {
@@ -149,7 +155,24 @@ export class GeyserStream {
       ],
     };
     this._ws.send(JSON.stringify(payload));
+    this._subscriptionId = null; // clear stale id from prior session
     log("geyser", `Subscribed to ${this.accountInclude.length} wallets (commitment=${this.commitment})`);
+
+    // Subscription confirmation watchdog — if the server doesn't confirm
+    // within 10s the subscription silently failed (e.g. after a network flap
+    // where the WS reconnected but the server dropped the session). Log a
+    // warning and force a reconnect so subscriptions are never silently stale.
+    if (this._subConfirmTimer) clearTimeout(this._subConfirmTimer);
+    this._subConfirmTimer = setTimeout(() => {
+      this._subConfirmTimer = null;
+      if (this._subscriptionId == null && !this._closed) {
+        recordCounter("geyser_sub_confirm_timeout");
+        log("geyser_warn", `Subscription not confirmed within 10s — forcing reconnect to recover`);
+        try { this._ws?.close(); } catch {}
+        this._ws = null;
+        this._scheduleReconnect();
+      }
+    }, 10_000);
   }
 
   _onMessage(event) {
@@ -160,9 +183,14 @@ export class GeyserStream {
       return;
     }
 
-    // Subscription confirmation
+    // Subscription confirmation — clear watchdog timer on success.
     if (msg.result != null && typeof msg.result === "number" && msg.id != null) {
       this._subscriptionId = msg.result;
+      if (this._subConfirmTimer) {
+        clearTimeout(this._subConfirmTimer);
+        this._subConfirmTimer = null;
+      }
+      log("geyser", `Subscription confirmed (id=${this._subscriptionId})`);
       return;
     }
 
@@ -311,7 +339,7 @@ function redactUrl(url) {
 export function startGeyserStream({ onEvent, onDisconnect = null, commitment = "confirmed" } = {}) {
   const url = process.env.HELIUS_ATLAS_WS_URL || process.env.HELIUS_GEYSER_URL;
   if (!url) {
-    log("geyser", "HELIUS_ATLAS_WS_URL / HELIUS_GEYSER_URL not set — stream disabled (fail-soft)");
+    // Silent — index.js prints a consolidated "optional features" summary at startup.
     return null;
   }
 

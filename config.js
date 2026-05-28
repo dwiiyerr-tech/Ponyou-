@@ -269,8 +269,12 @@ export const config = {
     timeframe:         nonEmptyString(u.timeframe) ?? "5m",
     category:          nonEmptyString(u.category)  ?? "trending",
     minTokenFeesSol:   u.minTokenFeesSol   ?? 30,  // global fees paid (priority+jito tips). below = bundled/scam
-    useDiscordSignals: u.useDiscordSignals ?? false,
-    discordSignalMode: u.discordSignalMode ?? "merge", // merge | only
+    useDiscordSignals:    u.useDiscordSignals    ?? false,
+    discordSignalMode:    u.discordSignalMode    ?? "merge",  // merge | only
+    useTelegramCalls:     u.useTelegramCalls     ?? false,    // parse incoming TG messages as calls
+    useSocialHunter:      u.useSocialHunter      ?? true,     // Reddit + CoinGecko + Dex + Nitter scan
+    socialHunterInterval: u.socialHunterInterval ?? 30,       // minutes between scans
+    socialBuzzWeight:     u.socialBuzzWeight     ?? 0.08,     // weight in signal-aggregator (0–0.20)
     avoidPvpSymbols:   u.avoidPvpSymbols   ?? true, // avoid exact-symbol rivals with real active pools
     blockPvpSymbols:   u.blockPvpSymbols   ?? false, // hard-filter PVP rivals before the LLM sees them
     maxBundlePct:      u.maxBundlePct      ?? 30,  // max bundle holding % (OKX advanced-info)
@@ -332,6 +336,18 @@ export const config = {
     managementModel: u.managementModel ?? process.env.LLM_MODEL ?? "minimax/minimax-m2.5",
     screeningModel:  u.screeningModel  ?? process.env.LLM_MODEL ?? "minimax/minimax-m2.5",
     generalModel:    u.generalModel    ?? process.env.LLM_MODEL ?? "minimax/minimax-m2.5",
+    // Per-role timeouts. MANAGER needs fast decisions; SCREENER can afford
+    // more time for deep analysis; GENERAL handles interactive chat.
+    // Set any to 0 to fall back to timeoutMs.
+    timeoutMs:          finiteNumber(u.llmTimeoutMs,          120_000),
+    managerTimeoutMs:   finiteNumber(u.llmManagerTimeoutMs,    60_000),
+    screenerTimeoutMs:  finiteNumber(u.llmScreenerTimeoutMs,   90_000),
+    generalTimeoutMs:   finiteNumber(u.llmGeneralTimeoutMs,   120_000),
+    // Prompt caching — adds cache_control to stable system-prompt blocks when
+    // using a Claude model (via OpenRouter or direct). Reduces token cost by
+    // 60-90% per subsequent agentLoop call on the same role. Safe to leave
+    // enabled; non-Claude providers simply ignore the extra field.
+    promptCaching:      u.llmPromptCaching !== false,
   },
 
   // ─── Jito BlockEngine (priority lane) ─────────────────────────
@@ -374,6 +390,66 @@ export const config = {
     // Array of { key: "bs58...", label: "Wallet A", capital_pct: 60 }
     // capital_pct harus total 100. Jika kosong → single-wallet fallback.
     wallets: Array.isArray(u.wallets) ? u.wallets : [],
+  },
+
+  // ─── Cast-Net (Tebar Jala) — High-conviction multi-wallet entry ─
+  // Fires only when ALL 7 fundamental green-flags pass: community, dev,
+  // smart-money, top-holders, narrative, ticker, conviction. Strict AND
+  // gate — any single red blocks the cast-net. Default OFF.
+  castNet: {
+    enabled:           u.castNetEnabled            ?? false,
+    // Hard upper bound on wallets used per fire (clamped in code even if
+    // config sets higher). 10 is the chosen ceiling — wider footprint hits
+    // funding-ancestor heuristics faster than it helps anti-detection.
+    maxWallets:        Math.min(10, Math.max(2, Number(u.castNetMaxWallets ?? 10))),
+    // % of bankroll deployed per cast-net fire. 30% leaves headroom for
+    // normal trades + risk-of-bust if the gate ever produces a false-positive.
+    maxBankrollPct:    Math.min(50, Math.max(5, Number(u.castNetMaxBankrollPct ?? 30))),
+    // Conviction floor — only fire if conviction-memory says past pattern
+    // similar enough to warrant high-confidence entry.
+    minConviction:     Math.min(0.99, Math.max(0.5, Number(u.castNetMinConviction ?? 0.85))),
+    // Cooldown after each fire so a bad cluster of green-flag signals
+    // can't drain bankroll in one session.
+    cooldownMin:       Math.max(30, Number(u.castNetCooldownMin ?? 240)),
+    // Timing jitter range — random delay per wallet to break same-block
+    // fingerprint. Min/max in seconds.
+    timingJitterMinSec: Math.max(0, Number(u.castNetTimingJitterMinSec ?? 2)),
+    timingJitterMaxSec: Math.max(2, Number(u.castNetTimingJitterMaxSec ?? 15)),
+    // Amount jitter — ±N% random per wallet so amounts don't look templated.
+    amountJitterPct:   Math.min(50, Math.max(0, Number(u.castNetAmountJitterPct ?? 20))),
+    // Strategies allowed to trigger cast-net. Excludes scalping/degen by
+    // design — those signal types are too noisy for high-conviction entries.
+    allowedStrategies: Array.isArray(u.castNetAllowedStrategies)
+      ? u.castNetAllowedStrategies
+      : ["smart_money", "day_phase_trading"],
+    // Minimum semantic-memory sample size before cast-net is allowed at all.
+    // Prevents firing on undertrained conviction signals.
+    minMemorySamples:  Math.max(0, Number(u.castNetMinMemorySamples ?? 50)),
+
+    // C1: auto-disable after N consecutive losing fires. Set to 0 to disable
+    // this safety. Default 2 — two losses in a row is a strong signal the
+    // gate is producing false positives in current regime.
+    autoDisableConsecutiveLosses: Math.max(0, Number(u.castNetAutoDisableConsecutiveLosses ?? 2)),
+
+    // C2: soft-check thresholds (in addition to the 7 hard categories).
+    // Each is hard-blocking too — strict AND continues. These are tunable
+    // because liquidity/mcap norms shift per cycle.
+    minLiquidityUsd:    Math.max(0, Number(u.castNetMinLiquidityUsd ?? 50_000)),
+    mcapWindowMinUsd:   Math.max(0, Number(u.castNetMcapWindowMinUsd ?? 1_000_000)),
+    mcapWindowMaxUsd:   Math.max(0, Number(u.castNetMcapWindowMaxUsd ?? 10_000_000)),
+    // Ratio of 24h volume to liquidity. Default 1.0 — if 24h volume is less
+    // than liquidity, the pool isn't churning organically and is more likely
+    // to be wash-traded or stale.
+    minVolumeToLiquidity: Math.max(0, Number(u.castNetMinVolumeToLiquidity ?? 1.0)),
+    // Top-1 holder concentration ceiling. Default 5% — single holder above
+    // this is a concentrated-risk red flag even if top10 looks healthy.
+    maxTop1HolderPct:   Math.max(0, Number(u.castNetMaxTop1HolderPct ?? 5)),
+
+    // C4: how close to threshold counts as "edge". A category passing within
+    // edgeMargin of its floor triggers a Telegram warning so the operator
+    // knows the fire was a marginal call. Tunable per-category implicitly
+    // via the floors themselves; this is the global tolerance.
+    edgeMarginPct:      Math.max(0, Math.min(0.5, Number(u.castNetEdgeMarginPct ?? 0.05))),
   },
 
   // ─── LLM Provider Configuration ─────────────────
@@ -486,6 +562,51 @@ jupiter: {
 
   rugMonitor: buildRugMonitorConfig(u),
   executionEdge: buildExecutionEdgeConfig(u),
+
+  // ─── Holder Analysis (ABC Improvements) ─────────────────────
+  // A) Dump Monitor: track top holder balance changes in real-time
+  // B) Entry Price Analysis: detect underwater holders = sell pressure
+  // C) Rug Pattern Detector: identify coordinated multi-wallet rugs
+  //
+  // Start with low beta rollout % to monitor false positives before expanding.
+  holderAnalysis: {
+    // A) Holder Dump Monitor — detect large holder exits
+    dumpMonitor: {
+      enabled: u.holderAnalysis?.dumpMonitor?.enabled ??
+               u.holderDumpMonitorEnabled ?? false,
+      betaRolloutPct: Math.max(0, Math.min(100,
+        Number(u.holderAnalysis?.dumpMonitor?.betaRolloutPct ??
+               u.holderDumpMonitorBetaPct ?? 5)
+      )),
+      riskThreshold: u.holderAnalysis?.dumpMonitor?.riskThreshold ?? "HIGH",
+    },
+
+    // B) Entry Price Analysis — detect underwater holders (sell pressure)
+    entryPriceAnalysis: {
+      enabled: u.holderAnalysis?.entryPriceAnalysis?.enabled ??
+               u.holderEntryPriceEnabled ?? false,
+      betaRolloutPct: Math.max(0, Math.min(100,
+        Number(u.holderAnalysis?.entryPriceAnalysis?.betaRolloutPct ??
+               u.holderEntryPriceBetaPct ?? 10)
+      )),
+      underwaterThreshold: Math.max(0, Math.min(100,
+        Number(u.holderAnalysis?.entryPriceAnalysis?.underwaterThreshold ?? 80)
+      )),
+    },
+
+    // C) Rug Pattern Detector — identify coordinated rug patterns
+    rugPatternDetector: {
+      enabled: u.holderAnalysis?.rugPatternDetector?.enabled ??
+               u.holderRugPatternDetectorEnabled ?? false,
+      betaRolloutPct: Math.max(0, Math.min(100,
+        Number(u.holderAnalysis?.rugPatternDetector?.betaRolloutPct ??
+               u.holderRugPatternBetaPct ?? 3)
+      )),
+      confidenceThreshold: Math.max(0, Math.min(100,
+        Number(u.holderAnalysis?.rugPatternDetector?.confidenceThreshold ?? 70)
+      )),
+    },
+  },
 };
 
 // Warn loud jika override SL/TP terlihat berbahaya (mis. -50 yang dulu unused).

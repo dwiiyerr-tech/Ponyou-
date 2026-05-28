@@ -19,20 +19,20 @@ export function createAgentScreen(screen, { onMonitor, onWizard, onQuit }) {
   const header = blessed.box({
     top: 0, left: 0, width: cols, height: 5,
     tags: true,
-    border: { type: 'line', fg: 'cyan' },
-    style: { fg: 'white', bg: 'black' },
+    border: { type: 'line', fg: 'yellow' },
+    style: { fg: 'white', border: { fg: 'yellow' }, label: { fg: 'yellow' } },
   });
 
   // ── Output area (middle) ──
   const output = blessed.box({
     top: 5, left: 0, width: cols, height: rows - 8,
     tags: true,
-    border: { type: 'line', fg: 'cyan' },
-    style: { fg: 'white', bg: 'black' },
+    border: { type: 'line', fg: '#333333' },
+    style: { fg: 'white', border: { fg: '#333333' }, label: { fg: 'yellow' } },
     scrollable: true,
     alwaysScroll: true,
     keys: true,
-    vi: true,
+    vi: false,
     mouse: true,
   });
 
@@ -41,10 +41,10 @@ export function createAgentScreen(screen, { onMonitor, onWizard, onQuit }) {
     bottom: 1, left: 0, width: cols, height: 3,
     tags: true,
     border: { type: 'line', fg: 'yellow' },
-    style: { fg: 'yellow', bg: 'black' },
+    style: { fg: 'yellow', border: { fg: 'yellow' } },
     inputOnFocus: true,
     keys: true,
-    vi: true,
+    vi: false,
   });
 
   // ── Help overlay ──
@@ -52,7 +52,7 @@ export function createAgentScreen(screen, { onMonitor, onWizard, onQuit }) {
     top: 'center', left: 'center', width: 52, height: 20,
     tags: true,
     border: { type: 'line', fg: 'yellow' },
-    style: { fg: 'white', bg: 'black' },
+    style: { fg: 'white', border: { fg: 'yellow' }, label: { fg: 'yellow' } },
     hidden: true,
   });
 

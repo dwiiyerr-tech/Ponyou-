@@ -12,11 +12,11 @@ import { initScreeningAgent, getScreeningDashboard } from "./agents/screening-ag
 import { initManagementAgent, isLLMReviewEnabled } from "./agents/management-agent.js";
 import { initGeneralAgent, handleGeneralMessage } from "./agents/general-agent.js";
 import { initTrashLayer } from "./agents/trash-layer.js";
-import { initLearningAgent } from "./agents/learning-agent.js";
+import { initLearningAgent, getStrategyPerformance } from "./agents/learning-agent.js";
 import { shadowWatch } from "./tools/shadow-watchlist.js";
 import { initOrchestratorAgent, runOrchestratorCycle, setFullAutomationMode, getOrchestratorDashboard } from "./agents/orchestrator-agent.js";
 import { runAutomationQualification, isAutomationActive, guardAutomatedDecision, getAutomationState, approveAutomation, rejectAutomation, revokeAutomation } from "./agents/automation-rules.js";
-import { initProOrchestrator, isProModeActive, getProDashboard, proBuyDecision, proSellDecision, proCutlossDecision, runProAnalysis, validateStrategyReadiness } from "./agents/pro-orchestrator.js";
+import { initProOrchestrator, isProModeActive, getProDashboard, proBuyDecision, proSellDecision, proCutlossDecision, proCastNetDecision, runProAnalysis, validateStrategyReadiness } from "./agents/pro-orchestrator.js";
 import { checkWalletSignals, getWalletTierStats, discoverWalletTiers, TIER_CONFIG } from "./tools/wallet-tiers.js";
 import { log } from "./logger.js";
 import { getWalletBalances } from "./tools/wallet.js";
@@ -47,10 +47,17 @@ import {
   getStrategy, listStrategies, setActiveStrategy, setStrategyOverride,
   getActiveStrategyId, STRATEGY_IDS,
 } from "./strategies.js";
+import { matchStrategyForCoin } from "./tools/strategy-matcher.js";
+import { detectInsiderPatterns } from "./tools/insider-detector.js";
+import { evaluateFomoSetup } from "./tools/entry-fomo-guard.js";
+import { evaluateSlowRug, recordLiquiditySample } from "./tools/slow-rug-detector.js";
+import { evaluateDevActivity, recordDevSnapshot, extractDevWallet } from "./tools/dev-wallet-tracker.js";
+import { evaluateVolumeDivergence, recordPriceVolumeSample } from "./tools/volume-divergence.js";
+import { planExit } from "./tools/exit-timing-optimizer.js";
 import {
   listPendingIntents, getIntent, consumeIntent,
 } from "./intents.js";
-import { trackPosition, recordClose, getTrackedPosition, getState, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl, cleanStaleTestPositions, flushState } from "./state.js";
+import { trackPosition, recordClose, getTrackedPosition, getState, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl, cleanStaleTestPositions, flushState, listTrackedPositions } from "./state.js";
 import { pruneClosedPositions } from "./state-pruner.js";
 import { atomicWriteJson } from "./atomic-write.js";
 import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
@@ -66,6 +73,7 @@ import { runFastTrackBatch } from "./fast-buy.js";
 import { startGeyserStream } from "./geyser.js";
 import { attachExitMonitor, checkPriceDrop } from "./geyser-exit-monitor.js";
 import { createRugMonitor, SEVERITY as RUG_SEVERITY } from "./rug-monitor.js";
+import { wrapRugMonitorCallbacks } from "./tools/realtime-intel-bridge.js";
 import { Connection } from "@solana/web3.js";
 import { createRpcQuorum } from "./tools/rpc-quorum.js";
 import { createFeeOracle } from "./tools/fee-oracle.js";
@@ -1680,19 +1688,26 @@ async function checkDeterministicExits(tokens) {
   const market = getMarketIntelligence();
   const condition = market.condition || "NORMAL";
 
-  // Resolve active strategy once per cycle — its exit params
-  // (stoploss, trailing, partial TP) now feed into risk policy.
-  const activeStrategy = getStrategy(null, { regime: condition });
+  // G3: per-position strategy. Each tracked position records the strategy
+  // its entry was opened under (strategy_used). Use that for exit policy
+  // (stoploss/ROI ladder/trailing) so positions opened under day_phase
+  // don't suddenly inherit scalping exits if the operator rotated the
+  // active strategy mid-flight. Fall back to the global active strategy
+  // when a position predates this feature.
+  const activeStrategyDefault = getStrategy(null, { regime: condition });
 
   for (const token of tokens) {
+    const tracked = getTrackedPosition(token.position_key || token.mint, token.wallet_address || null);
+    if (!tracked) continue;
+    const positionStrategy = tracked.strategy_used
+      ? getStrategy(tracked.strategy_used, { regime: condition })
+      : activeStrategyDefault;
     const riskPolicy = buildRiskPolicy({
       marketCondition: condition,
       token,
       config,
-      strategyParams: activeStrategy, // wire strategy exit params
+      strategyParams: positionStrategy,
     });
-    const tracked = getTrackedPosition(token.position_key || token.mint, token.wallet_address || null);
-    if (!tracked) continue;
 
     const ageMinutes = (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000;
     const currentPnlPct = tracked.initial_value_usd > 0
@@ -1736,6 +1751,88 @@ async function checkDeterministicExits(tokens) {
       updatePeakPnl(token.position_key || token.mint, currentPnlPct, token.wallet_address || null);
     }
 
+    // ── Intel layer (S2+S3+S5): per-held-position sampling + alerts ─────
+    // Record liquidity / price+volume / dev-wallet snapshots so detectors
+    // have rolling history. Then evaluate slow-rug, dev-sell, volume-divergence.
+    try {
+      const liqUsd = Number(token?.liquidity_usd ?? token?.liquidity ?? 0);
+      if (liqUsd > 0) {
+        await recordLiquiditySample({
+          mint: token.mint,
+          liquidity_usd: liqUsd,
+          price_usd: currentPrice,
+        });
+      }
+      if (currentPrice > 0) {
+        await recordPriceVolumeSample({
+          mint: token.mint,
+          price_usd: currentPrice,
+          volume_recent_usd: Number(token?.volume_5m_usd ?? token?.volume_5m ?? token?.volume_recent_usd ?? 0),
+        });
+      }
+      const devWallet = extractDevWallet(token) || tracked?.signal_snapshot?.creator_wallet;
+      const devBalance = Number(token?.dev_balance ?? token?.creator_balance ?? 0);
+      const totalSupply = Number(token?.total_supply ?? token?.supply ?? 0);
+      if (devWallet && totalSupply > 0) {
+        await recordDevSnapshot({ mint: token.mint, devWallet, devBalance, totalSupply });
+      }
+    } catch (e) {
+      log("intel_sample_err", `${token?.mint?.slice(0,8)}: ${e.message || e}`);
+    }
+
+    // Slow-rug force exit
+    const slowRug = evaluateSlowRug(token.mint);
+    if (slowRug.triggered && slowRug.severity === "high") {
+      exits.push({
+        mint: token.mint,
+        symbol: token.symbol,
+        reason: `slow_rug_force_exit: ${slowRug.pattern}`,
+        pnl_pct: currentPnlPct,
+        is_loss: currentPnlPct < 0,
+        wallet_address: token.wallet_address || null,
+        position_key: token.position_key || token.mint,
+        cast_net_group_id: tracked.cast_net_group_id || null,
+        strategy_used: tracked.strategy_used || null,
+      });
+      continue;
+    }
+
+    // Dev wallet sell — high or critical severity = exit
+    const devAct = evaluateDevActivity(token.mint);
+    if (devAct.severity === "critical" || devAct.severity === "high") {
+      exits.push({
+        mint: token.mint,
+        symbol: token.symbol,
+        reason: `dev_sell: ${devAct.alert}`,
+        pnl_pct: currentPnlPct,
+        is_loss: currentPnlPct < 0,
+        wallet_address: token.wallet_address || null,
+        position_key: token.position_key || token.mint,
+        cast_net_group_id: tracked.cast_net_group_id || null,
+        strategy_used: tracked.strategy_used || null,
+      });
+      continue;
+    }
+
+    // Volume divergence — high severity → exit. Watch → log only.
+    const volDiv = evaluateVolumeDivergence(token.mint);
+    if (volDiv.detected && volDiv.severity === "high") {
+      exits.push({
+        mint: token.mint,
+        symbol: token.symbol,
+        reason: `volume_divergence: ${volDiv.pattern}`,
+        pnl_pct: currentPnlPct,
+        is_loss: currentPnlPct < 0,
+        wallet_address: token.wallet_address || null,
+        position_key: token.position_key || token.mint,
+        cast_net_group_id: tracked.cast_net_group_id || null,
+        strategy_used: tracked.strategy_used || null,
+      });
+      continue;
+    } else if (volDiv.detected && volDiv.severity === "watch") {
+      log("intel_watch", `${token.symbol}: volume divergence — ${volDiv.recommendation}`);
+    }
+
     // Rug monitor (onHigh callback) sets this flag when a HIGH-severity signal fires.
     // Must be checked here so the position actually gets sold — the flag alone does nothing.
     if (tracked.rug_force_exit) {
@@ -1747,6 +1844,8 @@ async function checkDeterministicExits(tokens) {
         is_loss: currentPnlPct < 0,
         wallet_address: token.wallet_address || null,
         position_key: token.position_key || token.mint,
+        cast_net_group_id: tracked.cast_net_group_id || null,
+        strategy_used: tracked.strategy_used || null,
       });
       continue;
     }
@@ -1905,6 +2004,20 @@ async function checkDeterministicExits(tokens) {
       exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.trailingStopReason, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
     }
   }
+
+  // G2/G3: annotate every exit with the cast-net group id and the strategy
+  // the position was opened under. Done in one pass post-loop so we don't
+  // have to plumb these fields through all 7 exits.push() sites scattered
+  // through the policy branches above.
+  for (const exit of exits) {
+    if (exit.cast_net_group_id != null && exit.strategy_used != null) continue;
+    const t = getTrackedPosition(exit.position_key || exit.mint, exit.wallet_address || null);
+    if (t) {
+      if (exit.cast_net_group_id == null) exit.cast_net_group_id = t.cast_net_group_id || null;
+      if (exit.strategy_used == null) exit.strategy_used = t.strategy_used || null;
+    }
+  }
+
   return exits;
 }
 
@@ -2054,24 +2167,115 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     // ─── Step 2: Deterministic exits ─────────────
     const deterministicExits = await checkDeterministicExits(tokens);
+
+    // G2: cast-net staggered exit ordering. If multiple positions from the
+    // same cast-net group hit exit simultaneously, dumping them in the same
+    // block is the same fingerprint that the multi-wallet entry was meant
+    // to avoid. We interleave group members with non-group exits (so we
+    // don't pause if there's other work to do) and inject jittered delays
+    // between consecutive same-group exits below.
+    deterministicExits.sort((a, b) => {
+      // Non-cast-net exits first (they have no anti-detection cost).
+      const aGroup = a.cast_net_group_id || "";
+      const bGroup = b.cast_net_group_id || "";
+      if (!aGroup && bGroup) return -1;
+      if (aGroup && !bGroup) return 1;
+      // Within cast-net groups: randomize order so the slot index doesn't
+      // leak the original entry timing.
+      if (aGroup === bGroup) return Math.random() - 0.5;
+      return aGroup.localeCompare(bGroup);
+    });
+    let _lastCastNetGroupExitTs = 0;
+    let _lastCastNetGroupId = null;
+
     for (const exit of deterministicExits) {
       try {
+      // G2: stagger consecutive cast-net group exits (30s-5min jitter).
+      // Only delay when the previous exit was from the SAME group — we
+      // don't want to slow down unrelated exits.
+      if (exit.cast_net_group_id && exit.cast_net_group_id === _lastCastNetGroupId) {
+        const minMs = 30_000;
+        const maxMs = 300_000;
+        const delayMs = Math.floor(minMs + Math.random() * (maxMs - minMs));
+        const elapsedSinceLast = Date.now() - _lastCastNetGroupExitTs;
+        const sleepMs = Math.max(0, delayMs - elapsedSinceLast);
+        if (sleepMs > 0) {
+          log("cast_net", `🎣 stagger ${Math.round(sleepMs/1000)}s before next exit in group ${exit.cast_net_group_id.slice(-6)}`);
+          await new Promise((r) => setTimeout(r, sleepMs));
+        }
+      }
       log("strategy", `EXIT: ${exit.symbol} — ${exit.reason}`);
       const tokenData = tokens.find(t => (t.position_key || t.mint) === (exit.position_key || exit.mint));
+
+      // ── Exit Timing Plan ────────────────────────────────────────────
+      // Consult the exit-timing optimizer before executing. For profit-taking
+      // exits: may delay briefly if price is actively dumping (better fill).
+      // For all exits: sets minimum slippage so urgent exits don't waste the
+      // first attempt at 1% when 5%+ is needed.
+      const _exitPlan = planExit({
+        mint: exit.mint,
+        exitReason: exit.reason,
+        positionValueUsd: Number(tokenData?.usd || 0),
+        liquidityUsd: Number(tokenData?.liquidity_usd ?? tokenData?.liquidity ?? 0),
+        price1mPct: Number(tokenData?.price_change_1m ?? 0),
+        lastCandleGreen: tokenData?.last_candle_green ?? null,
+      });
+      if (_exitPlan.reasons.length > 0) {
+        log("exit_timing", `${exit.symbol}: ${_exitPlan.reasons.join("; ")}`);
+      }
+      if (_exitPlan.delayBeforeFirstMs > 0) {
+        await new Promise((r) => setTimeout(r, _exitPlan.delayBeforeFirstMs));
+      }
+      const _minSlippage = _exitPlan.slippagePct / 100;
+      const _balance = tokenData?.balance;
+
+      // ── Split vs Single Exit ─────────────────────────────────────────
+      // When planExit says split (position > 5% of liquidity), sell in
+      // splitCount equal chunks with splitDelayMs jitter between them.
+      // We stop on the first fully-stuck chunk — no point selling air.
       const exitStartAt = Date.now();
-      const { result: res, attempt: exitAttempt, stuck: exitStuck } = await withProgressiveSlippage(
-        (slippage) => swapToken({
-          token_in: exit.mint, token_out: "SOL",
-          amount: tokenData?.balance, slippage,
-          wallet: exit.wallet_address ? getWalletByAddress(exit.wallet_address)?.keypair || null : null,
-        })
-      );
+      let res, exitAttempt, exitStuck;
+      if (_exitPlan.split && _exitPlan.splitCount > 1 && Number(_balance) > 0) {
+        const chunkAmt = _balance / _exitPlan.splitCount;
+        let _lastRes = null, _lastAttempt = 1, _allFailed = true;
+        for (let _c = 0; _c < _exitPlan.splitCount; _c++) {
+          if (_c > 0) {
+            const jitter = Math.floor(Math.random() * (_exitPlan.splitDelayMs * 0.5));
+            await new Promise((r) => setTimeout(r, _exitPlan.splitDelayMs + jitter));
+          }
+          const { result: cR, attempt: cA, stuck: cS } = await withProgressiveSlippage(
+            (slippage) => swapToken({
+              token_in: exit.mint, token_out: "SOL",
+              amount: chunkAmt,
+              slippage: Math.max(slippage, _minSlippage),
+              wallet: exit.wallet_address ? getWalletByAddress(exit.wallet_address)?.keypair || null : null,
+            })
+          );
+          _lastRes = cR; _lastAttempt = cA;
+          log("exit_timing", `${exit.symbol} split ${_c + 1}/${_exitPlan.splitCount}: ${cR?.success || cR?.dry_run ? "OK" : "FAIL"}`);
+          if (!cS) _allFailed = false;
+          if (cS) break; // pool depth gone — abort remaining chunks
+        }
+        res = _lastRes; exitAttempt = _lastAttempt; exitStuck = _allFailed;
+      } else {
+        const _r = await withProgressiveSlippage(
+          (slippage) => swapToken({
+            token_in: exit.mint, token_out: "SOL",
+            amount: _balance,
+            slippage: Math.max(slippage, _minSlippage),
+            wallet: exit.wallet_address ? getWalletByAddress(exit.wallet_address)?.keypair || null : null,
+          })
+        );
+        res = _r.result; exitAttempt = _r.attempt; exitStuck = _r.stuck;
+      }
+
       recordSwapOutcome({ success: !!(res.success || res.dry_run) });
       await recordExecutionQuality({
         walletAddress: exit.wallet_address || null,
         provider: res?.execution_provider || "auto",
         mode: "sell",
-        split: false,
+        split: _exitPlan.split,
+        split_count: _exitPlan.split ? _exitPlan.splitCount : 1,
         marketCondition: getMarketIntelligence().condition,
         slippage: getExitSlippage(exitAttempt),
         success: !!(res.success || res.dry_run),
@@ -2094,6 +2298,22 @@ export async function runManagementCycle({ silent = false } = {}) {
         _rugMonitor?.detachPosition(exit.position_key || exit.mint);
         await clearPartialTPGuard(exit.position_key || exit.mint);
         recordRuggedNarrativesForExit({ reason: exit.reason, token: tokenData || {} });
+        // G2: track for the next iteration's stagger check.
+        // C1: propagate this position's PnL back to its cast-net group so
+        // the gate's consecutive-loss check has fresh outcomes.
+        if (exit.cast_net_group_id) {
+          _lastCastNetGroupId = exit.cast_net_group_id;
+          _lastCastNetGroupExitTs = Date.now();
+          try {
+            const { recordCastNetOutcome } = await import("./tools/cast-net-gate.js");
+            await recordCastNetOutcome({
+              groupId: exit.cast_net_group_id,
+              pnlPct: exit.pnl_pct || 0,
+            });
+          } catch (e) {
+            log("cast_net_err", `recordCastNetOutcome ${exit.cast_net_group_id}: ${e.message || e}`);
+          }
+        }
         const tradePnl = exit.pnl_pct || 0;
         recordTrade(!exit.is_loss);
         await handleDailyTradeGuardOutcome(!exit.is_loss, {
@@ -2220,6 +2440,23 @@ export async function runManagementCycle({ silent = false } = {}) {
           verdict: tracked?.signal_snapshot?.workflow?.verdict || "active",
           pnl_pct: tradePnl,
         });
+
+        // ── Strategy performance feedback loop ──────────────────────────
+        // Feed strategy outcome back to learning-agent so it can track
+        // per-strategy win/loss and surface degrading presets.
+        if (exit.strategy_used) {
+          agentBus.emit("management:strategy_outcome", {
+            strategy_id:  exit.strategy_used,
+            mint:         exit.mint,
+            symbol:       exit.symbol,
+            pnl_pct:      tradePnl,
+            exit_reason:  exit.reason,
+            hold_minutes: holdMinutes,
+            is_rug:       /rug/i.test(exit.reason || ""),
+            is_win:       tradePnl > 0,
+            market_condition: tokenData?.market_condition || getMarketIntelligence().condition,
+          });
+        }
 
         const tpTriggered = /immediate tp|roi|trailing stop/i.test(exit.reason || "") && (exit.pnl_pct || 0) >= (config.management.autoTakeProfitPct ?? 50);
         if (tpTriggered) {
@@ -3226,7 +3463,114 @@ export async function runScreeningCycle({ silent = false } = {}) {
           );
         }
       }
-      const finalPassed = passed && !proBuySkipped;
+      // ─── Intel layer (S1+S2+S4): insider / slow-rug / FOMO ──────
+      // Three pre-flight signals that run on every candidate and can
+      // hard-block entry if severe. They're additive to the existing
+      // pro buy gate — not replacements.
+      let intel = { insider: null, slow_rug: null, fomo: null, intel_blocked: false, intel_blockers: [] };
+      try {
+        intel.insider = detectInsiderPatterns(enhancedToken);
+        intel.fomo = evaluateFomoSetup(enhancedToken);
+        intel.slow_rug = evaluateSlowRug(enhancedToken.mint);
+        if (intel.insider.level === "block") {
+          intel.intel_blocked = true;
+          intel.intel_blockers.push(`insider: ${intel.insider.reasons.join(" | ")}`);
+        }
+        if (intel.fomo.block) {
+          intel.intel_blocked = true;
+          intel.intel_blockers.push(`fomo: ${intel.fomo.signals.join(" | ")}`);
+        }
+        if (intel.slow_rug.triggered && intel.slow_rug.severity === "high") {
+          intel.intel_blocked = true;
+          intel.intel_blockers.push(`slow-rug: ${intel.slow_rug.pattern}`);
+        }
+        if (intel.intel_blocked) {
+          flags.push(...intel.intel_blockers);
+          log("intel_block", `${token.symbol}: ${intel.intel_blockers.join(" | ")}`);
+        }
+      } catch (e) {
+        log("intel_err", `${token.symbol}: ${e.message || e}`);
+      }
+      // Record liquidity + price/volume samples for slow-rug and volume-divergence
+      // detectors so they have a baseline before the position is even opened.
+      try {
+        const _liq = Number(enhancedToken?.liquidity_usd ?? enhancedToken?.liquidity ?? 0);
+        const _priceUsd = Number(enhancedToken?.price_usd ?? enhancedToken?.priceUsd ?? 0);
+        if (enhancedToken?.mint && _liq > 0) {
+          await recordLiquiditySample({ mint: enhancedToken.mint, liquidity_usd: _liq, price_usd: _priceUsd });
+        }
+        const _vol = Number(
+          enhancedToken?.volume_5m_usd ?? enhancedToken?.volume_5m ??
+          enhancedToken?.volume_recent_usd ?? enhancedToken?.volume_24h_usd ?? 0
+        );
+        if (enhancedToken?.mint && _priceUsd > 0) {
+          await recordPriceVolumeSample({ mint: enhancedToken.mint, price_usd: _priceUsd, volume_recent_usd: _vol });
+        }
+      } catch {}
+
+      const finalPassed = passed && !proBuySkipped && !intel.intel_blocked;
+
+      // ─── G3: Per-coin strategy match ─────────────────────────────
+      // Score this candidate against every preset and pick the best fit.
+      // Pro-orch-only feature — without pro-orch, we keep using the global
+      // active strategy (legacy behavior). Annotated as `selected_strategy`
+      // so the deployment path can dispatch under the chosen preset's params.
+      let strategyMatch = null;
+      try {
+        if (isProModeActive()) {
+          strategyMatch = matchStrategyForCoin({
+            token: enhancedToken,
+            activeStrategyId: getActiveStrategyId(),
+            marketCondition: marketIntel.condition,
+          });
+          if (strategyMatch.suggest_override) {
+            log("strategy_match",
+              `${token.symbol} → ${strategyMatch.best.id} (score=${strategyMatch.best.score.toFixed(2)} vs active=${strategyMatch.active.score.toFixed(2)}): ${strategyMatch.best.reasons.join(", ")}`
+            );
+          }
+        }
+      } catch (e) {
+        log("strategy_match_err", `${token.symbol}: ${e.message || e}`);
+        strategyMatch = null;
+      }
+
+      // ─── Cast-Net (Tebar Jala) gate ──────────────────────────────
+      // Only evaluated when the buy already passed pro-orch — cast-net is
+      // an ADDITIVE high-conviction multi-wallet option, never a relaxation
+      // of the normal gate. If gate-allowed, the candidate is annotated so
+      // the executor can split the entry across up to 10 wallets with
+      // timing+amount jitter. If blocked, the buy proceeds normally as
+      // single-wallet.
+      let castNetEval = null;
+      if (finalPassed && isProModeActive()) {
+        try {
+          // total_experience is populated by getExperienceScore — represents
+          // the size of the profit-patterns memory used to derive the score.
+          const totalMem = Number(boostedConviction?.experience_score?.total_experience ?? 0);
+          castNetEval = proCastNetDecision({
+            token: enhancedToken,
+            conviction: boostedConviction,
+            totalMemorySamples: totalMem,
+            smartMoneyMinHolders: 2,
+          });
+          if (castNetEval.allowed) {
+            log("cast_net",
+              `🎣 GATE PASS ${token.symbol}: ${castNetEval.plan.wallets} wallets / ${castNetEval.plan.bankrollPct}% bankroll`
+            );
+          } else if (castNetEval.blockers.length > 0) {
+            // Only log when the operator actually has cast-net enabled —
+            // otherwise the disabled-by-default state would spam logs.
+            if (config.castNet?.enabled) {
+              log("cast_net",
+                `gate block ${token.symbol}: ${castNetEval.blockers.slice(0, 3).join(" | ")}`
+              );
+            }
+          }
+        } catch (e) {
+          log("cast_net", `gate error ${token.symbol}: ${e.message || e}`);
+          castNetEval = null;
+        }
+      }
 
       let recommendedAmount = preRegimeAmount;
       if (config.regimeMemory?.enabled) {
@@ -3262,6 +3606,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
         community_assessment: communityAssessment,
         dev_reputation: communityAssessment.dev,
         conviction_summary: getConvictionPromptLine(token.mint, token),
+        cast_net: castNetEval,
+        strategy_match: strategyMatch,
+        selected_strategy: strategyMatch?.selected_strategy || getActiveStrategyId(),
+        intel,
       });
     }
 
@@ -3408,6 +3756,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
           solPriceUsd: balance.sol_price || 0,
           maxNew,
           walletPlan,
+          totalBankrollSol: Number(balance?.balance_sol ?? walletSol ?? 0),
         });
         if (batch.deployed.length > 0) {
           log("fast_track", `Deployed ${batch.deployed.length} via fast-track: ${batch.deployed.map(t => t.symbol).join(", ")}`);
@@ -3630,6 +3979,7 @@ async function handleSmartWalletSwap(event) {
       deployAmountSol,
       solPriceUsd: 0,
       maxNew: 1,
+      totalBankrollSol: Number(walletSol || 0),
     });
     log("geyser_smart_buy", `fast-track: deployed=${batch.deployed.length} skipped=${batch.skipped.length}`);
   } catch (e) {
@@ -3866,14 +4216,29 @@ function startTurboButtons() {
     }
     if (config.rugMonitor?.enabled) {
       try {
+        // RT1: wrap rug-monitor callbacks with the real-time intel bridge.
+        // Every rug-monitor event (LOW/MEDIUM/HIGH) flows through here so
+        // slow-rug and dev-wallet pattern detectors can build samples in
+        // real time instead of only at management-cycle resolution.
+        const bridgedCallbacks = wrapRugMonitorCallbacks({
+          baseCallbacks: rugMonitorCallbacks,
+          markForceExit: (positionKey, reason) => {
+            const pos = getState()?.positions?.[positionKey];
+            if (pos) {
+              pos.rug_force_exit = true;
+              pos.rug_force_exit_reason = reason;
+              pos.rug_force_exit_ts = Date.now();
+            }
+          },
+        });
         _rugMonitor = createRugMonitor({
           geyserStream: _geyserStream,
           config: config.rugMonitor,
-          callbacks: rugMonitorCallbacks,
+          callbacks: bridgedCallbacks,
           fetchers: rugMonitorFetchers,
           log,
         });
-        log("rug_monitor", `enabled (polling=${config.rugMonitor.pollingIntervalSec}s)`);
+        log("rug_monitor", `enabled (polling=${config.rugMonitor.pollingIntervalSec}s) + intel-bridge ON`);
       } catch (e) {
         log("rug_monitor_error", `init failed: ${e.message}`);
       }
@@ -4586,6 +4951,136 @@ export async function handleIncomingTelegramMessage(msg) {
       `<b>PASSED (${qual.passed.length}):</b>\n${qual.passed.map(p => `  ${p}`).join("\n")}\n\n` +
       `<b>FAILED (${qual.failed.length}):</b>\n${qual.failed.map(f => `  ${f}`).join("\n")}`
     );
+    return;
+  }
+
+  // ── /castnet (Tebar Jala) commands ──────────────────────────────────
+  // /castnet on      → enable cast-net manual toggle (config flag must also be true)
+  // /castnet off     → disable cast-net manual toggle (persistent across restarts)
+  // /castnet status  → show current state, cooldown, fires today, last fire
+  // /castnet history → show last 10 cast-net fires + outcomes
+  if (text === "/castnet" || text.startsWith("/castnet ")) {
+    const { getCastNetStatus, setCastNetManualEnabled, getCastNetHistory } = await import("./tools/cast-net-gate.js");
+    const arg = text === "/castnet" ? "status" : text.slice("/castnet ".length).trim().toLowerCase();
+
+    if (arg === "on" || arg === "enable") {
+      const newState = await setCastNetManualEnabled(true);
+      const status = getCastNetStatus();
+      await sendHTML(
+        `<b>🎣 Cast-Net</b>\n` +
+        `Manual toggle: <b>${newState ? "ON" : "OFF"}</b>\n` +
+        `Config flag: ${status.config_enabled ? "✓ enabled" : "✗ disabled (set <code>castNetEnabled</code> in user-config.json)"}\n` +
+        `Effective: <b>${status.enabled ? "ARMED" : "DISARMED"}</b>`
+      );
+      return;
+    }
+    if (arg === "off" || arg === "disable") {
+      await setCastNetManualEnabled(false);
+      await sendHTML(`<b>🎣 Cast-Net</b>\nManual toggle: <b>OFF</b>\nEffective: <b>DISARMED</b>`);
+      return;
+    }
+    if (arg === "status" || arg === "") {
+      const status = getCastNetStatus();
+      const lines = [
+        `<b>🎣 Cast-Net (Tebar Jala) Status</b>`,
+        ``,
+        `Effective: <b>${status.enabled ? "ARMED" : "DISARMED"}</b>`,
+        `  Config flag: ${status.config_enabled ? "✓" : "✗"}`,
+        `  Manual toggle: ${status.manual_enabled === null ? "default" : (status.manual_enabled ? "✓ on" : "✗ off")}`,
+        `  Auto-disabled: ${status.auto_disabled ? `✗ YES (${status.consecutive_losses} losses)` : "✓ no"}`,
+        ``,
+        `<b>Cooldown:</b> ${status.cooldown_remaining_min > 0 ? `${status.cooldown_remaining_min} min remaining` : "ready"}`,
+        `<b>Fires today:</b> ${status.fires_today}`,
+        `<b>Total fires:</b> ${status.total_fires}`,
+        `<b>Consecutive losses:</b> ${status.consecutive_losses}`,
+        ``,
+        `<b>Config:</b>`,
+        `  Max wallets: ${status.config.max_wallets}`,
+        `  Max bankroll: ${status.config.max_bankroll_pct}%`,
+        `  Min conviction: ${status.config.min_conviction}`,
+        `  Cooldown: ${status.config.cooldown_min}min`,
+        `  Auto-disable after: ${status.config.auto_disable_consecutive_losses} losses`,
+        `  Min liquidity: $${(status.config.min_liquidity_usd || 0).toLocaleString()}`,
+        `  Mcap window: $${(status.config.mcap_window_usd?.[0] || 0).toLocaleString()}–$${(status.config.mcap_window_usd?.[1] || 0).toLocaleString()}`,
+        `  Volume/liq ratio: ${status.config.min_volume_to_liquidity}`,
+        `  Max top1: ${status.config.max_top1_holder_pct}%`,
+        `  Strategies: ${(status.config.allowed_strategies || []).join(", ")}`,
+      ];
+      if (status.last_fire) {
+        lines.push(``, `<b>Last fire:</b>`, `  ${status.last_fire.symbol || status.last_fire.mint?.slice(0, 8)} @ ${status.last_fire.wallet_count} wallets / ${status.last_fire.bankroll_pct}% bankroll`, `  ${status.last_fire.ts}`);
+      }
+      await sendHTML(lines.join("\n"));
+      return;
+    }
+    if (arg === "history") {
+      const fires = getCastNetHistory(10);
+      if (fires.length === 0) {
+        await sendHTML(`<b>🎣 Cast-Net History</b>\n\nBelum ada cast-net fire yang tercatat.`);
+        return;
+      }
+      const fmtOutcome = (f) => {
+        if (!f.outcome) return "⏳ open";
+        if (f.outcome.win === true)  return `✅ WIN avg ${f.outcome.avg_pnl_pct.toFixed(1)}%`;
+        if (f.outcome.win === false) return `❌ LOSS avg ${f.outcome.avg_pnl_pct.toFixed(1)}%`;
+        return `◽ neutralized`;
+      };
+      const rows = fires.map((f, i) => {
+        const sym = f.symbol || f.mint?.slice(0, 8) || "?";
+        const ts = (f.ts || "").slice(0, 16).replace("T", " ");
+        const edge = (f.edge_signals?.length || 0) > 0 ? " ⚠️" : "";
+        return `${i + 1}. <b>${sym}</b>${edge} · ${f.wallet_count}w/${f.bankroll_pct}% · ${ts}\n   ${fmtOutcome(f)}`;
+      });
+      await sendHTML(`<b>🎣 Cast-Net History (last ${fires.length})</b>\n\n${rows.join("\n\n")}`);
+      return;
+    }
+    await sendHTML(`Usage: /castnet on | off | status | history`);
+    return;
+  }
+
+  // ── /intel — per-position intel layer status ──────────────────────────
+  // Shows slow-rug / dev-wallet / volume-divergence evaluation for every
+  // open position. Useful when the operator wants to know WHY a position
+  // was force-exited or is being watched.
+  if (text === "/intel") {
+    const positions = (listTrackedPositions ? listTrackedPositions(null, { open_only: true }) : [])
+      .filter(p => !p.closed);
+    if (positions.length === 0) {
+      await sendHTML(`<b>🔍 Intel Layer</b>\n\nTidak ada posisi aktif yang dimonitor.`);
+      return;
+    }
+    const lines = [`<b>🔍 Intel Layer — ${positions.length} posisi aktif</b>`, ``];
+    for (const pos of positions) {
+      const mint = pos.position || pos.position_key?.split(":")?.[0] || "?";
+      const sym  = pos.pool_name || mint.slice(0, 8);
+      const slowRug = evaluateSlowRug(mint);
+      const devAct  = evaluateDevActivity(mint);
+      const volDiv  = evaluateVolumeDivergence(mint);
+      const flags = [];
+      if (slowRug.triggered) flags.push(`💧 slow-rug:${slowRug.pattern}(${slowRug.severity})`);
+      if (devAct.alert && devAct.alert !== "none") flags.push(`🔑 dev:${devAct.alert}(${devAct.severity})`);
+      if (volDiv.detected) flags.push(`📉 vol-div:${volDiv.pattern}(${volDiv.severity})`);
+      lines.push(`<b>${htmlEscape(sym)}</b>: ${flags.length > 0 ? flags.join(", ") : "✅ bersih"}`);
+    }
+    await sendHTML(lines.join("\n"));
+    return;
+  }
+
+  // ── /strategy-perf — per-strategy win/loss stats from learning agent ──
+  if (text === "/strategy-perf" || text === "/stratperf") {
+    const ranking = getStrategyPerformance();
+    if (ranking.length === 0) {
+      await sendHTML(`<b>📊 Strategy Performance</b>\n\nBelum ada data. Butuh beberapa trade untuk build statistik.`);
+      return;
+    }
+    const lines = [`<b>📊 Strategy Performance</b>`, ``];
+    for (const s of ranking) {
+      const wr = (s.win_rate * 100).toFixed(0);
+      const rr = (s.rug_rate * 100).toFixed(0);
+      const avg = s.avg_pnl_pct >= 0 ? `+${s.avg_pnl_pct}%` : `${s.avg_pnl_pct}%`;
+      const bar = s.win_rate >= 0.6 ? "🟢" : s.win_rate >= 0.4 ? "🟡" : "🔴";
+      lines.push(`${bar} <b>${s.id}</b> ${avg} | WR ${wr}% rug ${rr}% (${s.traded} trades)`);
+    }
+    await sendHTML(lines.join("\n"));
     return;
   }
 

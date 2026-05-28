@@ -6,6 +6,37 @@ function hasArtifact(artifacts, kind) {
   return artifacts.some((artifact) => artifact.kind === kind);
 }
 
+/**
+ * Deep check: artifact exists AND has substantive content.
+ * Guards against skeleton/placeholder artifacts that pass existence checks
+ * but carry no actual work product (empty content object, blank summary).
+ * Returns { ok, reason } so callers get a specific failure message.
+ */
+function depthCheckArtifact(artifacts, kind) {
+  const found = artifacts.find((a) => a.kind === kind);
+  if (!found) return { ok: false, reason: `Missing ${kind} artifact.` };
+
+  // Check summary is non-trivial (> 5 chars, not just "{}" or "done")
+  const summary = String(found.summary || "").trim();
+  if (summary.length < 6) {
+    return { ok: false, reason: `${kind} artifact has empty/trivial summary ("${summary}")` };
+  }
+
+  // Check content object has at least one key with a non-empty value
+  const content = found.content;
+  if (!content || typeof content !== "object") {
+    return { ok: false, reason: `${kind} artifact content is not an object` };
+  }
+  const contentKeys = Object.keys(content).filter(
+    (k) => content[k] !== null && content[k] !== undefined && content[k] !== ""
+  );
+  if (contentKeys.length === 0) {
+    return { ok: false, reason: `${kind} artifact content is empty ({})` };
+  }
+
+  return { ok: true, reason: null };
+}
+
 export function validateTaskPolicy({ task_id, pending_agent = null } = {}) {
   const task = getOrchestrationTask({ id: task_id });
   if (task?.error) return task;
@@ -18,9 +49,16 @@ export function validateTaskPolicy({ task_id, pending_agent = null } = {}) {
   const issues = [];
   const warnings = [];
 
-  if (!hasArtifact(artifacts, "spec")) issues.push("Missing spec artifact.");
-  if (!hasArtifact(artifacts, "plan")) issues.push("Missing plan artifact.");
-  if (!hasArtifact(artifacts, "testing")) issues.push("Missing testing artifact.");
+  // Depth-check required artifacts — existence alone is not enough.
+  // An empty spec or empty test artifact passes the old hasArtifact() check
+  // but indicates the worker submitted a placeholder, not real work.
+  const specCheck    = depthCheckArtifact(artifacts, "spec");
+  const planCheck    = depthCheckArtifact(artifacts, "plan");
+  const testingCheck = depthCheckArtifact(artifacts, "testing");
+
+  if (!specCheck.ok)    issues.push(specCheck.reason);
+  if (!planCheck.ok)    issues.push(planCheck.reason);
+  if (!testingCheck.ok) issues.push(testingCheck.reason);
   if (!hasArtifact(artifacts, "build")) warnings.push("No build artifact found.");
 
   const decisionNotes = (task.task.stages || [])
@@ -82,8 +120,11 @@ export function finalizeTaskWithPolicy({ task_id, agent = "claude", cli = "claud
     status: "completed",
   });
 
+  // PG-2: re-fetch after the note write — addOrchestrationNote already
+  // persisted status="completed" to disk, so this read reflects the final
+  // state. Previously we also re-assigned task.task.status here, which
+  // was a no-op since the persisted record was already correct.
   const task = getOrchestrationTask({ id: task_id });
-  task.task.status = "completed";
   return {
     ok: true,
     validation,
