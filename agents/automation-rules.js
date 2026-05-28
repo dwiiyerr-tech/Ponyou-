@@ -42,6 +42,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { atomicWriteJson } from "../atomic-write.js";
+import { config } from "../config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
@@ -116,10 +117,14 @@ export function checkAutomationQualification() {
 
   // 1. Market exposure hours — from metrics.json or trading time tracking
   const metrics = tryReadJson("metrics.json") || {};
+  // AAR-5: derive cycle minutes from runtime config so the estimate
+  // tracks the operator's actual interval. Previously hardcoded 5,
+  // which over- or under-counted whenever config changed.
+  const cycleMin = Math.max(1, Number(config?.schedule?.managementIntervalMin) || 5);
   const exposureHours = metrics.total_market_hours
     || metrics.market_exposure_hours
     || metrics.uptime_hours
-    || ((metrics.total_cycles || 0) * 5 / 60) // estimate: 5 min per cycle
+    || ((metrics.total_cycles || 0) * cycleMin / 60)
     || 0;
   results.summary.marketExposureHours = exposureHours;
   if (exposureHours >= REQUIREMENTS.marketExposureHours) {
@@ -242,6 +247,11 @@ export function runAutomationQualification({ telegramSendFn = null } = {}) {
   _automationState.qualificationCheckedAt = new Date().toISOString();
   _automationState.qualificationSummary = results;
 
+  // AAR-9: detect transitions in both directions so the operator gets a
+  // signal when a previously-qualified bot drops back below threshold
+  // (e.g., win rate decay, evolved-strategy expiry, regime gap).
+  const wasQualified = _automationState.qualified;
+
   if (results.qualified) {
     _automationState.qualified = true;
 
@@ -263,11 +273,28 @@ export function runAutomationQualification({ telegramSendFn = null } = {}) {
       updateAgentHealth("orchestrator", {
         automationQualified: true,
         automationProposalSent: true,
-    });
+      });
     }
   } else {
     _automationState.qualified = false;
     log("automation_rules", `Not qualified: ${results.progressPct}% (${results.passed.length}/${results.passed.length + results.failed.length} checks passed)`);
+    // AAR-9: explicit degradation alert. If automation is currently
+    // active and we just lost qualification, the operator should know
+    // immediately — the safety gate is now propped open by a stale
+    // approval.
+    if (wasQualified) {
+      agentBus.emit("automation:qualification_lost", {
+        previousState: "qualified",
+        failedChecks: results.failed,
+        progressPct: results.progressPct,
+        automationActive: _automationState.automationActive,
+        timestamp: Date.now(),
+      });
+      log("automation_rules",
+        `⚠️  QUALIFICATION LOST (was qualified) — ${results.failed.length} checks now failing` +
+        (_automationState.automationActive ? " — automation still active, consider /revoke_automation" : ""),
+      );
+    }
   }
 
   saveAutomationState();
@@ -275,8 +302,29 @@ export function runAutomationQualification({ telegramSendFn = null } = {}) {
 }
 
 export function approveAutomation() {
-  if (!_automationState.qualified) return { ok: false, reason: "Not qualified yet" };
+  // AAR-2: re-check qualification at approve time instead of trusting the
+  // cached flag. Conditions can degrade between qualification and approval
+  // (win rate drops, regime exits, etc.); approving based on stale state
+  // means the safety gate opens for a bot that no longer meets the bar.
+  const fresh = checkAutomationQualification();
+  if (!fresh.qualified) {
+    log("automation_rules",
+      `Approve blocked — re-check failed: ${fresh.failed.length} checks now missing (${fresh.progressPct}%)`,
+    );
+    // Sync the cached state so isAutomationQualified() reads accurately.
+    _automationState.qualified = false;
+    _automationState.qualificationSummary = fresh;
+    saveAutomationState();
+    return {
+      ok: false,
+      reason: "Re-check at approve time failed",
+      failedChecks: fresh.failed,
+      progressPct: fresh.progressPct,
+    };
+  }
 
+  _automationState.qualified = true;
+  _automationState.qualificationSummary = fresh;
   _automationState.proposalApproved = true;
   _automationState.approvedAt = new Date().toISOString();
   _automationState.automationActive = true;
@@ -359,11 +407,13 @@ export function guardAutomatedDecision(decisionType) {
   if (!_automationState.automationActive) {
     return {
       allowed: false,
-      reason: `Automation not active. ${_automationState.qualified ? "Awaiting approval." : "Not qualified yet. " + getProgressMessage()}`,
+      // AAR-10: include the decision type in the reason so the caller's
+      // log line tells the operator which action was blocked.
+      reason: `Automation not active${decisionType ? ` (${decisionType})` : ""}. ${_automationState.qualified ? "Awaiting approval." : "Not qualified yet. " + getProgressMessage()}`,
     };
   }
 
-  return { allowed: true };
+  return { allowed: true, decisionType };
 }
 
 function getProgressMessage() {
