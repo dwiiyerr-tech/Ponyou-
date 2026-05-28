@@ -125,7 +125,9 @@ describe("scoreRugRisk fail-safe guards", () => {
     expect(onEmergencyExit).toHaveBeenCalledWith(
       mint,
       "liquidity_removal",
-      "1,000,001 tokens removed in single tx",
+      // GEM-2: message wording was tightened ("removed" → "dumped") since
+      // the event is a sell-direction dump, not a literal liquidity removal.
+      "1,000,001 tokens dumped in single tx",
     );
     cleanup();
   });

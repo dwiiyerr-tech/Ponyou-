@@ -45,8 +45,13 @@ export function detectLpMovement({ lpAtEntry, currentLp, transferTo = null, remo
   const deltaPct = ((currentLp - lpAtEntry) / lpAtEntry) * 100;
   if (deltaPct >= 0) return SEVERITY.NONE;
   if (thresholds.high !== null && deltaPct <= thresholds.high) return SEVERITY.HIGH;
+  // RM-1: previously this read `Math.max(medium, low * 2)`. When thresholds.low
+  // was null, `null * 2 === NaN` → Math.max returned NaN → the MEDIUM branch
+  // could never fire. Guard the multiplication so a null `low` falls back to
+  // the plain medium threshold.
+  const fallbackFromLow = thresholds.low !== null ? thresholds.low * 2 : null;
   const mediumThreshold = thresholds.high === null && thresholds.medium !== null
-    ? Math.max(thresholds.medium, thresholds.low * 2)
+    ? (fallbackFromLow !== null ? Math.max(thresholds.medium, fallbackFromLow) : thresholds.medium)
     : thresholds.medium;
   if (mediumThreshold !== null && deltaPct <= mediumThreshold) return SEVERITY.MEDIUM;
   if (thresholds.low !== null && deltaPct <= thresholds.low) return SEVERITY.LOW;
@@ -90,6 +95,14 @@ export function createRugMonitor({ geyserStream, config, callbacks, fetchers, lo
       geyser_subs: [],
       polling_handle: null,
       holder_events: [],
+      // RM-7: cache the previous poll's holder balance map so dump deltas
+      // are computed *between successive polls* instead of comparing the
+      // current balance to the original snapshot every cycle. The bug
+      // before: the same "current - snapshot" delta got pushed on every
+      // poll, then summed by detectHolderDump — inflating the apparent
+      // dump linearly with poll count (10 polls in a 5-min window of
+      // 30s polling = 10x false amplification).
+      prev_holder_balances: new Map((meta.top_holders_snapshot || []).map(h => [h.wallet, h.balance])),
       last_severity_emitted: { dev_sell: SEVERITY.NONE, lp: SEVERITY.NONE, authority: SEVERITY.NONE, holders: SEVERITY.NONE },
       shutdown: false,
     };
@@ -126,13 +139,23 @@ export function createRugMonitor({ geyserStream, config, callbacks, fetchers, lo
     } catch (e) { log("rug_monitor", `authority poll failed for ${positionKey}: ${e.message}`); }
     try {
       const current = await fetchers.getLargestAccounts(m.mint);
-      const snapshotMap = new Map((m.top_holders_snapshot || []).map(h => [h.wallet, h.balance]));
-      const events = (current || []).map(h => ({ tsMs: Date.now(), deltaTokens: (h.balance || 0) - (snapshotMap.get(h.wallet) || 0) }));
+      // RM-7 fix: compute delta against the *previous* poll, not against
+      // the initial entry snapshot. Only deltas for wallets that were on
+      // the previous poll (i.e., real movement between polls) count.
+      const now = Date.now();
+      const events = (current || []).map(h => {
+        const prev = state.prev_holder_balances.get(h.wallet);
+        if (prev === undefined) return null; // brand-new top holder this cycle — no delta to record
+        return { tsMs: now, deltaTokens: (h.balance || 0) - prev };
+      }).filter(Boolean);
       state.holder_events.push(...events);
-      const cutoff = Date.now() - 5 * 60_000;
+      // Refresh the per-poll balance cache so the *next* poll computes its
+      // delta against this poll's snapshot.
+      state.prev_holder_balances = new Map((current || []).map(h => [h.wallet, h.balance || 0]));
+      const cutoff = now - 5 * 60_000;
       state.holder_events = state.holder_events.filter(e => e.tsMs >= cutoff);
       const snapshotTotal = (m.top_holders_snapshot || []).reduce((s, h) => s + (h.balance || 0), 0);
-      const sev = detectHolderDump({ snapshotTotal, events: state.holder_events, windowMs: 5 * 60_000, nowMs: Date.now(), thresholds: config.holderDumpThresholds });
+      const sev = detectHolderDump({ snapshotTotal, events: state.holder_events, windowMs: 5 * 60_000, nowMs: now, thresholds: config.holderDumpThresholds });
       _emit(state, positionKey, "holders", sev, "holder_dump", { eventsCount: state.holder_events.length }, "polling");
     } catch (e) { log("rug_monitor", `holders poll failed for ${positionKey}: ${e.message}`); }
   }
@@ -149,54 +172,74 @@ export function createRugMonitor({ geyserStream, config, callbacks, fetchers, lo
     if (shuttingDown) return;
     if (positions.has(positionKey)) {
       const existing = positions.get(positionKey);
+      const oldMeta = existing.meta;
       existing.meta = { ...existing.meta, ...meta };
+      // RM-3: if any of the watched account fields changed, tear down the
+      // old Geyser subscriptions and re-subscribe with the new accounts.
+      // Without this, e.g. a dev wallet handoff would leave the monitor
+      // watching the old deployer_token_account forever.
+      const watchedKeys = ["deployer_token_account", "lp_address", "mint"];
+      const anyChanged = watchedKeys.some(k => meta[k] !== undefined && meta[k] !== oldMeta[k]);
+      if (anyChanged && geyserStream?.unsubscribe) {
+        for (const sub of existing.geyser_subs) {
+          try { geyserStream.unsubscribe(sub); } catch (_) {}
+        }
+        existing.geyser_subs = [];
+        _subscribeGeyser(positionKey, existing);
+      }
       return;
     }
     const state = _newState(meta);
     positions.set(positionKey, state);
     _schedulePolling(positionKey, state);
-    if (geyserStream?.subscribe) {
-      if (meta.deployer_token_account) {
-        const sub = geyserStream.subscribe(
-          { kind: "account", account: meta.deployer_token_account },
-          (evt) => {
-            const sev = detectDevSell({
-              balanceAtEntry: meta.deployer_balance_at_entry,
-              currentBalance: evt?.tokenBalance,
-              thresholds: config.devSellThresholds,
-            });
-            _emit(state, positionKey, "dev_sell", sev, "dev_sell", { current: evt?.tokenBalance }, "geyser");
-          }
-        );
-        state.geyser_subs.push(sub);
-      }
-      if (meta.lp_address) {
-        const sub = geyserStream.subscribe(
-          { kind: "account", account: meta.lp_address },
-          (evt) => {
-            const sev = detectLpMovement({
-              lpAtEntry: meta.lp_usd_at_entry,
-              currentLp: evt?.lpUsd ?? evt?.currentLp,
-              transferTo: evt?.transferTo,
-              removeLiquidityBy: evt?.removeLiquidityBy,
-              deployerWallet: meta.deployer_wallet,
-              thresholds: config.lpMovementThresholds,
-            });
-            _emit(state, positionKey, "lp", sev, "lp_movement", { evt }, "geyser");
-          }
-        );
-        state.geyser_subs.push(sub);
-      }
-      if (meta.mint) {
-        const sub = geyserStream.subscribe(
-          { kind: "account", account: meta.mint },
-          (evt) => {
-            const sev = detectAuthorityChange({ atEntry: meta.authorities, current: evt });
-            _emit(state, positionKey, "authority", sev, "authority_change", { current: evt }, "geyser");
-          }
-        );
-        state.geyser_subs.push(sub);
-      }
+    _subscribeGeyser(positionKey, state);
+  }
+
+  // Extracted so attachPosition can also use it when meta-driven account
+  // fields change on a re-attach (RM-3).
+  function _subscribeGeyser(positionKey, state) {
+    if (!geyserStream?.subscribe) return;
+    const meta = state.meta;
+    if (meta.deployer_token_account) {
+      const sub = geyserStream.subscribe(
+        { kind: "account", account: meta.deployer_token_account },
+        (evt) => {
+          const sev = detectDevSell({
+            balanceAtEntry: state.meta.deployer_balance_at_entry,
+            currentBalance: evt?.tokenBalance,
+            thresholds: config.devSellThresholds,
+          });
+          _emit(state, positionKey, "dev_sell", sev, "dev_sell", { current: evt?.tokenBalance }, "geyser");
+        }
+      );
+      state.geyser_subs.push(sub);
+    }
+    if (meta.lp_address) {
+      const sub = geyserStream.subscribe(
+        { kind: "account", account: meta.lp_address },
+        (evt) => {
+          const sev = detectLpMovement({
+            lpAtEntry: state.meta.lp_usd_at_entry,
+            currentLp: evt?.lpUsd ?? evt?.currentLp,
+            transferTo: evt?.transferTo,
+            removeLiquidityBy: evt?.removeLiquidityBy,
+            deployerWallet: state.meta.deployer_wallet,
+            thresholds: config.lpMovementThresholds,
+          });
+          _emit(state, positionKey, "lp", sev, "lp_movement", { evt }, "geyser");
+        }
+      );
+      state.geyser_subs.push(sub);
+    }
+    if (meta.mint) {
+      const sub = geyserStream.subscribe(
+        { kind: "account", account: meta.mint },
+        (evt) => {
+          const sev = detectAuthorityChange({ atEntry: state.meta.authorities, current: evt });
+          _emit(state, positionKey, "authority", sev, "authority_change", { current: evt }, "geyser");
+        }
+      );
+      state.geyser_subs.push(sub);
     }
   }
 
