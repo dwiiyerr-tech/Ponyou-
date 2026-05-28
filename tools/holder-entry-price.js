@@ -23,7 +23,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "../logger.js";
-import { atomicWriteJson } from "../atomic-write.js";
+import { atomicWriteJson, withFileLock } from "../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOLDER_ENTRY_CACHE_FILE = path.join(__dirname, "..", "holder-entry-prices.json");
@@ -82,6 +82,24 @@ export function analyzeHolderEntryPrices({
   }
 
   const currentPrice = safeNum(currentPriceUsd);
+  // Underwater comparison requires a known current price. Without it every
+  // positive entry would compare against 0 and report 100% underwater, which
+  // would then trigger CRITICAL sell-pressure exits on tokens we simply don't
+  // have a price feed for. Bail out and let the caller fall back to the
+  // price-history estimator instead.
+  if (currentPrice <= 0) {
+    return {
+      avg_entry_price_usd: 0,
+      current_price_usd: 0,
+      underwater_pct: 0,
+      sell_pressure_risk: "UNKNOWN",
+      confidence: 0,
+      details: {
+        holders_analyzed: 0,
+        reason: "Current price unavailable — cannot compute underwater %",
+      },
+    };
+  }
   const holderEntries = [];
   let totalUnderwaterCount = 0;
 
@@ -99,15 +117,16 @@ export function analyzeHolderEntryPrices({
     const entryPrice = safeNum(firstTx.priceUsd || firstTx.price);
     if (entryPrice <= 0) continue; // skip invalid
 
+    const isUnderwater = entryPrice > currentPrice;
     holderEntries.push({
       address: holder.address?.slice(0, 8) || "unknown",
       first_buy_at: firstTx.timestamp,
       entry_price: entryPrice,
       amount: safeNum(firstTx.amount),
-      is_underwater: entryPrice > currentPrice,
+      is_underwater: isUnderwater,
     });
 
-    if (entryPrice > currentPrice) {
+    if (isUnderwater) {
       totalUnderwaterCount++;
     }
   }
@@ -150,21 +169,25 @@ export function analyzeHolderEntryPrices({
     confidence = 65;
   }
 
-  // Cache result
-  const cache = loadEntryPriceCache();
-  if (!cache.coins[tokenMint]) cache.coins[tokenMint] = [];
-  cache.coins[tokenMint].push({
-    analyzed_at: nowIso(),
-    avg_entry_price: avgEntryPrice,
-    current_price: currentPrice,
-    underwater_pct: underwaterPct,
-    risk_level: sell_pressure_risk,
-  });
-  // Keep last 20 analyses per coin
-  if (cache.coins[tokenMint].length > 20) {
-    cache.coins[tokenMint] = cache.coins[tokenMint].slice(-20);
-  }
-  saveEntryPriceCache(cache);
+  // Cache result — serialize the read-modify-write under file lock so
+  // concurrent positions in the same management cycle don't clobber each
+  // other's writes. Fire-and-forget: the caller doesn't depend on the
+  // cache write completing, only on the in-memory return value below.
+  withFileLock(HOLDER_ENTRY_CACHE_FILE, async () => {
+    const cache = loadEntryPriceCache();
+    if (!cache.coins[tokenMint]) cache.coins[tokenMint] = [];
+    cache.coins[tokenMint].push({
+      analyzed_at: nowIso(),
+      avg_entry_price: avgEntryPrice,
+      current_price: currentPrice,
+      underwater_pct: underwaterPct,
+      risk_level: sell_pressure_risk,
+    });
+    if (cache.coins[tokenMint].length > 20) {
+      cache.coins[tokenMint] = cache.coins[tokenMint].slice(-20);
+    }
+    saveEntryPriceCache(cache);
+  }).catch((err) => log("holder_entry_warn", `cache write failed: ${err.message}`));
 
   const sortedByEntry = [...holderEntries].sort(
     (a, b) => a.entry_price - b.entry_price

@@ -28,6 +28,7 @@ import { recordCounter } from "./metrics.js";
  */
 export async function checkHolderExitSignals({
   position,
+  mint: explicitMint = null,
   currentPrice = 0,
   topHolders = [],
   recentSells = [],
@@ -35,9 +36,19 @@ export async function checkHolderExitSignals({
   priceHistory = [],
   featureFlags = {},
 } = {}) {
-  if (!position || !position.mint) return null;
+  if (!position) return null;
 
-  const { mint, pool_name } = position;
+  // state.js stores the mint as `position.position` (the field name is
+  // unfortunate but historical). signal_snapshot.mint and explicitly-passed
+  // `mint` are also accepted so the caller can pass whichever it has handy.
+  const mint = explicitMint
+    || position.mint
+    || position.position
+    || position.signal_snapshot?.mint
+    || null;
+  if (!mint || typeof mint !== "string" || mint.length < 32) return null;
+
+  const pool_name = position.pool_name || position.pool || null;
   const cfg = featureFlags || {};
 
   // Feature flag check: skip if disabled
@@ -258,12 +269,17 @@ function shouldRunBetaCheck(mint, featureFlags = {}) {
   const patternPct = featureFlags.rugPatternDetector?.betaRolloutPct || 0;
 
   const maxPct = Math.max(dumpPct, entryPct, patternPct);
-  if (maxPct === 0) return false;
+  if (maxPct <= 0) return false;
+  if (maxPct >= 100) return true;
+  if (!mint || typeof mint !== "string") return false;
 
-  // Hash mint to 0-100 bucket for consistent rollout
-  const hash = mint
-    .split("")
-    .reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0);
+  // Hash mint to 0-100 bucket for consistent rollout. Same mint always lands
+  // in the same bucket so a position either is or isn't in the beta cohort
+  // across cycles (no flapping).
+  let hash = 0;
+  for (let i = 0; i < mint.length; i++) {
+    hash = ((hash << 5) - hash + mint.charCodeAt(i)) | 0;
+  }
   const bucket = Math.abs(hash) % 100;
 
   return bucket < maxPct;

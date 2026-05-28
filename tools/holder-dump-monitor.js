@@ -145,9 +145,13 @@ export function monitorHolderDumps({
   const baselineSnapshot = historicalSnapshots[0];
   const currentSnapshot = historicalSnapshots[historicalSnapshots.length - 1];
 
-  // Build address → balance maps for easy comparison
-  const baselineMap = new Map(baselineSnapshot.holders.map((h) => [h.address, h]));
-  const currentMap = new Map(currentSnapshot.holders.map((h) => [h.address, h]));
+  // Build address → balance maps for easy comparison. Filter out holders
+  // with empty addresses so they don't collide in the Map (e.g. multiple
+  // unidentified holders would otherwise stomp each other under key="").
+  const validBaseline = (baselineSnapshot.holders || []).filter((h) => h.address);
+  const validCurrent = (currentSnapshot.holders || []).filter((h) => h.address);
+  const baselineMap = new Map(validBaseline.map((h) => [h.address, h]));
+  const currentMap = new Map(validCurrent.map((h) => [h.address, h]));
 
   const signals = [];
   let score = 0;
@@ -157,11 +161,10 @@ export function monitorHolderDumps({
     const currentHolder = currentMap.get(addr);
     if (!currentHolder) {
       // Holder disappeared entirely = likely full exit
-      const dumpPct = 100;
       signals.push({
         signal: "holder_fully_exited",
         address: addr.slice(0, 8) + "...",
-        dump_pct: dumpPct,
+        dump_pct: 100,
         baseline_pct: baselineHolder.pct,
         detail: `Top holder completely exited (was ${baselineHolder.pct.toFixed(1)}%)`,
         strength: "CRITICAL",
@@ -173,13 +176,16 @@ export function monitorHolderDumps({
     const balanceDelta = baselineHolder.balance - currentHolder.balance;
     const pctDelta = baselineHolder.pct - currentHolder.pct;
 
-    // Large single-holder dump: lost >20% of their position
+    // Large single-holder dump: lost meaningful fraction of their position.
+    // pctDelta is in absolute pct-of-supply points (e.g. 5% → 2% = pctDelta 3).
     if (balanceDelta > 0 && pctDelta >= 3) {
       signals.push({
         signal: "large_holder_dump",
         address: addr.slice(0, 8) + "...",
-        dump_pct: pctDelta.toFixed(1),
-        was_pct: baselineHolder.pct.toFixed(1),
+        // Keep dump_pct as a number so downstream consumers don't have to
+        // parse strings; the formatted display lives in `detail`.
+        dump_pct: Number(pctDelta.toFixed(1)),
+        was_pct: Number(baselineHolder.pct.toFixed(1)),
         detail: `Holder reduced ${baselineHolder.pct.toFixed(1)}% → ${currentHolder.pct.toFixed(1)}%`,
         strength: pctDelta >= 5 ? "CRITICAL" : "HIGH",
       });
@@ -209,9 +215,11 @@ export function monitorHolderDumps({
     score += 15;
   }
 
-  // Signal 3: Top holder concentration increasing = concentration risk during dump
-  const top1Baseline = baselineSnapshot.holders[0]?.pct || 0;
-  const top1Current = currentSnapshot.holders[0]?.pct || 0;
+  // Signal 3: Top holder concentration increasing = concentration risk during dump.
+  // Compute "top" by max pct rather than [0] index — input order isn't guaranteed
+  // to be sorted by share.
+  const top1Baseline = validBaseline.reduce((m, h) => Math.max(m, h.pct || 0), 0);
+  const top1Current = validCurrent.reduce((m, h) => Math.max(m, h.pct || 0), 0);
   if (top1Current > top1Baseline + 2) {
     signals.push({
       signal: "top_holder_consolidating",

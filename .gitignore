@@ -67,6 +67,9 @@ perf-memory.json
 holder-memory.json
 token-blacklist.json
 dev-blocklist.json
+holder-snapshots.json
+holder-entry-prices.json
+rug-pattern-detections.json
 
 # Runtime PID / lockfiles
 *.pid
