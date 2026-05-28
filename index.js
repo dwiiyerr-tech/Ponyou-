@@ -54,6 +54,7 @@ import { evaluateSlowRug, recordLiquiditySample } from "./tools/slow-rug-detecto
 import { evaluateDevActivity, recordDevSnapshot, extractDevWallet } from "./tools/dev-wallet-tracker.js";
 import { evaluateVolumeDivergence, recordPriceVolumeSample } from "./tools/volume-divergence.js";
 import { planExit } from "./tools/exit-timing-optimizer.js";
+import { checkHolderExitSignals } from "./holder-exit-checks.js";
 import {
   listPendingIntents, getIntent, consumeIntent,
 } from "./intents.js";
@@ -1778,6 +1779,82 @@ async function checkDeterministicExits(tokens) {
       }
     } catch (e) {
       log("intel_sample_err", `${token?.mint?.slice(0,8)}: ${e.message || e}`);
+    }
+
+    // ─── Holder Analysis (ABC) ─────────────────────────────────────
+    // Check for real-time dump detection, underwater holders, and rug patterns
+    // if feature flags are enabled.
+    try {
+      const topHolders = token?.topHolders || token?.top_holders || [];
+      const recentSells = token?.recentSells || token?.recent_sells || [];
+      const holderTxHistory = token?.holderTransactions || token?.holder_transactions || [];
+      const priceHistory = token?.priceHistory || token?.price_history || [];
+
+      const holderSignal = await checkHolderExitSignals({
+        position: tracked,
+        currentPrice,
+        topHolders,
+        recentSells,
+        holderTransactions: holderTxHistory,
+        priceHistory,
+        featureFlags: config.holderAnalysis || {},
+      });
+
+      if (holderSignal && holderSignal.risk_level === "CRITICAL") {
+        exits.push({
+          mint: token.mint,
+          symbol: token.symbol,
+          reason: `holder_analysis: ${holderSignal.signals?.[0]?.tool || "critical"} — ${holderSignal.details?.top_dumper || "large dump"} (${holderSignal.confidence}% confidence)`,
+          pnl_pct: currentPnlPct,
+          is_loss: currentPnlPct < 0,
+          wallet_address: token.wallet_address || null,
+          position_key: token.position_key || token.mint,
+          cast_net_group_id: tracked.cast_net_group_id || null,
+          strategy_used: tracked.strategy_used || null,
+        });
+        log(
+          "holder_exit",
+          `🚨 CRITICAL holder risk on ${token.symbol}: ${holderSignal.details?.top_dumper || "coordinated dump"} detected — EXITING`
+        );
+        if (telegramEnabled()) {
+          sendHTML(
+            `🚨 <b>HOLDER ALERT</b> — ${token.symbol}\n<code>${holderSignal.signals?.[0]?.tool || "Risk"}</code>\n${holderSignal.signals?.[0]?.reason || "Critical holder risk"}`
+          ).catch(() => {});
+        }
+        continue;
+      } else if (holderSignal && holderSignal.risk_level === "HIGH" && holderSignal.confidence >= 80) {
+        // HIGH risk with strong confidence — also exit but log for review
+        exits.push({
+          mint: token.mint,
+          symbol: token.symbol,
+          reason: `holder_analysis_high: ${holderSignal.signals?.[0]?.tool || "high risk"} (${holderSignal.confidence}%)`,
+          pnl_pct: currentPnlPct,
+          is_loss: currentPnlPct < 0,
+          wallet_address: token.wallet_address || null,
+          position_key: token.position_key || token.mint,
+          cast_net_group_id: tracked.cast_net_group_id || null,
+          strategy_used: tracked.strategy_used || null,
+        });
+        log(
+          "holder_exit",
+          `⚠️ HIGH holder risk on ${token.symbol}: ${holderSignal.signals?.[0]?.reason || "high dump risk"} — EXITING`
+        );
+        if (telegramEnabled()) {
+          sendHTML(
+            `⚠️ <b>HOLDER RISK</b> — ${token.symbol}\n${holderSignal.signals?.[0]?.tool || "Risk detected"}`
+          ).catch(() => {});
+        }
+        continue;
+      } else if (holderSignal && holderSignal.risk_level === "MEDIUM" && holderSignal.signals.length >= 2) {
+        // MEDIUM risk only if multiple signals agree
+        log(
+          "holder_watch",
+          `👁️ MEDIUM holder risk on ${token.symbol}: ${holderSignal.signals.map(s => s.tool).join(" + ")}`
+        );
+      }
+    } catch (e) {
+      recordError("holder_analysis_error", e);
+      log("holder_exit_error", `${token?.mint?.slice(0, 8)}: ${e.message || e}`);
     }
 
     // Slow-rug force exit
