@@ -8,6 +8,12 @@
  */
 
 import { getStrategy, PRESETS } from "./strategies.js";
+import { log } from "./logger.js";
+
+// Suppress per-mint warning spam when ATH-distance data is missing. Cleared
+// implicitly when process restarts. Acceptable noise floor: one log per
+// unique mint per process lifetime.
+const _athWarnSeen = new Set();
 
 // Legacy export — code that does `import { strategy } from "./strategy.js"`
 // keeps working. New code should call getStrategy() to pick up overrides.
@@ -111,7 +117,14 @@ export function checkPartialTP(currentPnlPct, alreadyDone = false, context = {})
 }
 
 /**
- * Run the 4-filter protocol on a candidate token.
+ * Run the entry-gates protocol on a candidate token.
+ *
+ * Historical name "4-filter" — function now runs up to 10 gates depending
+ * on which optional preset fields are populated (gas, holder-age, dust,
+ * entry-mc, wash, mcap min/max, holders, fees, top10, ATH-distance).
+ * Kept the legacy export name `run4FilterProtocol` for backward compat;
+ * see also: `runEntryGates` alias added below.
+ *
  * Reads filter thresholds from the *active* strategy preset, with
  * regime-aware runtime selector taking over when an evolved strategy
  * targets the same regime (tokenData.market_condition).
@@ -178,17 +191,26 @@ export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
   }
 
   // ─── ATH-distance gate (dip_buy preset) ─────────────────────
-  // tokenData.price_change_h24 / dip_from_ath_pct are negative when below ATH.
-  // We accept either a precomputed dip metric or the 24h change as a proxy.
+  // Only enforceable when `dip_from_ath_pct` is provided. Previously this
+  // fell back to `price_change_24h` then `price_change_1h` as proxies —
+  // but "% change over last 24h" is a totally different signal from
+  // "% drop from all-time high" and the fallback silently let through
+  // candidates that never actually dipped. Now we require the true
+  // signal; missing data logs a once-noise warn and the gate is skipped.
   if (Number.isFinite(f.max_ath_distance_pct)) {
-    const dip = Number(
-      tokenData.dip_from_ath_pct ??
-      tokenData.price_change_24h ??
-      tokenData.price_change_1h ??
-      NaN
-    );
-    if (Number.isFinite(dip) && dip > f.max_ath_distance_pct) {
-      flags.push(`Not dipped enough: ${dip.toFixed(1)}% > ${f.max_ath_distance_pct}%`);
+    const dipRaw = tokenData.dip_from_ath_pct;
+    if (dipRaw == null) {
+      if (!_athWarnSeen.has(tokenData?.mint)) {
+        _athWarnSeen.add(tokenData?.mint);
+        log("strategy_warn",
+          `ATH-distance gate skipped for ${tokenData?.symbol || tokenData?.mint?.slice(0, 8)}: dip_from_ath_pct missing — upstream enrichment didn't populate the field`,
+        );
+      }
+    } else {
+      const dip = Number(dipRaw);
+      if (Number.isFinite(dip) && dip > f.max_ath_distance_pct) {
+        flags.push(`Not dipped enough: ${dip.toFixed(1)}% > ${f.max_ath_distance_pct}%`);
+      }
     }
   }
 
@@ -203,6 +225,10 @@ export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
     runtime_source: active._runtime_source || "preset",
   };
 }
+
+// T5: clearer alias for callers that find the legacy "4Filter" name
+// misleading. Both names point at the same implementation.
+export const runEntryGates = run4FilterProtocol;
 
 /**
  * Identify the Market Cap Tier and provide strategic context.
@@ -241,7 +267,7 @@ export function getTierExecutionProfile(mcap, strategyId = null) {
   // ── Strategy-aware sell_only threshold ──────────────────────
   // Scalping strategies: block >$50M (no exit liquidity at swing scale)
   // Swing strategies:    allow up to $200M (need deep liquidity for position size)
-  const swingStrategies = new Set(["day_phase_trading", "swing"]);
+  const swingStrategies = new Set(["day_phase_trading"]); // T1: removed dead "swing" id (no preset)
   const isSwing = swingStrategies.has(strategyId);
 
   if (tier.tier === "NEW_PAIR") {
@@ -267,7 +293,10 @@ export function getTierExecutionProfile(mcap, strategyId = null) {
       ...tier,
       use_holder_filters: false,
       use_technicals: true,
-      size_multiplier: isSwing ? 1.25 : 1.25,   // both: confidence sizing
+      // T7: previously `isSwing ? 1.25 : 1.25` — no-op ternary. Mid-cap
+      // suits both styles equally well; keep a single multiplier and drop
+      // the misleading branch.
+      size_multiplier: 1.25,
       sell_only: false,
     };
   }
