@@ -12,8 +12,13 @@
 
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
-const __dirname = path.dirname(new URL(import.meta.url).pathname);
+// RA-1: `new URL(...).pathname` returns a leading-slash POSIX-style path on
+// Windows (e.g. "/C:/Users/...") that fs.existsSync rejects. Use
+// fileURLToPath so this resolves correctly cross-platform. Matches the
+// convention used in every other ponyou module that needs __dirname.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUG_MEMORY_FILE = path.join(__dirname, "../rug-memory.json");
 
 // The 17 features in the standard fingerprint (must match extractFeatureVector in rug-patterns.js)
