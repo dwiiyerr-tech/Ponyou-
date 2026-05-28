@@ -154,31 +154,45 @@ class AgentRouter {
       timeout: timeoutMs,
       maxBuffer: 2 * 1024 * 1024,
     });
-    // Log stderr for diagnostics — Gemini CLI errors appear here
+    // Log stderr for diagnostics — Gemini CLI errors appear here.
+    // AR-5: ignore well-known quota / unactionable noise; everything else
+    // surfaces so a misconfigured CLI / auth failure is visible.
     if (stderr && String(stderr).trim()) {
       const stderrTrimmed = String(stderr).slice(0, 300);
-      // Only log real errors, skip quota messages + unactionable noise
-      if (!stderrTrimmed.includes("quota") && !stderrTrimmed.includes("QUOTA") && !stderrTrimmed.includes("429") && !stderrTrimmed.includes("[object Object]")) {
+      const lower = stderrTrimmed.toLowerCase();
+      const isNoise = lower.includes("quota") || lower.includes("429");
+      if (!isNoise) {
         console.warn(`[Router] Gemini stderr: ${stderrTrimmed}`);
       }
     }
     const result = String(stdout || "").trim();
-    if (!result) throw new Error("Empty response from agent");
+    if (!result) throw new Error("Empty response from gemini agent");
     return result;
   }
 
   async #callCodex(prompt, timeoutMs = 90_000) {
-    const bins = ["/home/ubuntu/.npm-global/bin/codex", "codex"].filter(Boolean);
+    // AR-7: try several locations so we work on dev boxes, shared hosts, and
+    // CI without hardcoding a single homedir. The PATH-resolved "codex"
+    // entry handles the case where the bin is on the system PATH (npm
+    // install -g, brew, apt, etc.).
+    const env = process.env;
+    const candidates = [
+      env.PONYOU_CODEX_BIN,
+      env.CODEX_BIN,
+      env.HOME ? `${env.HOME}/.npm-global/bin/codex` : null,
+      "/usr/local/bin/codex",
+      "codex",                  // last resort: rely on PATH
+    ].filter(Boolean);
     let lastErr;
-    for (const bin of bins) {
+    for (const bin of candidates) {
       try {
         const { stdout } = await execFile(bin, [prompt], { timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024 });
         const result = String(stdout || "").trim();
-        if (!result) throw new Error("Empty response from agent");
+        if (!result) throw new Error("Empty response from codex agent");
         return result;
       } catch (e) { lastErr = e; }
     }
-    throw lastErr || new Error("Codex binary not found");
+    throw lastErr || new Error("Codex binary not found (set PONYOU_CODEX_BIN or install codex on PATH)");
   }
 
   async invoke(prompt, { preferAgent, systemPrompt, timeoutMs, confidenceGate = {} } = {}) {
@@ -212,13 +226,25 @@ class AgentRouter {
       }
       // Jika retry fail dan agent bukan claude, coba fallback ke claude
       if (lastError && agent !== "claude" && this.#callLLM) {
+        const primaryErr = lastError;
         try {
           result = await this.#callClaude(prompt, systemPrompt);
-          const errMsg = lastError instanceof Error ? lastError.message : String(lastError);
+          const errMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
           console.warn(`[Router] Fallback to claude after ${agent} failed: ${errMsg.slice(0, 120)}`);
           lastError = null;
         } catch (fallbackErr) {
-          lastError = fallbackErr;
+          // AR-10: preserve the primary agent's error too — without this,
+          // the operator only saw the fallback's error message and the
+          // root cause from the primary agent was silently lost.
+          const primaryMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+          const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+          const composed = new Error(
+            `Both ${agent} and claude failed. ${agent}: ${primaryMsg.slice(0, 120)} | claude: ${fallbackMsg.slice(0, 120)}`,
+          );
+          composed.primaryAgent = agent;
+          composed.primaryError = primaryErr;
+          composed.fallbackError = fallbackErr;
+          lastError = composed;
         }
       } else if (lastError && agent !== "claude" && !this.#callLLM) {
         console.warn("[Router] Fallback to claude skipped: callLLM not injected");

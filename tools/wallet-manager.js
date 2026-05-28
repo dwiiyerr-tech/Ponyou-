@@ -63,7 +63,25 @@ export function initWalletManager() {
     try {
       const keypair = Keypair.fromSecretKey(bs58.decode(raw));
       const address = keypair.publicKey.toString();
-      const pct = Number(w.capital_pct) || 0;
+
+      // WM-4: detect duplicate private keys across config entries. Without
+      // this, two configs with the same key silently became one wallet in
+      // `_wallets` (Map keyed by address), and capital_pct math got skewed.
+      if (_wallets.has(address)) {
+        const existing = _wallets.get(address);
+        log("wallet_mgr",
+          `⚠️  Wallet "${w.label || "?"}" resolves to same address as "${existing.label}" (${address.slice(0, 8)}…) — skipping duplicate`,
+        );
+        continue;
+      }
+
+      // WM-5: negative capital_pct skews totalPct math. Coerce non-finite
+      // / negative to 0 and warn so the operator can fix the config.
+      let pct = Number(w.capital_pct);
+      if (!Number.isFinite(pct) || pct < 0) {
+        log("wallet_mgr", `⚠️  Wallet "${w.label || "?"}" has invalid capital_pct=${JSON.stringify(w.capital_pct)} — coerced to 0`);
+        pct = 0;
+      }
       totalPct += pct;
       _wallets.set(address, {
         keypair,
@@ -77,7 +95,10 @@ export function initWalletManager() {
       const source = envRef ? `via ${envRef}` : "via inline key";
       log("wallet_mgr", `Wallet loaded: ${w.label || address.slice(0, 8)} ${source} (${pct}%)`);
     } catch (e) {
-      log("wallet_mgr", `Wallet key invalid (${w.label || "?"}): ${e.message}`);
+      // WM-1 defensive: don't include the raw key in error logs. Most
+      // crypto errors carry generic messages but be explicit anyway.
+      const safeMsg = String(e.message || e).slice(0, 200);
+      log("wallet_mgr", `Wallet key invalid (${w.label || "?"}): ${safeMsg}`);
     }
   }
 
@@ -124,6 +145,12 @@ export function getWalletByAddress(address) {
   };
 }
 
+// WM-10: track whether all wallets are currently cold/disabled so callers
+// can programmatically check via isAllWalletsCold() instead of relying on
+// scraped log lines.
+let _allWalletsCold = false;
+export function isAllWalletsCold() { return _allWalletsCold; }
+
 /** Tandai wallet aktif sebagai cold lalu rotasi ke wallet hot berikutnya */
 export function rotateWallet(reason = "") {
   if (!_activeAddress) return;
@@ -143,10 +170,13 @@ export function rotateWallet(reason = "") {
     const w    = _wallets.get(addr);
     if (w && w.status === "hot") {
       _activeAddress = addr;
+      _allWalletsCold = false;
       log("wallet_mgr", `Active wallet → ${w.label} (${addr.slice(0, 8)}…)`);
       return;
     }
   }
+  _allWalletsCold = true;
+  recordCounter("wallet_all_cold");
   log("wallet_mgr", "⚠️  Tidak ada wallet hot tersisa — semua cold/disabled");
 }
 
@@ -171,6 +201,14 @@ export function resetWalletErrors(address) {
   w.status      = "hot";
   w.cold_until  = 0;
   log("wallet_mgr", `Wallet ${w.label} errors reset → hot`);
+  // WM-8: if no current active wallet (or current is cold/disabled),
+  // promote the freshly-reset wallet so trading resumes immediately.
+  const cur = _activeAddress ? _wallets.get(_activeAddress) : null;
+  if (!cur || cur.status !== "hot") {
+    _activeAddress = address;
+    _allWalletsCold = false;
+    log("wallet_mgr", `Active wallet promoted on reset: ${w.label}`);
+  }
 }
 
 /**
@@ -243,6 +281,7 @@ export function isMultiWalletEnabled() {
 
 function _recoverColdWallets() {
   const now = Date.now();
+  let anyHot = false;
   for (const [addr, w] of _wallets) {
     if (w.status === "cold" && now >= w.cold_until) {
       w.status      = "hot";
@@ -255,5 +294,12 @@ function _recoverColdWallets() {
         log("wallet_mgr", `Active wallet recovered: ${w.label}`);
       }
     }
+    if (w.status === "hot") anyHot = true;
+  }
+  // WM-10: clear the all-cold flag once any wallet thaws so guards
+  // checking isAllWalletsCold() unfreeze automatically.
+  if (anyHot && _allWalletsCold) {
+    _allWalletsCold = false;
+    log("wallet_mgr", "All-cold cleared — at least one wallet is hot again");
   }
 }

@@ -3,6 +3,18 @@ import { readBotState } from "../state-reader.js";
 import { writeAutomationCommand } from "../command-writer.js";
 import { readConfig, writeConfig } from "../config-writer.js";
 import { sendBotCommand } from "../ipc.js";
+import { stripSensitive } from "../sensitive.js";
+
+// API-2/10: serialize all api-route config writes through a process-local
+// mutex. Without this, two endpoints firing in parallel (e.g. /toggle and
+// /strategy-overrides) could race on the read-modify-write of
+// user-config.json and lose one set of changes.
+let _apiWriteChain = Promise.resolve();
+function _apiWriteLock(work) {
+  const next = _apiWriteChain.then(() => work());
+  _apiWriteChain = next.catch(() => {});
+  return next;
+}
 import { resetTradingPlan } from "../../trading-plan-30.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets } from "../../smart-wallets.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../../dev-blocklist.js";
@@ -34,7 +46,10 @@ export function createApiRouter() {
   });
 
   router.get("/config", (req, res) => {
-    res.json(readConfig());
+    // API-1: defense-in-depth — even though /api/* is behind auth, redact
+    // secret-shaped fields so a credential leak in the response doesn't
+    // expand the compromise to upstream services (shyft, helius, etc.).
+    res.json(stripSensitive(readConfig()));
   });
 
   router.post("/command", (req, res) => {
@@ -99,8 +114,11 @@ export function createApiRouter() {
       if (typeof address !== "string") return res.status(400).json({ error: "Invalid address" });
       const current = readConfig();
       const list = (current.trashWallets || []).map(w => typeof w === "string" ? { address: w } : w);
-      const addrLower = address.trim().toLowerCase();
-      const filtered = list.filter(w => (w.address || w).toLowerCase() !== addrLower);
+      // API-8: Solana base58 addresses are case-sensitive — lowercasing for
+      // compare would silently fail to remove the intended wallet (or remove
+      // a different one whose lowercased form happens to collide).
+      const target = address.trim();
+      const filtered = list.filter(w => (w.address || w) !== target);
       writeConfig({ trashWallets: filtered });
       return res.json({ ok: true, removed: list.length - filtered.length });
     }
@@ -344,8 +362,13 @@ export function createApiRouter() {
         return res.json({ ok: true, mode });
       }
       if (action === "kelly_calc") {
-        const kelly = computeKellyPositions({ kellyFraction: kellyFraction || 0.5 });
-        return res.json({ ok: true, kelly });
+        // API-5: clamp kellyFraction to operationally safe range. Without
+        // this, a caller could pass 1e9 or a negative number and corrupt
+        // the position-limit calculation.
+        const raw = Number(kellyFraction);
+        const fraction = Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 0.5;
+        const kelly = computeKellyPositions({ kellyFraction: fraction });
+        return res.json({ ok: true, kelly, kellyFraction: fraction });
       }
       return res.status(400).json({ error: "Unknown action. Use: config, set_strategy, set_mode, kelly_calc" });
     } catch (e) {

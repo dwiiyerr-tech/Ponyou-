@@ -101,7 +101,7 @@ describe("state — trackPosition", () => {
     expect(getState().positions[key]).toBeDefined();
   });
 
-  it("warns on zero initial_value_usd", async () => {
+  it("marks pnl_unknown on zero initial_value_usd (ST-6)", async () => {
     const { trackPosition, getState, _resetStateForTests } = await import("../state.js");
     _resetStateForTests();
     await trackPosition({
@@ -113,8 +113,12 @@ describe("state — trackPosition", () => {
     const tracked = getState().positions;
     const key = Object.keys(tracked).find(k => tracked[k].position === "So11111111111111111111111111111111111111113");
     expect(key).toBeDefined();
-    // Falls back to amount_sol when initial_value_usd is 0 — avoids permanent PnL=0%
-    expect(tracked[key].initial_value_usd).toBe(1);
+    // ST-6: previously this fell back to amount_sol (1 SOL ≈ $100) which
+    // mixed units (SOL vs USD) and made downstream PnL math off by ~200x.
+    // Correct behavior: keep initial_value_usd at 0 and mark pnl_unknown so
+    // PnL consumers short-circuit instead of producing misleading numbers.
+    expect(tracked[key].initial_value_usd).toBe(0);
+    expect(tracked[key].pnl_unknown).toBe(true);
   });
 
   it("pushes a deploy event", async () => {

@@ -167,12 +167,19 @@ export function trackPosition({
   const state = load();
   const position_key = buildPositionKey(position, wallet_address);
 
-  // Guard: initial_value_usd must be meaningful. A zero here means future
-  // PnL calculations for this position will always read 0%, poisoning
-  // performance metrics and conviction memory.
+  // ST-6: previously, when initial_value_usd was unset/zero, we fell back to
+  // amount_sol — but amount_sol is in SOL (e.g. 0.5), not USD (e.g. $100).
+  // Downstream PnL math (currentUSD - initial_value_usd) / initial_value_usd
+  // would then compare USD against SOL and report ~200x inflated/deflated
+  // gains. Now we keep initial_value_usd at 0 and mark the position
+  // pnl_unknown:true so PnL consumers can short-circuit instead of
+  // producing misleading numbers.
   const usd = Number(initial_value_usd);
-  if (!Number.isFinite(usd) || usd <= 0) {
-    log("state_warn", `trackPosition: initial_value_usd=${initial_value_usd} for ${position_key} — PnL will be 0% until manually corrected`);
+  const usdValid = Number.isFinite(usd) && usd > 0;
+  if (!usdValid) {
+    log("state_warn",
+      `trackPosition: initial_value_usd=${initial_value_usd} for ${position_key} — PnL marked unknown; consumers must skip PnL calc`,
+    );
   }
 
   state.positions[position_key] = {
@@ -181,7 +188,8 @@ export function trackPosition({
     pool,
     pool_name,
     amount_sol,
-    initial_value_usd: usd > 0 ? usd : (Number(amount_sol) > 0 ? Number(amount_sol) : 0),
+    initial_value_usd: usdValid ? usd : 0,
+    pnl_unknown: !usdValid,
     signal_snapshot: signal_snapshot || {
       mint: position,
       recorded_at: new Date().toISOString(),
@@ -195,6 +203,7 @@ export function trackPosition({
     closed_at: null,
     notes: [],
     peak_pnl_pct: 0,
+    sync_misses: 0,
   };
   pushEvent(state, { action: "deploy", position, position_key, pool_name: pool_name || pool, wallet_address });
   const saved = save(state);
@@ -372,6 +381,11 @@ export function setLastBriefingDate() {
  * Marks any local open positions as closed if they are not in the on-chain list.
  */
 const SYNC_GRACE_MS = 5 * 60_000; // don't auto-close positions deployed < 5 min ago
+// ST-4: require N consecutive on-chain misses before auto-closing. A single
+// transient RPC sync hiccup used to be enough to mark a legitimate open
+// position as closed; the counter resets the moment the position shows
+// up on-chain again.
+const SYNC_MISS_THRESHOLD = 3;
 
 export function syncOpenPositions(active_addresses) {
   const state = load();
@@ -382,7 +396,15 @@ export function syncOpenPositions(active_addresses) {
     const pos = state.positions[posId];
     const normalizedKey = pos.position_key || buildPositionKey(pos.position, pos.wallet_address);
     const legacyMatch = activeSet.has(pos.position);
-    if (pos.closed || activeSet.has(posId) || activeSet.has(normalizedKey) || legacyMatch) continue;
+    if (pos.closed) continue;
+    if (activeSet.has(posId) || activeSet.has(normalizedKey) || legacyMatch) {
+      // Position visible on-chain again — reset the miss counter.
+      if (pos.sync_misses && pos.sync_misses > 0) {
+        pos.sync_misses = 0;
+        changed = true;
+      }
+      continue;
+    }
 
     // Grace period: newly deployed positions may not be indexed yet
     const deployedAt = pos.deployed_at ? new Date(pos.deployed_at).getTime() : 0;
@@ -391,11 +413,21 @@ export function syncOpenPositions(active_addresses) {
       continue;
     }
 
+    // ST-4: bump the miss counter; only auto-close after threshold.
+    pos.sync_misses = (pos.sync_misses || 0) + 1;
+    if (pos.sync_misses < SYNC_MISS_THRESHOLD) {
+      log("state",
+        `Position ${normalizedKey} missing from on-chain (miss ${pos.sync_misses}/${SYNC_MISS_THRESHOLD}) — not auto-closing yet`,
+      );
+      changed = true;
+      continue;
+    }
+
     pos.closed = true;
     pos.closed_at = new Date().toISOString();
-    pos.notes.push(`Auto-closed during state sync (not found on-chain)`);
+    pos.notes.push(`Auto-closed during state sync (${SYNC_MISS_THRESHOLD} consecutive misses on-chain)`);
     changed = true;
-    log("state", `Position ${normalizedKey} auto-closed (missing from on-chain data)`);
+    log("state", `Position ${normalizedKey} auto-closed (missing on-chain for ${SYNC_MISS_THRESHOLD} consecutive syncs)`);
   }
 
   if (changed) save(state); // fire-and-forget — the write queue persists, no need to block

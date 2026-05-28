@@ -243,6 +243,18 @@ export function computeProfitSweepAmount(netProfitUsd, solPriceUsd = 0, override
   };
 }
 
+// VL-3: serialize executeVaultTransfer through a process-local mutex. Two
+// parallel callers used to be able to issue back-to-back transfers because
+// the gate (isVaultDue / lastVaultDate) was only inspected by the upstream
+// scheduler, not by this function itself. The lock ensures only one
+// transfer is in flight at a time.
+let _vaultTransferChain = Promise.resolve();
+function _vaultLock(work) {
+  const next = _vaultTransferChain.then(() => work());
+  _vaultTransferChain = next.catch(() => {});
+  return next;
+}
+
 /**
  * Transfer SOL ke vault wallet.
  * @param {number} amountSol — jumlah SOL yang dikirim
@@ -250,6 +262,10 @@ export function computeProfitSweepAmount(netProfitUsd, solPriceUsd = 0, override
  * @returns {Promise<{ success: boolean, tx?: string, amount_sol: number, amount_usd: number }>}
  */
 export async function executeVaultTransfer(amountSol, solPriceUsd = 0, overrides = {}) {
+  return _vaultLock(() => _executeVaultTransferInner(amountSol, solPriceUsd, overrides));
+}
+
+async function _executeVaultTransferInner(amountSol, solPriceUsd, overrides) {
   const cfg = getVaultSweepConfig(overrides);
   const vaultWallet = cfg.vaultWallet;
 
@@ -286,6 +302,16 @@ export async function executeVaultTransfer(amountSol, solPriceUsd = 0, overrides
   try {
     if (!process.env.WALLET_PRIVATE_KEY) throw new Error("WALLET_PRIVATE_KEY tidak di-set");
 
+    // VL-1: warn if multi-wallet is enabled but vault still pulls from the
+    // single env key. Operator may have expected the sweep to come from the
+    // active multi-wallet slot; the warning surfaces the mismatch instead
+    // of letting it silently move funds from the wrong source.
+    if (config.multiWallet?.enabled && Array.isArray(config.multiWallet.wallets) && config.multiWallet.wallets.length > 0) {
+      log("vault_warn",
+        `Multi-wallet enabled but vault transfer uses single WALLET_PRIVATE_KEY — funds will sweep from the env-configured main wallet only`,
+      );
+    }
+
     const wallet = Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY));
     const connection = new Connection(
       process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
@@ -297,6 +323,32 @@ export async function executeVaultTransfer(amountSol, solPriceUsd = 0, overrides
       vaultPubkey = new PublicKey(vaultWallet);
     } catch {
       throw new Error(`Alamat vault tidak valid: ${vaultWallet}`);
+    }
+
+    // VL-2: detect vault-address change between runs. A compromised config or
+    // accidental edit could redirect funds. Compare against the wallet of
+    // record in vaultState; first-time vault is allowed without prior record.
+    const priorState = loadVaultState();
+    const lastVaultWallet = priorState.vaultHistory?.length
+      ? priorState.vaultHistory[priorState.vaultHistory.length - 1]?.vault_wallet
+      : null;
+    if (lastVaultWallet && lastVaultWallet !== vaultWallet) {
+      log("vault_warn",
+        `⚠️  Vault address changed since last sweep — previous=${lastVaultWallet.slice(0, 8)}… current=${vaultWallet.slice(0, 8)}… — verify config integrity`,
+      );
+    }
+
+    // VL-5: pre-check wallet balance so we fail fast with a clear error
+    // instead of getting a less-helpful RPC rejection mid-transfer.
+    try {
+      const lamportsHave = await connection.getBalance(wallet.publicKey);
+      const lamportsNeed = Math.floor(amount * LAMPORTS_PER_SOL) + 5000; // ~base fee
+      if (lamportsHave < lamportsNeed) {
+        const haveSol = lamportsHave / LAMPORTS_PER_SOL;
+        return { success: false, error: `Saldo tidak cukup untuk vault: punya ${haveSol.toFixed(6)} SOL, butuh ${amount} SOL + fee` };
+      }
+    } catch (e) {
+      log("vault_warn", `Pre-check getBalance failed: ${e.message} — proceeding anyway`);
     }
 
     const lamports = Math.floor(amount * LAMPORTS_PER_SOL);
