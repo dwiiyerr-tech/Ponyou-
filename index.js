@@ -1113,7 +1113,7 @@ async function handleStrategyTelegramCommand(text) {
     const intent = getIntent(id);
     if (!intent) { await sendHTML(`❌ Intent #${id} not found.`); return true; }
     if (intent.status !== "pending") { await sendHTML(`⚠️ Intent #${id} already ${intent.status}.`); return true; }
-    consumeIntent(id, "rejected", { rejected_by: "telegram" });
+    await consumeIntent(id, "rejected", { rejected_by: "telegram" });
     await sendHTML(`🚫 Intent #${id} rejected.`);
     return true;
   }
@@ -1203,7 +1203,7 @@ async function executePendingIntent(id) {
   if (!intent) return sendHTML(`❌ #${id} ${fmt.it("not found")}`);
   if (intent.status !== "pending") return sendHTML(`⚠️ #${id} ${fmt.it("already " + intent.status)}`);
   if (intent.expires_at && Date.now() > new Date(intent.expires_at).getTime()) {
-    consumeIntent(id, "expired");
+    await consumeIntent(id, "expired");
     return sendHTML(`⏰ #${id} ${fmt.it("expired")}`);
   }
 
@@ -1221,7 +1221,7 @@ async function executePendingIntent(id) {
   try {
     result = await swapToken({ ...args, executionContext: { source: "pending-intent", approvedIntent: true } });
   } catch (e) {
-    consumeIntent(id, "failed", { error: e.message });
+    await consumeIntent(id, "failed", { error: e.message });
     recordSwapOutcome({ success: false });
     await recordExecutionQuality({
       walletAddress: args.wallet_address || getActiveWallet()?.address || null,
@@ -1249,7 +1249,7 @@ async function executePendingIntent(id) {
     latencyMs: Date.now() - swapStartedAt,
   });
   if (!succeeded) {
-    consumeIntent(id, "failed", { error: result?.error || "unknown" });
+    await consumeIntent(id, "failed", { error: result?.error || "unknown" });
     return sendHTML(`❌ #${id} swap rejected\n${fmt.code(JSON.stringify(result).slice(0, 200))}`);
   }
 
@@ -1319,7 +1319,7 @@ async function executePendingIntent(id) {
     }
   }
   recordTrade(null);
-  consumeIntent(id, "executed", { result: result?.hash || result?.signature || "ok" });
+  await consumeIntent(id, "executed", { result: result?.hash || result?.signature || "ok" });
 
   return sendHTML(
     `✅ <b>Intent #${id}</b>\n` +

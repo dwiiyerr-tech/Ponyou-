@@ -22,6 +22,11 @@ export async function readBotState() {
   const cfg = readJson("user-config.json");
   const quality = readJson("execution-quality.json");
 
+  // SR-1: only compute entry_sol when sol_price is actually known. The
+  // previous fallback of 150 silently lied to the dashboard when the
+  // bot hadn't published a fresh SOL price yet — turning a $100 entry
+  // into ~0.67 SOL regardless of the real rate.
+  const knownSolPrice = Number(state.sol_price) > 0 ? Number(state.sol_price) : null;
   const positions = Object.values(state.positions || {})
     .filter(p => !p?.closed)
     .map(p => ({
@@ -31,9 +36,9 @@ export async function readBotState() {
       hold_minutes: p.deployed_at
         ? Math.round((Date.now() - new Date(p.deployed_at).getTime()) / 60000)
         : 0,
-      entry_sol: p.initial_value_usd
-        ? parseFloat((p.initial_value_usd / (state.sol_price || 150)).toFixed(4))
-        : 0,
+      entry_sol: p.initial_value_usd && knownSolPrice
+        ? parseFloat((p.initial_value_usd / knownSolPrice).toFixed(4))
+        : null,
     }));
 
   const vaultCfg = cfg.vault?.sweep ?? cfg.vault ?? {};

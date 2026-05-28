@@ -21,8 +21,8 @@ afterEach(() => {
 describe("createPendingIntent", () => {
   it("creates an intent with auto-incrementing id", async () => {
     const { createPendingIntent } = await import("../intents.js");
-    const a = createPendingIntent({ type: "buy", args: { token: "X" } });
-    const b = createPendingIntent({ type: "buy", args: { token: "Y" } });
+    const a = await createPendingIntent({ type: "buy", args: { token: "X" } });
+    const b = await createPendingIntent({ type: "buy", args: { token: "Y" } });
     expect(a.id).toBe(1);
     expect(b.id).toBe(2);
     expect(a.status).toBe("pending");
@@ -31,7 +31,7 @@ describe("createPendingIntent", () => {
 
   it("respects custom ttl_min", async () => {
     const { createPendingIntent } = await import("../intents.js");
-    const intent = createPendingIntent({ type: "buy", args: {}, ttl_min: 30 });
+    const intent = await createPendingIntent({ type: "buy", args: {}, ttl_min: 30 });
     const created = new Date(intent.created_at).getTime();
     const expires = new Date(intent.expires_at).getTime();
     const ttlMs = expires - created;
@@ -43,7 +43,7 @@ describe("createPendingIntent", () => {
 describe("listPendingIntents", () => {
   it("returns only pending intents, marking expired ones", async () => {
     const { createPendingIntent, listPendingIntents } = await import("../intents.js");
-    const fresh = createPendingIntent({ type: "buy", args: {}, ttl_min: 60 });
+    const fresh = await createPendingIntent({ type: "buy", args: {}, ttl_min: 60 });
     // Forge an expired one directly
     const all = JSON.parse(fs.readFileSync(INTENTS_FILE, "utf8"));
     all.push({
@@ -75,7 +75,7 @@ describe("getIntent", () => {
 
   it("lazy-expires pending-but-past-TTL intents", async () => {
     const { createPendingIntent, getIntent } = await import("../intents.js");
-    const intent = createPendingIntent({ type: "buy", args: {}, ttl_min: 60 });
+    const intent = await createPendingIntent({ type: "buy", args: {}, ttl_min: 60 });
     // Mutate to past TTL
     const all = JSON.parse(fs.readFileSync(INTENTS_FILE, "utf8"));
     all[0].expires_at = new Date(Date.now() - 1000).toISOString();
@@ -89,8 +89,8 @@ describe("getIntent", () => {
 describe("consumeIntent", () => {
   it("transitions pending → executed", async () => {
     const { createPendingIntent, consumeIntent, getIntent } = await import("../intents.js");
-    const intent = createPendingIntent({ type: "buy", args: {} });
-    const result = consumeIntent(intent.id, "executed", { result: "tx-hash" });
+    const intent = await createPendingIntent({ type: "buy", args: {} });
+    const result = await consumeIntent(intent.id, "executed", { result: "tx-hash" });
     expect(result.status).toBe("executed");
     expect(result.result).toBe("tx-hash");
     expect(getIntent(intent.id).status).toBe("executed");
@@ -98,21 +98,21 @@ describe("consumeIntent", () => {
 
   it("returns null if already consumed (idempotency)", async () => {
     const { createPendingIntent, consumeIntent } = await import("../intents.js");
-    const intent = createPendingIntent({ type: "buy", args: {} });
-    consumeIntent(intent.id, "executed");
-    expect(consumeIntent(intent.id, "executed")).toBeNull();
+    const intent = await createPendingIntent({ type: "buy", args: {} });
+    await consumeIntent(intent.id, "executed");
+    expect(await consumeIntent(intent.id, "executed")).toBeNull();
   });
 
   it("returns null for unknown id", async () => {
     const { consumeIntent } = await import("../intents.js");
-    expect(consumeIntent(9999, "executed")).toBeNull();
+    expect(await consumeIntent(9999, "executed")).toBeNull();
   });
 });
 
 describe("gcIntents", () => {
   it("removes intents older than cutoff", async () => {
     const { createPendingIntent, gcIntents } = await import("../intents.js");
-    createPendingIntent({ type: "buy", args: {} }); // fresh
+    await createPendingIntent({ type: "buy", args: {} }); // fresh
 
     // Inject an old one
     const all = JSON.parse(fs.readFileSync(INTENTS_FILE, "utf8"));
