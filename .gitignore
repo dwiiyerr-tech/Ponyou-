@@ -102,5 +102,6 @@ ruvector.db
 # pnpm lockfile (auto-generated, not committed)
 pnpm-lock.yaml
 
-# Social signals — runtime state updated by bot continuously
+# Runtime state updated continuously by bot — never commit
 social-signals.json
+coin-conviction.json
