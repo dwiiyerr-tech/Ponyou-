@@ -111,6 +111,45 @@ describe("submitWithAdaptiveRetry", () => {
     expect(deps.feeOracle.refresh).toHaveBeenCalledTimes(2);
   });
 
+  // ── Double-execution guard (confirmSignatures) ──────────────────────────
+  // txBuilder must yield a "signed" tx so the executor can extract a signature
+  // to confirm; the default mock has no .signatures, which (correctly) disables
+  // the guard.
+  function signedTxBuilder() {
+    return vi.fn(() => ({ signatures: [new Uint8Array(64).fill(7)], sign: vi.fn() }));
+  }
+
+  it("skips retry when a prior attempt confirmed late (no double-execute)", async () => {
+    const deps = makeDeps({ simResults: [{ ok: true, action: "proceed" }], landings: [false] });
+    const confirmSignatures = vi.fn(async (sigs) => sigs[0]); // prior tx actually landed
+    const r = await submitWithAdaptiveRetry({
+      builtTxFactory: signedTxBuilder(), wallet: deps.wallet, rpcQuorum: deps.rpcQuorum,
+      feeOracle: deps.feeOracle, simulator: deps.simulator,
+      jitoSubmit: deps.jitoSubmit, jitoAwait: deps.jitoAwait,
+      confirmSignatures, maxAttempts: 5, attemptTimeoutMs: 50, log: deps.log,
+    });
+    expect(r.recovered).toBe(true);
+    expect(r.attempts).toHaveLength(1);          // did NOT launch a 2nd tx
+    expect(deps.jitoSubmit).toHaveBeenCalledTimes(1);
+    expect(confirmSignatures).toHaveBeenCalledTimes(1);
+  });
+
+  it("final safety net recovers a late landing instead of throwing", async () => {
+    const deps = makeDeps({ simResults: Array(5).fill({ ok: true, action: "proceed" }), landings: [false] });
+    // null during the inter-attempt check, then the sig on the post-loop check.
+    const confirmSignatures = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce("LATE_SIG");
+    const r = await submitWithAdaptiveRetry({
+      builtTxFactory: signedTxBuilder(), wallet: deps.wallet, rpcQuorum: deps.rpcQuorum,
+      feeOracle: deps.feeOracle, simulator: deps.simulator,
+      jitoSubmit: deps.jitoSubmit, jitoAwait: deps.jitoAwait,
+      confirmSignatures, maxAttempts: 1, attemptTimeoutMs: 50, log: deps.log,
+    });
+    expect(r.recovered).toBe(true);
+    expect(r.hash).toBe("LATE_SIG");
+  });
+
   it("retry action restarts attempt without consuming attempt counter", async () => {
     const deps = makeDeps({
       simResults: [{ ok: false, action: "retry", reason: "stale_blockhash" }, { ok: true, action: "proceed" }],

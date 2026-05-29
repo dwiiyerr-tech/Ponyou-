@@ -107,6 +107,23 @@ async function swapViaJito({ inputMint, outputMint, amountRaw, slippageBps, wall
       authToken: config.jito.authToken || null,
       timeoutMs,
     }),
+    // Double-execution guard: before the executor retries with a fresh tx, let
+    // it confirm none of the prior attempts quietly landed after their await
+    // timed out. Returns the first confirmed signature, or null if none/unknown.
+    confirmSignatures: async (sigs) => {
+      try {
+        const conn = new Connection(process.env.RPC_URL || "https://api.mainnet-beta.solana.com", "confirmed");
+        const res = await conn.getSignatureStatuses(sigs, { searchTransactionHistory: false });
+        const vals = res?.value || [];
+        for (let i = 0; i < vals.length; i++) {
+          const st = vals[i];
+          if (st && !st.err && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) {
+            return sigs[i];
+          }
+        }
+      } catch { /* unknown — caller proceeds with retry */ }
+      return null;
+    },
     urgency: executionContext.urgency || "urgent",
     maxAttempts: config.executionEdge.executor.maxAttempts,
     attemptTimeoutMs: config.executionEdge.executor.attemptTimeoutMs,
