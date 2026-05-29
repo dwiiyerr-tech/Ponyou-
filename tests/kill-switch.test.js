@@ -12,8 +12,10 @@ import {
   _resetForTests,
 } from "../kill-switch.js";
 
-const FLAG_FILE = path.join(process.cwd(), "kill-switch.flag");
-const STATE_FILE = path.join(process.cwd(), "kill-switch-state.json");
+// Use the same env-redirected paths the module reads (set in vitest.config.js
+// test.env) so the test never touches the live kill-switch.flag at repo root.
+const FLAG_FILE = process.env.PONYOU_KILL_SWITCH_FLAG || path.join(process.cwd(), "kill-switch.flag");
+const STATE_FILE = process.env.PONYOU_KILL_SWITCH_STATE || path.join(process.cwd(), "kill-switch-state.json");
 
 beforeEach(() => {
   _resetForTests();

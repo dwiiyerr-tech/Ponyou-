@@ -4,7 +4,9 @@ import { fileURLToPath } from "url";
 import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const STATE_FILE = path.join(__dirname, "daily-trade-guard-state.json");
+// Env-overridable so tests redirect to a tmp dir instead of wiping the live
+// guard state (see kill-switch.js for the same rationale).
+const STATE_FILE = process.env.PONYOU_DAILY_GUARD_STATE || path.join(__dirname, "daily-trade-guard-state.json");
 
 function dateKey(nowMs = Date.now()) {
   return new Date(nowMs).toISOString().slice(0, 10);

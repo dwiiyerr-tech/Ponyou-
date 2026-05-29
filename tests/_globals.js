@@ -10,11 +10,12 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 
-// Collab-store tmp dir — must match COLLAB_TMP in vitest.config.js. The collab
-// modules' paths are redirected here via test.env so tests never touch the live
-// stores; we just ensure the dir exists (appendFileSync/withFileLock don't
-// mkdir) and clean it up afterwards.
-const COLLAB_TMP = path.join(os.tmpdir(), "ponyou-vitest-collab");
+// State tmp dir — must match STATE_TMP in vitest.config.js. Production state
+// files (collab stores, kill-switch flag/state, daily-guard state) are
+// redirected here via test.env so tests never touch the live ones; we just
+// ensure the dir exists (appendFileSync/withFileLock don't mkdir) and clean
+// it up afterwards.
+const STATE_TMP = path.join(os.tmpdir(), "ponyou-vitest-state");
 
 // Files that tests overwrite or unlink. Relative to ROOT; subdirectory paths
 // are supported (backup filenames are flattened). Keep aligned with any new
@@ -37,21 +38,24 @@ const GUARDED = [
   "automation-command.json",
   "supervisor-state.json",
   "supervisor-command.json",
-  // Collab layer — these are now redirected to COLLAB_TMP via test.env, so they
-  // should no longer be touched; guarded as belt-and-suspenders in case a test
-  // hardcodes a path or the env override fails to propagate.
+  // Collab layer + safety rails — now redirected to STATE_TMP via test.env, so
+  // they should no longer be touched; guarded as belt-and-suspenders in case a
+  // test hardcodes a path or the env override fails to propagate.
   "shared-agent-memory.jsonl",
   "infra/agent-collab/orchestrator-state.json",
   "infra/agent-collab/experiments.json",
   "infra/agent-collab/experiment-runs.jsonl",
   "infra/agent-collab/semantic-memory.jsonl",
+  "kill-switch.flag",
+  "kill-switch-state.json",
+  "daily-trade-guard-state.json",
 ];
 
 // Flatten a (possibly nested) relative path into a safe flat backup filename.
 const backupName = (rel) => rel.replace(/[/\\]/g, "__");
 
 export default function setup() {
-  fs.mkdirSync(COLLAB_TMP, { recursive: true });
+  fs.mkdirSync(STATE_TMP, { recursive: true });
 
   const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "ponyou-test-backup-"));
   const existed = new Set();
@@ -75,6 +79,6 @@ export default function setup() {
       }
     }
     try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch {}
-    try { fs.rmSync(COLLAB_TMP, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(STATE_TMP, { recursive: true, force: true }); } catch {}
   };
 }

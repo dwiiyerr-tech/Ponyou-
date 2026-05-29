@@ -19,8 +19,11 @@ import { recordCounter } from "./metrics.js";
 import { atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FLAG_FILE = path.join(__dirname, "kill-switch.flag");
-const STATE_FILE = new URL("./kill-switch-state.json", import.meta.url).pathname;
+// Env-overridable so the test suite can redirect them to a throwaway dir.
+// Without this, kill-switch.test.js's _resetForTests() unlinks the LIVE
+// kill-switch.flag — clearing a tripped master halt during `npm test`.
+const FLAG_FILE = process.env.PONYOU_KILL_SWITCH_FLAG || path.join(__dirname, "kill-switch.flag");
+const STATE_FILE = process.env.PONYOU_KILL_SWITCH_STATE || new URL("./kill-switch-state.json", import.meta.url).pathname;
 
 const DEFAULT_LIMITS = {
   drawdown_pct: -15,        // session drawdown trip-point (tighter: 15% not 20%)
