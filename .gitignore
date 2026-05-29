@@ -98,3 +98,6 @@ ruvector.db
 
 # one-off state backups (e.g. shared-agent-memory.jsonl.bak-YYYYMMDD)
 *.bak-*
+
+# pnpm lockfile (auto-generated, not committed)
+pnpm-lock.yaml
