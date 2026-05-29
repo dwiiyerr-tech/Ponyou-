@@ -222,6 +222,26 @@ export async function fetchShyftHolders(mint, apiKey, limit = 20) {
   }
 }
 
+/**
+ * Fetch a token's circulating supply from Shyft (UI-scaled). Needed to turn
+ * Shyft's per-holder `amount` into a % -of-supply figure for the dump monitor.
+ * Returns 0 when unavailable so callers can fall back to an RPC supply source.
+ */
+export async function fetchShyftTokenSupply(mint, apiKey) {
+  try {
+    const url = `${SHYFT_BASE}/token/get_info?network=mainnet-beta&token_address=${mint}`;
+    const res = await fetch(url, { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`Shyft token info ${res.status}`);
+    const body = await res.json();
+    const r = body?.result || body || {};
+    const supply = Number(r.current_supply ?? r.supply ?? r.total_supply ?? 0);
+    return Number.isFinite(supply) && supply > 0 ? supply : 0;
+  } catch (e) {
+    log("rug_signal_warn", `shyftTokenSupply ${mint.slice(0, 8)}: ${e.message}`);
+    return 0;
+  }
+}
+
 function getShyftTxTimestamp(tx) {
   const raw = tx.timestamp ?? tx.blockTime ?? tx.block_time ?? tx.time;
   if (Number.isFinite(Number(raw))) return Number(raw);

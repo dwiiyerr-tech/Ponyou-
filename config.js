@@ -594,6 +594,17 @@ jupiter: {
       underwaterThreshold: Math.max(0, Math.min(100,
         Number(u.holderAnalysis?.entryPriceAnalysis?.underwaterThreshold ?? 80)
       )),
+      // Price-history fallback (no tx data) is a low-confidence ESTIMATE. It
+      // never solo-triggers an exit; it's admitted as a corroborating signal
+      // above this (stricter) underwater threshold, and when it agrees with an
+      // independent high-trust signal it adds `corroborationBonus` to the
+      // combined confidence so corroborated risk can cross the exit gate.
+      fallbackUnderwaterThreshold: Math.max(0, Math.min(100,
+        Number(u.holderAnalysis?.entryPriceAnalysis?.fallbackUnderwaterThreshold ?? 85)
+      )),
+      corroborationBonus: Math.max(0, Math.min(50,
+        Number(u.holderAnalysis?.entryPriceAnalysis?.corroborationBonus ?? 15)
+      )),
     },
 
     // C) Rug Pattern Detector — identify coordinated rug patterns (flash dump, ladder, etc)

@@ -64,7 +64,7 @@ const ALLOWED_KEYS = new Set([
   "narrativeFilterEnabled", "rugFilterEnabled", "smartWalletFilterEnabled",
   "trashFilterEnabled", "devBlacklistEnabled", "rugCheckEnabled",
   "sellSimEnabled", "rugAnomalyEnabled", "rugLLMEnabled",
-  "dayPhaseScreenerEnabled", "solscanEnabled",
+  "dayPhaseScreenerEnabled",
   "stagedEntryEnabled", "stagedEntryStages", "stagedEntryTrigger",
   "strategyEvolutionEnabled", "runtimeSelectorMode",
   "menuEnabled", "logLevel",

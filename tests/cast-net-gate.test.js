@@ -90,7 +90,7 @@ describe("evaluateCastNet — all-green fires", () => {
   it("returns allowed=true with plan when every category passes", async () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs());
+    const result = await gate.evaluateCastNet(happyArgs());
     expect(result.allowed).toBe(true);
     expect(result.blockers).toEqual([]);
     expect(result.plan).toEqual({ wallets: 10, bankrollPct: 30 });
@@ -104,7 +104,7 @@ describe("evaluateCastNet — operator gates", () => {
   it("blocks when config.castNet.enabled is false", async () => {
     const gate = await loadGateWithConfig({ enabled: false });
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs());
+    const result = await gate.evaluateCastNet(happyArgs());
     expect(result.allowed).toBe(false);
     expect(result.blockers[0]).toMatch(/disabled/);
   });
@@ -112,7 +112,7 @@ describe("evaluateCastNet — operator gates", () => {
   it("blocks when manual toggle is off (operator /castnet off)", async () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(false);
-    const result = gate.evaluateCastNet(happyArgs());
+    const result = await gate.evaluateCastNet(happyArgs());
     expect(result.allowed).toBe(false);
     expect(result.blockers[0]).toMatch(/disabled/);
   });
@@ -120,7 +120,7 @@ describe("evaluateCastNet — operator gates", () => {
   it("blocks when pro-orchestrator is off", async () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs({ proOrchestratorOn: false }));
+    const result = await gate.evaluateCastNet(happyArgs({ proOrchestratorOn: false }));
     expect(result.allowed).toBe(false);
     expect(result.blockers[0]).toMatch(/pro-orchestrator/);
   });
@@ -128,7 +128,7 @@ describe("evaluateCastNet — operator gates", () => {
   it("blocks when active strategy not whitelisted", async () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs({ activeStrategy: "scalping" }));
+    const result = await gate.evaluateCastNet(happyArgs({ activeStrategy: "scalping" }));
     expect(result.allowed).toBe(false);
     expect(result.blockers[0]).toMatch(/whitelist/);
   });
@@ -139,7 +139,7 @@ describe("evaluateCastNet — operator gates", () => {
     await gate.recordCastNetFire({
       mint: "X", symbol: "X", walletCount: 10, bankrollPct: 30, reasons: {},
     });
-    const result = gate.evaluateCastNet(happyArgs());
+    const result = await gate.evaluateCastNet(happyArgs());
     expect(result.allowed).toBe(false);
     expect(result.cooldownRemainingMin).toBeGreaterThan(0);
   });
@@ -150,7 +150,7 @@ describe("evaluateCastNet — green-flag categories", () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
     const token = greenToken({ community: { score: 0.5 } });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.community.ok).toBe(false);
   });
@@ -161,7 +161,7 @@ describe("evaluateCastNet — green-flag categories", () => {
     const token = greenToken({
       dev_reputation: { past_coins: 3, win_rate: 0.8, is_blacklisted: true },
     });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.dev.ok).toBe(false);
   });
@@ -170,7 +170,7 @@ describe("evaluateCastNet — green-flag categories", () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
     const token = greenToken({ dev_reputation: { past_coins: 0 } });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.dev.ok).toBe(false);
   });
@@ -179,7 +179,7 @@ describe("evaluateCastNet — green-flag categories", () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
     const token = greenToken({ smart_money: { holders: 0 } });
-    const result = gate.evaluateCastNet(happyArgs({ token, smartMoneyOpts: { minHolders: 2 } }));
+    const result = await gate.evaluateCastNet(happyArgs({ token, smartMoneyOpts: { minHolders: 2 } }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.smart.ok).toBe(false);
   });
@@ -188,7 +188,7 @@ describe("evaluateCastNet — green-flag categories", () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
     const token = greenToken({ top10_concentration_pct: 75 });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.holders.ok).toBe(false);
   });
@@ -197,7 +197,7 @@ describe("evaluateCastNet — green-flag categories", () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
     const token = greenToken({ narrative: "", narrative_score: 0 });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.narrative.ok).toBe(false);
   });
@@ -205,7 +205,7 @@ describe("evaluateCastNet — green-flag categories", () => {
   it("blocks when ticker fails trash-filter", async () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs({
+    const result = await gate.evaluateCastNet(happyArgs({
       trashFilter: () => ({ trash: true, reason: "scam pattern" }),
     }));
     expect(result.allowed).toBe(false);
@@ -215,7 +215,7 @@ describe("evaluateCastNet — green-flag categories", () => {
   it("blocks when conviction score below minConviction", async () => {
     const gate = await loadGateWithConfig({ minConviction: 0.85 });
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs({
+    const result = await gate.evaluateCastNet(happyArgs({
       experienceScore: { score: 0.6, matches: 10 },
     }));
     expect(result.allowed).toBe(false);
@@ -225,7 +225,7 @@ describe("evaluateCastNet — green-flag categories", () => {
   it("blocks when total memory samples too few", async () => {
     const gate = await loadGateWithConfig({ minMemorySamples: 50 });
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs({ totalMemorySamples: 10 }));
+    const result = await gate.evaluateCastNet(happyArgs({ totalMemorySamples: 10 }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.conviction.ok).toBe(false);
   });
@@ -237,11 +237,13 @@ describe("evaluateCastNet — strict AND gate", () => {
     await gate.setCastNetManualEnabled(true);
     // Everything green except smart-money holders=0
     const token = greenToken({ smart_money: { holders: 0 } });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(false);
-    // 7 hard categories + 4 soft (C2) = 11 total; 1 red → 10 ok
-    const okCount = Object.values(result.reasons).filter(r => r.ok).length;
-    expect(okCount).toBe(10);
+    // Strict AND: exactly one category (smart-money) is red, everything else
+    // passes. Asserting the red count keeps this robust to new soft categories
+    // (e.g. holder_analysis) being added to the reason set.
+    const redCount = Object.values(result.reasons).filter(r => !r.ok).length;
+    expect(redCount).toBe(1);
   });
 });
 
@@ -249,7 +251,7 @@ describe("G1: multi-wallet guard", () => {
   it("blocks when multiWallet not enabled", async () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs({
+    const result = await gate.evaluateCastNet(happyArgs({
       walletContext: { multiWalletEnabled: false, viableWalletCount: 10 },
     }));
     expect(result.allowed).toBe(false);
@@ -259,7 +261,7 @@ describe("G1: multi-wallet guard", () => {
   it("blocks when viable hot wallet count < 2", async () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs({
+    const result = await gate.evaluateCastNet(happyArgs({
       walletContext: { multiWalletEnabled: true, viableWalletCount: 1 },
     }));
     expect(result.allowed).toBe(false);
@@ -269,7 +271,7 @@ describe("G1: multi-wallet guard", () => {
   it("clamps plan.wallets to actual viable count when below config max", async () => {
     const gate = await loadGateWithConfig({ maxWallets: 10 });
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs({
+    const result = await gate.evaluateCastNet(happyArgs({
       walletContext: { multiWalletEnabled: true, viableWalletCount: 4 },
     }));
     expect(result.allowed).toBe(true);
@@ -282,14 +284,14 @@ describe("plan clamping", () => {
     // config.js clamping prevents 50, but defensively check evaluator output too
     const gate = await loadGateWithConfig({ maxWallets: 10 });
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs());
+    const result = await gate.evaluateCastNet(happyArgs());
     expect(result.plan.wallets).toBeLessThanOrEqual(10);
   });
 
   it("clamps bankrollPct to 50 even if config set higher", async () => {
     const gate = await loadGateWithConfig({ maxBankrollPct: 50 });
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs());
+    const result = await gate.evaluateCastNet(happyArgs());
     expect(result.plan.bankrollPct).toBeLessThanOrEqual(50);
   });
 });
@@ -354,7 +356,7 @@ describe("C1: consecutive-loss auto-disable", () => {
     await gate.setCastNetManualEnabled(true);
     await recordLoss(gate, "g1", -15);
     await recordLoss(gate, "g2", -25);
-    const result = gate.evaluateCastNet(happyArgs());
+    const result = await gate.evaluateCastNet(happyArgs());
     expect(result.allowed).toBe(false);
     expect(result.blockers.some((b) => /auto-disabled/.test(b))).toBe(true);
   });
@@ -363,7 +365,7 @@ describe("C1: consecutive-loss auto-disable", () => {
     const gate = await loadGateWithConfig({ cooldownMin: 0 });
     await gate.setCastNetManualEnabled(true);
     await recordLoss(gate, "g1", -10);
-    const result = gate.evaluateCastNet(happyArgs());
+    const result = await gate.evaluateCastNet(happyArgs());
     expect(result.allowed).toBe(true);
   });
 
@@ -373,7 +375,7 @@ describe("C1: consecutive-loss auto-disable", () => {
     await recordLoss(gate, "g1", -10);
     await recordLoss(gate, "g2", +15); // win
     await recordLoss(gate, "g3", -8);  // 1 loss again
-    const result = gate.evaluateCastNet(happyArgs());
+    const result = await gate.evaluateCastNet(happyArgs());
     expect(result.allowed).toBe(true);
   });
 
@@ -383,11 +385,11 @@ describe("C1: consecutive-loss auto-disable", () => {
     await recordLoss(gate, "g1", -10);
     await recordLoss(gate, "g2", -10);
     // Auto-disabled now
-    let result = gate.evaluateCastNet(happyArgs());
+    let result = await gate.evaluateCastNet(happyArgs());
     expect(result.allowed).toBe(false);
     // Operator re-enables
     await gate.setCastNetManualEnabled(true);
-    result = gate.evaluateCastNet(happyArgs());
+    result = await gate.evaluateCastNet(happyArgs());
     expect(result.allowed).toBe(true);
   });
 
@@ -408,7 +410,7 @@ describe("C1: consecutive-loss auto-disable", () => {
     await recordLoss(gate, "g1", -10);
     await recordLoss(gate, "g2", -10);
     await recordLoss(gate, "g3", -10);
-    const result = gate.evaluateCastNet(happyArgs());
+    const result = await gate.evaluateCastNet(happyArgs());
     expect(result.allowed).toBe(true);
   });
 });
@@ -420,7 +422,7 @@ describe("C2: pre-fire soft checks", () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
     const token = greenToken({ liquidity_usd: 10_000 });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.liquidity.ok).toBe(false);
   });
@@ -429,7 +431,7 @@ describe("C2: pre-fire soft checks", () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
     const token = greenToken({ fdv_usd: 500_000 });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.mcap_window.ok).toBe(false);
   });
@@ -438,7 +440,7 @@ describe("C2: pre-fire soft checks", () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
     const token = greenToken({ fdv_usd: 50_000_000 });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.mcap_window.ok).toBe(false);
   });
@@ -447,7 +449,7 @@ describe("C2: pre-fire soft checks", () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
     const token = greenToken({ liquidity_usd: 200_000, volume_24h_usd: 50_000 });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.volume.ok).toBe(false);
   });
@@ -456,7 +458,7 @@ describe("C2: pre-fire soft checks", () => {
     const gate = await loadGateWithConfig();
     await gate.setCastNetManualEnabled(true);
     const token = greenToken({ top1_holder_pct: 8 });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(false);
     expect(result.reasons.holder_top1.ok).toBe(false);
   });
@@ -466,7 +468,7 @@ describe("C2: pre-fire soft checks", () => {
     await gate.setCastNetManualEnabled(true);
     const token = greenToken({ top1_holder_pct: 0 });
     delete token.top1_holder_pct;
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.reasons.holder_top1.ok).toBe(true);
   });
 });
@@ -510,7 +512,7 @@ describe("C4: edge-signal detection", () => {
     const gate = await loadGateWithConfig({ minConviction: 0.85, edgeMarginPct: 0.05 });
     await gate.setCastNetManualEnabled(true);
     // Conviction 0.86 — 1.2% above the 0.85 floor, inside edgeMarginPct=5%
-    const result = gate.evaluateCastNet(happyArgs({
+    const result = await gate.evaluateCastNet(happyArgs({
       experienceScore: { score: 0.86, matches: 10 },
     }));
     expect(result.allowed).toBe(true);
@@ -521,7 +523,7 @@ describe("C4: edge-signal detection", () => {
   it("does not flag categories well above the floor", async () => {
     const gate = await loadGateWithConfig({ minConviction: 0.85, edgeMarginPct: 0.05 });
     await gate.setCastNetManualEnabled(true);
-    const result = gate.evaluateCastNet(happyArgs({
+    const result = await gate.evaluateCastNet(happyArgs({
       experienceScore: { score: 0.99, matches: 10 },
     }));
     expect(result.allowed).toBe(true);
@@ -533,7 +535,7 @@ describe("C4: edge-signal detection", () => {
     await gate.setCastNetManualEnabled(true);
     // 50_500 → 1% above 50_000 floor
     const token = greenToken({ liquidity_usd: 50_500, volume_24h_usd: 100_000 });
-    const result = gate.evaluateCastNet(happyArgs({ token }));
+    const result = await gate.evaluateCastNet(happyArgs({ token }));
     expect(result.allowed).toBe(true);
     expect(result.edge_signals.some((e) => e.category === "liquidity")).toBe(true);
   });
@@ -548,7 +550,7 @@ describe("C4: edge-signal detection", () => {
       fdv_usd: 5_000_000,
       top1_holder_pct: 2,
     });
-    const result = gate.evaluateCastNet(happyArgs({
+    const result = await gate.evaluateCastNet(happyArgs({
       token,
       experienceScore: { score: 0.99, matches: 15 },
     }));
