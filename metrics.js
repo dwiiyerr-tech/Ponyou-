@@ -21,7 +21,7 @@ import { fileURLToPath } from "url";
 import { atomicWriteJsonAsync } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const METRICS_FILE = path.join(__dirname, "metrics.json");
+const METRICS_FILE = process.env.PONYOU_METRICS_FILE || path.join(__dirname, "metrics.json");
 const HISTORY_CAP = 200;        // keep last 200 samples per series
 const PERSIST_INTERVAL_MS = 60_000; // flush at most once a minute
 

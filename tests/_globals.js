@@ -49,6 +49,11 @@ const GUARDED = [
   "kill-switch.flag",
   "kill-switch-state.json",
   "daily-trade-guard-state.json",
+  "metrics.json",
+  "trade-attribution.json",
+  "coin-conviction.json",
+  "profit-patterns.json",
+  "loss-patterns.json",
 ];
 
 // Flatten a (possibly nested) relative path into a safe flat backup filename.
