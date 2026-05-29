@@ -9,7 +9,7 @@
  *   5. Save to discovered-wallets.json — optionally auto-promote to smart-wallets.json
  */
 
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -18,6 +18,7 @@ import { log } from "../logger.js";
 import { discoverTokens } from "./dexscreener.js";
 import { listSmartWallets, addSmartWallet } from "../smart-wallets.js";
 import { heliusAcquire, heliusRelease, heliusCircuitOpen, helius429Hit, heliusSuccess } from "./rug-signals.js";
+import { getSharedConnection } from "./solana-rpc.js";
 import { getAdaptiveSmartWalletContext, evaluateSmartWalletCandidate, selectSmartWalletCandidates } from "../smart-wallet-strategy.js";
 import { applyScoreDecay } from "../wallet-score-decay.js";
 
@@ -28,15 +29,11 @@ const DISCOVERED_FILE = path.join(__dirname, "../discovered-wallets.json");
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const HELIUS_BASE = "https://api.helius.xyz/v0";
 
-let _connection = null;
+// Top-owner extraction routes through the shared, rate-limited RPC connection
+// so discovery scans can't burst the Helius endpoint into 429s. See
+// tools/solana-rpc.js.
 function getSolanaConnection() {
-  if (!_connection) {
-    _connection = new Connection(
-      process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
-      "confirmed"
-    );
-  }
-  return _connection;
+  return getSharedConnection();
 }
 
 // Owners that look like trading wallets but are actually LP/vault/program-owned.

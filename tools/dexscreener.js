@@ -3,8 +3,9 @@
  * Replaces GMGN discovery endpoints (no API key required).
  */
 
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { log } from "../logger.js";
+import { getSharedConnection } from "./solana-rpc.js";
 import { listSmartWallets } from "../smart-wallets.js";
 import { recordSmartWalletSnapshot, summarizeSmartWalletHistory } from "../smart-wallet-history.js";
 import { analyzeHolderStructure } from "../holder-memory.js";
@@ -25,15 +26,11 @@ const MIN_DISCOVERY_LIQUIDITY = 500;   // $500 minimum pool liquidity
 const MIN_DISCOVERY_SWAPS = 1;         // at least 1 swap
 const MIN_DISCOVERY_MCAP = 1000;       // $1,000 minimum market cap
 
-let _connection = null;
+// Raw-RPC reads here (getTokenSecurityDetails is ~5 RPC/mint) route through the
+// shared, rate-limited connection so a wide screening batch can't burst the
+// Helius endpoint into 429s. See tools/solana-rpc.js.
 function getSolanaConnection() {
-  if (!_connection) {
-    _connection = new Connection(
-      process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
-      "confirmed"
-    );
-  }
-  return _connection;
+  return getSharedConnection();
 }
 
 async function fetchDS(url, retries = 2) {
