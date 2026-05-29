@@ -61,11 +61,22 @@ function pruneIdempotencyCache() {
 
 function idempotencyKey(tx) {
   // Derive a stable key from the first signature so re-submissions of the
-  // same signed tx are caught even if serialized differently.
+  // same signed tx are caught even if serialized differently. Handles both:
+  //   - legacy Transaction:  signatures[0] = { signature: Buffer|null, publicKey }
+  //   - VersionedTransaction: signatures[0] = Uint8Array (the raw signature)
+  // The earlier version only read `.signature`, so it returned null for every
+  // VersionedTransaction (what Jupiter produces) — silently disabling dedup on
+  // the real swap path.
   try {
-    const sigs = tx.signatures || (typeof tx.signatures === "function" ? tx.signatures : null);
-    if (Array.isArray(tx.signatures) && tx.signatures[0]?.signature) {
-      return bs58.encode(tx.signatures[0].signature);
+    const sig0 = Array.isArray(tx?.signatures) ? tx.signatures[0] : null;
+    if (!sig0) return null;
+    const raw = sig0.signature ?? sig0; // legacy wraps it; versioned IS the bytes
+    if ((raw instanceof Uint8Array || Buffer.isBuffer(raw)) && raw.length > 0) {
+      // Skip the all-zero placeholder of an unsigned slot — otherwise every
+      // unsigned tx would collapse to the same key.
+      let signed = false;
+      for (const b of raw) { if (b !== 0) { signed = true; break; } }
+      if (signed) return bs58.encode(raw);
     }
   } catch {}
   return null;
