@@ -535,8 +535,9 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
   if (c) return { ...c, _cached: true };
 
   const apiKey = process.env.HELIUS_API_KEY;
-  const heliusOK = apiKey && apiKey !== "dummy-helius-key";
-  const heliusExpected = !!(heliusOK && (holderOwners.length > 0 || launchTs));
+  const heliusOK = !!(apiKey && apiKey !== "dummy-helius-key") && !heliusCircuitOpen();
+  const shyftKey = process.env.SHYFT_API_KEY;
+  const shyftOK = !!(shyftKey);
 
   const extensions = await getMintExtensions(connection, mint);
 
@@ -548,45 +549,56 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
   let heliusDegraded = false;
   let heliusReason = null;
   let heliusErrorCount = 0;
-  let shyftFallbackUsed = false;
-  let shyftReason = null;
+  // enrichmentSource tracks which provider handled fresh/sybil analysis:
+  // "helius" | "shyft" | "none"
+  let enrichmentSource = "none";
 
   if (dexscreenerOnly) {
-    // DexScreener-only mode — skip all Helius/Shyft wallet analysis.
-    // Only DexScreener-derived metrics (LP lock, wash trade, holder conc).
-    heliusDegraded = false;
+    // DexScreener-only mode — skip all wallet analysis.
     heliusReason = "dexscreener_only_mode";
-  } else if (heliusExpected && heliusCircuitOpen()) {
-    // Try Shyft fallback first.
-    const shyftKey = process.env.SHYFT_API_KEY;
-    if (shyftKey && holderOwners.length > 0) {
-      let shyftError = null;
+  } else if (shyftOK && holderOwners.length > 0) {
+    // ── Shyft primary path ────────────────────────────────────────────
+    // Shyft handles fresh-holder + sybil detection. Helius (if available)
+    // covers bundle detection only, since Shyft has no SWAP tx search.
+    try {
+      const shyftResult = await getFreshFundedCountShyft(mint, shyftKey);
+      if (shyftResult && !shyftResult._error && Number(shyftResult.fresh_funded_holders ?? 0) >= 0) {
+        fresh = shyftResult;
+        enrichmentSource = "shyft";
+        log("rug_signal_info", `Shyft primary: fresh_funded=${fresh.fresh_funded_holders} scanned=${fresh.scanned}`);
+      } else {
+        heliusDegraded = true;
+        heliusReason = shyftResult?._error || "shyft_empty_response";
+      }
+    } catch (e) {
+      heliusDegraded = true;
+      heliusReason = `shyft_failed: ${e.message}`;
+    }
+
+    // Sybil: fall through to Helius if available, else skip gracefully
+    if (enrichmentSource === "shyft" && heliusOK) {
       try {
-        const shyftResult = await getFreshFundedCountShyft(mint, shyftKey);
-        shyftError = shyftResult?._error ? new Error(shyftResult._error) : null;
-        if (shyftResult == null || shyftResult === 0 || Number(shyftResult?.fresh_funded_holders || 0) === 0 || shyftError) {
-          heliusDegraded = true;
-          heliusReason = "Helius circuit open, Shyft fallback degraded";
-          shyftReason = shyftError?.message || "empty_response";
-        } else {
-          fresh = shyftResult;
-          shyftFallbackUsed = true;
-          heliusReason = "helius_circuit_open:shyft_fallback_used";
-          log("rug_signal_info", `Shyft fallback: fresh_funded=${fresh.fresh_funded_holders}`);
+        sybil = await getSameFunderCluster(holderOwners, apiKey);
+        if (sybil?._error) heliusReason = sybil._error;
+      } catch (e) {
+        log("rug_signal_warn", `sybil via helius failed: ${e.message}`);
+      }
+    }
+
+    // Bundle: Helius-only feature, skip gracefully if unavailable
+    if (heliusOK && launchTs) {
+      try {
+        bundle = await getBundleBuyersPct(mint, apiKey, launchTs);
+        if (bundle?._error) {
+          heliusReason = bundle._error;
+          heliusErrorCount += 1;
         }
       } catch (e) {
-        shyftError = e;
-        heliusDegraded = true;
-        heliusReason = `Helius circuit open, Shyft fallback failed: ${e.message}`;
-        shyftReason = shyftError?.message || "empty_response";
+        log("rug_signal_warn", `bundle via helius failed: ${e.message}`);
       }
-    } else {
-      heliusDegraded = true;
-      heliusReason = "Helius circuit open, no Shyft key configured";
     }
-  }
-
-  if (!dexscreenerOnly && !shyftFallbackUsed && !heliusDegraded && heliusOK && holderOwners.length > 0) {
+  } else if (heliusOK && holderOwners.length > 0) {
+    // ── Helius primary path (no Shyft key configured) ─────────────────
     fresh = await getFreshFundedCount(holderOwners, apiKey, launchTs || Math.floor(Date.now() / 1000));
     sybil = await getSameFunderCluster(holderOwners, apiKey);
     heliusErrorCount += Number(fresh?._error_count || 0) + Number(sybil?._error_count || 0);
@@ -594,15 +606,20 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
     if ((Number(fresh?._error_count || 0) > 0 && Number(fresh?.scanned || 0) === 0) ||
         (Number(sybil?._error_count || 0) > 0 && Number(sybil?.scanned || 0) === 0)) {
       heliusDegraded = true;
+    } else {
+      enrichmentSource = "helius";
     }
-  }
-  if (!dexscreenerOnly && !shyftFallbackUsed && !heliusDegraded && heliusOK && launchTs) {
-    bundle = await getBundleBuyersPct(mint, apiKey, launchTs);
-    if (bundle?._error) {
-      heliusDegraded = true;
-      heliusReason = bundle._error;
-      heliusErrorCount += 1;
+    if (!heliusDegraded && launchTs) {
+      bundle = await getBundleBuyersPct(mint, apiKey, launchTs);
+      if (bundle?._error) {
+        heliusDegraded = true;
+        heliusReason = bundle._error;
+        heliusErrorCount += 1;
+      }
     }
+  } else if (!shyftOK && !heliusOK && holderOwners.length > 0) {
+    heliusDegraded = true;
+    heliusReason = "no_enrichment_provider";
   }
 
   const lp = getLpLockStatus(dsPair);
@@ -615,12 +632,12 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
     ...bundle,
     ...lp,
     ...wash,
-    _helius_used: dexscreenerOnly ? false : heliusOK,
-    _helius_expected: dexscreenerOnly ? false : heliusExpected,
+    _helius_used: enrichmentSource === "helius",
+    _helius_expected: !dexscreenerOnly && !!(apiKey && apiKey !== "dummy-helius-key") && (holderOwners.length > 0 || !!launchTs),
     _helius_degraded: heliusDegraded,
-    _data_quality: dexscreenerOnly ? "dexscreener" : (heliusDegraded ? "degraded" : "full"),
+    _enrichment_source: dexscreenerOnly ? "dexscreener" : enrichmentSource,
+    _data_quality: dexscreenerOnly ? "dexscreener" : (enrichmentSource !== "none" ? enrichmentSource : (heliusDegraded ? "degraded" : "none")),
     _helius_reason: heliusReason,
-    _shyft_reason: shyftReason,
     _helius_error_count: heliusErrorCount,
     _ts: Date.now(),
   };

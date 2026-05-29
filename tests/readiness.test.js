@@ -16,7 +16,7 @@ describe("getOperationalReadiness", () => {
     expect(readiness.ok).toBe(false);
     expect(readiness.errors).toContain("RPC_URL is not configured.");
     expect(readiness.errors).toContain("No trading wallet is configured.");
-    expect(readiness.errors).toContain("HELIUS_API_KEY is missing.");
+    expect(readiness.errors.some(e => e.startsWith("HELIUS_API_KEY is missing"))).toBe(true);
   });
 
   it("passes with the minimum live prerequisites and warns about optional safety rails", () => {

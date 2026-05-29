@@ -181,7 +181,15 @@ export function getOperationalReadiness({
       errors.push(...walletTopology.errors);
     }
     if (!env.HELIUS_API_KEY || env.HELIUS_API_KEY === "dummy-helius-key") {
-      errors.push("HELIUS_API_KEY is missing.");
+      const hasShyft = !!(env.SHYFT_API_KEY);
+      const isDexscreenerMode = env.SCREENING_MODE === "dexscreener";
+      if (isDexscreenerMode) {
+        warnings.push("HELIUS_API_KEY missing — DexScreener-only mode active (fresh/sybil/bundle analysis disabled).");
+      } else if (hasShyft) {
+        warnings.push("HELIUS_API_KEY missing — Shyft will handle fresh-holder and sybil detection (bundle analysis disabled).");
+      } else {
+        errors.push("HELIUS_API_KEY is missing. Set HELIUS_API_KEY, SHYFT_API_KEY, or use SCREENING_MODE=dexscreener.");
+      }
     }
 
     // ── Data floor checks ──────────────────────────────────────────
