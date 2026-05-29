@@ -10,6 +10,7 @@ import { recordSmartWalletSnapshot, summarizeSmartWalletHistory } from "../smart
 import { analyzeHolderStructure } from "../holder-memory.js";
 import { detectBundledLaunch, gatherRugSignals, heliusAcquire, heliusRelease, heliusCircuitOpen } from "./rug-signals.js";
 import { classifyNarrative, summarizeNarrative } from "./narratives.js";
+import { createCachedFetcher } from "../cache-util.js";
 import { discoverBirdeyeTokens, enrichTokensWithBirdeye, isBirdeyeEnabled } from "./birdeye.js";
 
 const DS_BASE = "https://api.dexscreener.com";
@@ -407,7 +408,7 @@ async function discoverPumpFunTokens() {
 
 // ─── Security & Holders ───────────────────────────────────────
 
-export async function getTokenSecurityDetails({ mint }) {
+async function _getTokenSecurityDetailsUncached({ mint }) {
   try {
     const connection = getSolanaConnection();
     const mintPubkey = new PublicKey(mint);
@@ -587,6 +588,18 @@ export async function getTokenSecurityDetails({ mint }) {
     };
   }
 }
+
+// getTokenSecurityDetails is the heaviest Helius consumer (~5 RPC/mint) and is
+// called for the same mint across the screening, management, and enrichment
+// paths within the same window. Wrap it with a TTL cache + in-flight de-dup so
+// those repeats collapse into one RPC burst. TTL (3min) < screening cadence
+// (5min) → still fresh each cycle. Errors aren't cached (they carry `.error`),
+// so transient 429s retry. Cache keyed by mint only.
+const SECURITY_TTL_MS = 3 * 60_000;
+export const getTokenSecurityDetails = createCachedFetcher(
+  _getTokenSecurityDetailsUncached,
+  { ttlMs: SECURITY_TTL_MS, key: ({ mint } = {}) => mint || "" }
+);
 
 // ─── OHLCV Candles (GeckoTerminal, no API key) ────────────────
 

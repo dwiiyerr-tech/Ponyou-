@@ -95,14 +95,19 @@ export function shadowWatch(token) {
 
 // ─── Price check cycle ──────────────────────────────────────────────────────
 
-async function checkAll() {
+export async function checkAll() {
   if (_running) return;
   _running = true;
 
   // SW-2: serialize the whole check + write under the same lock as
   // shadowWatch so the interval cycle and external add-to-watchlist
   // calls cannot interleave a partial write.
-  return withFileLock(WATCHLIST_FILE, async () => {
+  // SW-3: reset _running in finally and swallow errors. load()/save()/the
+  // lock can throw OUTSIDE the per-token try/catch; without this a single
+  // throw wedged _running=true forever (watchlist silently stops checking)
+  // and surfaced as an unhandled rejection from the unawaited interval.
+  try {
+    return await withFileLock(WATCHLIST_FILE, async () => {
   const data = load();
   const now  = Date.now();
   let rugsFound = 0;
@@ -189,9 +194,12 @@ async function checkAll() {
     log("shadow_watchlist", `Cycle done — ${stats.watching} watching, ${rugsFound} rugs found this pass`);
     agentBus.emit("shadow:stats", stats);
   }
-
-  _running = false;
   }); // end withFileLock
+  } catch (e) {
+    log("shadow_watchlist_error", `checkAll failed: ${e.message}`);
+  } finally {
+    _running = false;
+  }
 }
 
 function _emitRug(token, reason) {

@@ -51,6 +51,20 @@ function tierFor(score) {
 const STABLECOINS = new Set(["USDC", "USDT", "BUSD", "DAI", "FRAX", "TUSD", "USDH"]);
 const LARGE_CAPS  = new Set(["SOL", "BTC", "ETH", "BNB", "WSOL", "WBTC", "WETH"]);
 
+// ─── L1b: Mint sanity (Solana tradeability) ────────────────────
+// Solana mints are base58 pubkeys (32–44 chars, no 0/O/I/l, no underscore).
+// A signal carrying a non-Solana / malformed mint (EVM "0x…", network-prefixed
+// ids like "solana_…", garbage) is untradeable on our DEX path and pure noise.
+const SOLANA_MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+// Sources that resolve a contract address up front MUST carry a valid Solana
+// mint. Symbol-only sources (coingecko trending feeds a symbol-keyed buzz
+// score, never a direct trade) legitimately have none and are exempt.
+const MINT_REQUIRED_SOURCES = new Set(["dexscreener"]);
+
+export function isLikelySolanaMint(mint) {
+  return typeof mint === "string" && SOLANA_MINT_RE.test(mint);
+}
+
 // ─── L2: Scam name patterns ────────────────────────────────────
 
 const SCAM_PATTERNS = [
@@ -152,6 +166,15 @@ export function gateSignal(signal = {}) {
   }
   if (LARGE_CAPS.has(sym)) {
     return _block("large_cap", 80, flags);
+  }
+
+  // ── L1b: Mint sanity — drop non-Solana / malformed mints ───
+  const mint = signal.mint || signal.address || signal.contract || null;
+  if (mint != null && mint !== "" && !isLikelySolanaMint(mint)) {
+    return _block("non_solana_mint", 80, flags);
+  }
+  if (!mint && MINT_REQUIRED_SOURCES.has(source)) {
+    return _block("missing_mint", 80, flags);
   }
 
   // ── L2: Scam name patterns ─────────────────────────────────

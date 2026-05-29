@@ -25,6 +25,14 @@ DESIRED_RUNNING=1
 AGENT_PID=""
 DASH_PID=""
 PROXY_PID=""
+# Restart-on-commit: a long-lived Node agent pins its JS modules at start, so a
+# committed fix never reaches it until it happens to crash. When HEAD advances
+# past the commit the agent booted on, cycle the agent so the new code loads.
+# Set RESTART_ON_COMMIT=0 to opt out. Detects LOCAL commits only — it does not
+# pull; run a deploy/pull out of band if you track a remote.
+RESTART_ON_COMMIT="${RESTART_ON_COMMIT:-1}"
+COMMIT_CHECK_INTERVAL_SEC="${COMMIT_CHECK_INTERVAL_SEC:-30}"
+AGENT_HEAD=""
 
 mkdir -p "${LOG_DIR}"
 
@@ -47,6 +55,10 @@ log() {
   local line
   line="[$(date -Is)] [SUPERVISOR] $*"
   printf '%s\n' "$line" | tee -a "${SUPERVISOR_LOG}"
+}
+
+current_head() {
+  git -C "${ROOT_DIR}" rev-parse HEAD 2>/dev/null || true
 }
 
 write_supervisor_state() {
@@ -92,6 +104,8 @@ start_agent() {
   ) >>"${AGENT_LOG}" 2>&1 &
   AGENT_PID=$!
   printf '%s' "${AGENT_PID}" > "${AGENT_PID_FILE}"
+  AGENT_HEAD="$(current_head)"
+  [ -n "${AGENT_HEAD}" ] && log "Agent booted on commit ${AGENT_HEAD:0:8}"
   write_supervisor_state 1 "${AGENT_PID}" "spawn"
 }
 
@@ -214,6 +228,7 @@ process_supervisor_command() {
 }
 
 wait_for_agent_or_command() {
+  local since_commit_check=0
   while true; do
     process_supervisor_command
 
@@ -226,7 +241,22 @@ wait_for_agent_or_command() {
       return 0
     fi
 
+    # Restart-on-commit: HEAD advanced past the commit the agent booted on,
+    # so the running process is pinned to stale code. Cycle it — the main loop
+    # re-runs readiness and spawns a fresh agent on the new commit.
+    if [ "${RESTART_ON_COMMIT}" = "1" ] && [ "${since_commit_check}" -ge "${COMMIT_CHECK_INTERVAL_SEC}" ]; then
+      since_commit_check=0
+      local head_now
+      head_now="$(current_head)"
+      if [ -n "${AGENT_HEAD}" ] && [ -n "${head_now}" ] && [ "${head_now}" != "${AGENT_HEAD}" ]; then
+        log "New commit detected (${AGENT_HEAD:0:8} → ${head_now:0:8}) — restarting agent to load new code"
+        stop_agent
+        return 0
+      fi
+    fi
+
     sleep 2
+    since_commit_check=$((since_commit_check + 2))
   done
 }
 

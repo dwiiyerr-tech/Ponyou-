@@ -390,6 +390,23 @@ async function huntNewest(strategy) {
 }
 
 /**
+ * GeckoTerminal v2 returns base-token ids network-prefixed, e.g.
+ * "solana_So11111111111111111111111111111111111111112". The bare base58
+ * mint is everything after the network prefix. Passing the prefixed id
+ * downstream 400s every mint-keyed call (RugCheck, Helius, on-chain
+ * lookups, position tracking), so strip it here at the source.
+ *
+ * @param {string} rawId  pool.relationships.base_token.data.id
+ * @returns {string|null} bare mint, or null when unusable
+ */
+export function geckoMintFromId(rawId) {
+  if (typeof rawId !== "string" || rawId.length === 0) return null;
+  const us = rawId.indexOf("_");
+  const bare = us >= 0 ? rawId.slice(us + 1) : rawId;
+  return bare || null;
+}
+
+/**
  * Hunt GeckoTerminal — free API, trending pools on Solana.
  * Different perspective from DexScreener, catches tokens missed by DS.
  */
@@ -412,9 +429,10 @@ async function huntGeckoTerminal(strategy) {
       const token = attrs.base_token_price_quote_token
         || attrs.quote_token_price_base_token
         || null;
-      const mint = pool.relationships?.base_token?.data?.id
-        || attrs.address
-        || null;
+      // base_token.data.id is "solana_<mint>"; attrs.address is the POOL
+      // address (see pair_address below), never a valid token mint — so we
+      // strip the prefix and skip pools that carry no base token.
+      const mint = geckoMintFromId(pool.relationships?.base_token?.data?.id);
       if (!mint || mint === SOL_MINT || seen.has(mint)) continue;
       seen.add(mint);
 
