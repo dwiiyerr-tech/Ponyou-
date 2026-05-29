@@ -10,8 +10,15 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 
-// Files that tests overwrite or unlink at repo root. Keep this list aligned
-// with any new test that touches a JSON in ROOT (see audit grep).
+// Collab-store tmp dir — must match COLLAB_TMP in vitest.config.js. The collab
+// modules' paths are redirected here via test.env so tests never touch the live
+// stores; we just ensure the dir exists (appendFileSync/withFileLock don't
+// mkdir) and clean it up afterwards.
+const COLLAB_TMP = path.join(os.tmpdir(), "ponyou-vitest-collab");
+
+// Files that tests overwrite or unlink. Relative to ROOT; subdirectory paths
+// are supported (backup filenames are flattened). Keep aligned with any new
+// test that writes a JSON under ROOT (see audit grep).
 const GUARDED = [
   "trading-plan.json",
   "active-strategy.json",
@@ -30,22 +37,35 @@ const GUARDED = [
   "automation-command.json",
   "supervisor-state.json",
   "supervisor-command.json",
+  // Collab layer — these are now redirected to COLLAB_TMP via test.env, so they
+  // should no longer be touched; guarded as belt-and-suspenders in case a test
+  // hardcodes a path or the env override fails to propagate.
+  "shared-agent-memory.jsonl",
+  "infra/agent-collab/orchestrator-state.json",
+  "infra/agent-collab/experiments.json",
+  "infra/agent-collab/experiment-runs.jsonl",
+  "infra/agent-collab/semantic-memory.jsonl",
 ];
 
+// Flatten a (possibly nested) relative path into a safe flat backup filename.
+const backupName = (rel) => rel.replace(/[/\\]/g, "__");
+
 export default function setup() {
+  fs.mkdirSync(COLLAB_TMP, { recursive: true });
+
   const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "ponyou-test-backup-"));
   const existed = new Set();
   for (const rel of GUARDED) {
     const src = path.join(ROOT, rel);
     if (fs.existsSync(src)) {
-      fs.copyFileSync(src, path.join(backupDir, rel));
+      fs.copyFileSync(src, path.join(backupDir, backupName(rel)));
       existed.add(rel);
     }
   }
 
   return () => {
     for (const rel of GUARDED) {
-      const src = path.join(backupDir, rel);
+      const src = path.join(backupDir, backupName(rel));
       const dst = path.join(ROOT, rel);
       if (existed.has(rel)) {
         try { fs.copyFileSync(src, dst); } catch { /* best-effort */ }
@@ -55,5 +75,6 @@ export default function setup() {
       }
     }
     try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(COLLAB_TMP, { recursive: true, force: true }); } catch {}
   };
 }

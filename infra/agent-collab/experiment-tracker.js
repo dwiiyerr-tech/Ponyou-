@@ -4,8 +4,8 @@ import { fileURLToPath } from "url";
 import { atomicWriteJson } from "../../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const EXPERIMENTS_FILE = path.join(__dirname, "experiments.json");
-const RUNS_FILE = path.join(__dirname, "experiment-runs.jsonl");
+const EXPERIMENTS_FILE = process.env.PONYOU_EXPERIMENTS_FILE || path.join(__dirname, "experiments.json");
+const RUNS_FILE = process.env.PONYOU_EXPERIMENT_RUNS_FILE || path.join(__dirname, "experiment-runs.jsonl");
 
 function nowIso() {
   return new Date().toISOString();
