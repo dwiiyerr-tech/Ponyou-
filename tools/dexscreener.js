@@ -446,6 +446,7 @@ export async function getTokenSecurityDetails({ mint }) {
       const ui = parseFloat(a.uiAmount ?? a.uiAmountString ?? 0) || 0;
       return {
         address:     a.address,
+        owner:       null, // resolved below when owner lookup succeeds
         pct:         supplyUi > 0 ? (ui / supplyUi) * 100 : 0,
         is_contract: false,
         sol_balance: solBalances[a.address] ?? 0,
@@ -498,6 +499,7 @@ export async function getTokenSecurityDetails({ mint }) {
             const ownerAddress = tokenAccountOwners[h.address];
             return {
               ...h,
+              owner: ownerAddress || null,
               sol_balance: ownerAddress ? (solBalances[ownerAddress] ?? 0) : 0,
             };
           });
@@ -774,7 +776,7 @@ const SMART_MONEY_TF_SECONDS = {
   "30d": 2592000,
 };
 
-async function fetchHeliusTxns(address, apiKey, limit = 50) {
+export async function fetchHeliusTxns(address, apiKey, limit = 50) {
   if (heliusCircuitOpen()) throw new Error("Helius circuit open — smart money degraded");
   await heliusAcquire();
   const url = `${HELIUS_BASE}/addresses/${address}/transactions?api-key=${apiKey}&limit=${limit}&type=SWAP`;

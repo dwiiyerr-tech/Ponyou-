@@ -29,6 +29,7 @@ import { fileURLToPath } from "url";
 import { config } from "../config.js";
 import { log } from "../logger.js";
 import { atomicWriteJson, withFileLock } from "../atomic-write.js";
+import { enrichHolderData } from "./holder-data-enricher.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(__dirname, "..", "cast-net-state.json");
@@ -134,10 +135,21 @@ async function checkHolderAnalysis(token) {
     }
   }
 
-  // Token is in the cohort — run the checks
-  // (In production, these would fetch live data; here we soft-pass if data unavailable)
-  const topHolders = token?.top_holders || token?.holders || [];
-  const recentSells = token?.recent_sells || [];
+  // Token is in the cohort — run the checks. Prefer data already on the token
+  // (tests / upstream enrichment); otherwise fetch live via the throttled,
+  // cohort-gated, TTL-cached enricher (Helius holders/sells, fail-soft). If the
+  // fetch yields nothing we still soft-pass below — never hard-block on missing data.
+  let topHolders = token?.top_holders || token?.holders || [];
+  let recentSells = token?.recent_sells || [];
+  if (topHolders.length === 0 && recentSells.length === 0) {
+    try {
+      const enriched = await enrichHolderData({ mint, featureFlags: cfg });
+      topHolders = enriched.topHolders || [];
+      recentSells = enriched.recentSells || [];
+    } catch (err) {
+      log("cast_net_warn", `holder enrich failed: ${err.message}`);
+    }
+  }
 
   // A) Dump monitor — check if holders are currently dumping
   if (cfg.dumpMonitor?.enabled && topHolders.length >= 2) {

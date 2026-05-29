@@ -55,6 +55,7 @@ import { evaluateDevActivity, recordDevSnapshot, extractDevWallet } from "./tool
 import { evaluateVolumeDivergence, recordPriceVolumeSample } from "./tools/volume-divergence.js";
 import { planExit } from "./tools/exit-timing-optimizer.js";
 import { checkHolderExitSignals } from "./holder-exit-checks.js";
+import { enrichHolderData } from "./tools/holder-data-enricher.js";
 import {
   listPendingIntents, getIntent, consumeIntent,
 } from "./intents.js";
@@ -132,7 +133,6 @@ import { simulateSell } from "./tools/sell-simulator.js";
 import { screenDayPhaseTokens, isWeekendEntryWindow, isWeekdayExitWindow, formatWatchlistForNotification } from "./tools/day-phase-screener.js";
 import { initStagedEntry, checkStagedEntryTrigger, advanceStagedEntry, getStage1Amount } from "./tools/staged-entry.js";
 import { getRugCheckReport, rugCheckToSignals } from "./tools/rugcheck.js";
-import { getWalletSnapshot } from "./tools/solscan.js";
 import { blacklistDev, checkDevBlacklist, getDevBlacklist } from "./tools/dev-blacklist.js";
 import { recordNarrativeOutcome, detectNarrativeVelocity, trackCrossBatchVelocity, getCrossBatchVelocity } from "./tools/narratives.js";
 import { aggregateSignal } from "./signal-aggregator.js";
@@ -1785,10 +1785,21 @@ async function checkDeterministicExits(tokens) {
     // Check for real-time dump detection, underwater holders, and rug patterns
     // if feature flags are enabled.
     try {
-      const topHolders = token?.topHolders || token?.top_holders || [];
-      const recentSells = token?.recentSells || token?.recent_sells || [];
-      const holderTxHistory = token?.holderTransactions || token?.holder_transactions || [];
-      const priceHistory = token?.priceHistory || token?.price_history || [];
+      const hcfg = config.holderAnalysis || {};
+      // Live ABC data is fetched here (Helius holders/sells + free price history)
+      // through a throttled, cohort-gated, TTL-cached enricher. The enricher
+      // returns empty arrays when the feature is off / the mint is out of the
+      // beta cohort, so this stays cheap for the vast majority of positions.
+      // Pre-supplied fields on the token (e.g. from tests) take precedence.
+      const enriched = await enrichHolderData({
+        mint: token.mint,
+        currentPrice,
+        featureFlags: hcfg,
+      });
+      const topHolders = token?.topHolders || token?.top_holders || enriched.topHolders;
+      const recentSells = token?.recentSells || token?.recent_sells || enriched.recentSells;
+      const holderTxHistory = token?.holderTransactions || token?.holder_transactions || enriched.holderTransactions;
+      const priceHistory = token?.priceHistory || token?.price_history || enriched.priceHistory;
 
       const holderSignal = await checkHolderExitSignals({
         position: tracked,
@@ -1798,7 +1809,7 @@ async function checkDeterministicExits(tokens) {
         recentSells,
         holderTransactions: holderTxHistory,
         priceHistory,
-        featureFlags: config.holderAnalysis || {},
+        featureFlags: hcfg,
       });
 
       if (holderSignal && holderSignal.risk_level === "CRITICAL") {

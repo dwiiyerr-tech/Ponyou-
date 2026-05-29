@@ -117,6 +117,7 @@ export async function checkHolderExitSignals({
   if (cfg.entryPriceAnalysis?.enabled) {
     try {
       let entryAnalysis;
+      let isFallback = false;
 
       // Prefer transaction history if available
       if (holderTransactions && holderTransactions.length > 0) {
@@ -126,18 +127,43 @@ export async function checkHolderExitSignals({
           holderTransactions,
         });
       } else if (priceHistory && priceHistory.length > 2) {
-        // Fallback to price history estimation
+        // Fallback to price history estimation (low-confidence ESTIMATE)
         entryAnalysis = estimateEntryPriceFromHistory({
           tokenMint: mint,
           currentPriceUsd: currentPrice,
           priceHistory,
         });
+        isFallback = true;
       }
 
       if (entryAnalysis && entryAnalysis.underwater_pct > 0) {
         const uwThreshold = cfg.entryPriceAnalysis?.underwaterThreshold || 80;
 
-        if (entryAnalysis.underwater_pct >= uwThreshold && entryAnalysis.confidence > 70) {
+        if (isFallback) {
+          // The price-history fallback never solo-drives an exit. Above a
+          // (stricter) underwater estimate it is admitted as a MEDIUM-capped
+          // corroborating signal: it can only matter when an independent
+          // high-trust signal (dump / pattern / tx-entry) is also present, via
+          // the corroboration boost applied before final aggregation below.
+          const fbThreshold = cfg.entryPriceAnalysis?.fallbackUnderwaterThreshold || 85;
+          if (entryAnalysis.underwater_pct >= fbThreshold) {
+            signals.push({
+              tool: "entry_price_fallback",
+              risk_level: "MEDIUM",
+              confidence: entryAnalysis.confidence, // intentionally low (~40)
+              corroborating: true,
+              reason: `~${entryAnalysis.underwater_pct.toFixed(0)}% holders likely underwater (price-history estimate)`,
+              details: entryAnalysis.details,
+            });
+            // Cap influence at MEDIUM and do NOT raise maxConfidence on its own.
+            if (shouldUpgradeRisk("MEDIUM", maxRisk)) maxRisk = "MEDIUM";
+            recordCounter("holder_exit_underwater_fallback");
+            log(
+              "holder_exit",
+              `Position ${mint.slice(0, 8)}: ~${entryAnalysis.underwater_pct.toFixed(0)}% underwater (estimate, corroborating)`
+            );
+          }
+        } else if (entryAnalysis.underwater_pct >= uwThreshold && entryAnalysis.confidence > 70) {
           signals.push({
             tool: "entry_price_analysis",
             risk_level: entryAnalysis.sell_pressure_risk,
@@ -208,6 +234,31 @@ export async function checkHolderExitSignals({
     } catch (err) {
       recordCounter("holder_exit_pattern_error");
       log("holder_exit_error", `Pattern detection failed for ${mint.slice(0, 8)}: ${err.message}`);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Corroboration boost
+  // ─────────────────────────────────────────────────────────────
+  // The price-history fallback is too unreliable to trigger an exit alone, but
+  // when it AGREES with an independently-detected high-trust signal (dump
+  // monitor / rug pattern / tx-based entry price), the combined evidence is
+  // stronger than either alone. Give the combined confidence a bounded bump so
+  // corroborated risk can cross the HIGH/CRITICAL exit gates — e.g. a real dump
+  // that reads "HIGH but not quite CRITICAL" becomes actionable when the
+  // price history independently shows most holders underwater.
+  const hasFallback = signals.some((s) => s.tool === "entry_price_fallback");
+  const highTrustSignals = signals.filter((s) => s.tool !== "entry_price_fallback");
+  if (hasFallback && highTrustSignals.length >= 1 && (maxRisk === "HIGH" || maxRisk === "CRITICAL")) {
+    const bonus = cfg.entryPriceAnalysis?.corroborationBonus ?? 15;
+    const boosted = Math.min(100, maxConfidence + bonus);
+    if (boosted > maxConfidence) {
+      recordCounter("holder_exit_corroboration_boost");
+      log(
+        "holder_exit",
+        `Position ${mint.slice(0, 8)}: corroboration boost ${maxConfidence}→${boosted} (fallback underwater + ${highTrustSignals[0]?.tool})`
+      );
+      maxConfidence = boosted;
     }
   }
 
