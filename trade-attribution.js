@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ATTR_FILE = path.join(__dirname, "trade-attribution.json");
+const ATTR_FILE = process.env.PONYOU_TRADE_ATTRIBUTION_FILE || path.join(__dirname, "trade-attribution.json");
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));

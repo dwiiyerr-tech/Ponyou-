@@ -31,9 +31,9 @@ import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 import { classifyNarrative } from "./tools/narratives.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CONVICTION_FILE      = path.join(__dirname, "coin-conviction.json");
-const PROFIT_PATTERNS_FILE = path.join(__dirname, "profit-patterns.json");
-const LOSS_PATTERNS_FILE   = path.join(__dirname, "loss-patterns.json");
+const CONVICTION_FILE      = process.env.PONYOU_CONVICTION_FILE      || path.join(__dirname, "coin-conviction.json");
+const PROFIT_PATTERNS_FILE = process.env.PONYOU_PROFIT_PATTERNS_FILE || path.join(__dirname, "profit-patterns.json");
+const LOSS_PATTERNS_FILE   = process.env.PONYOU_LOSS_PATTERNS_FILE   || path.join(__dirname, "loss-patterns.json");
 const DECAY_WINDOW_MS     = 24 * 60 * 60 * 1000;
 const MAX_PROFIT_PATTERNS = 500; // rolling window
 
