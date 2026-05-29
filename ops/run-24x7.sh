@@ -13,11 +13,18 @@ SUPERVISOR_STATE_FILE="${ROOT_DIR}/supervisor-state.json"
 SUPERVISOR_COMMAND_FILE="${ROOT_DIR}/supervisor-command.json"
 DASHBOARD_ENABLED="${DASHBOARD_ENABLED:-1}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-3000}"
+# Local LLM proxy (keyless heuristic OpenAI-compatible server on :8787). The
+# agent's LLM_BASE_URL points at it, so without it every LLM-driven decision
+# fails. Supervised like the dashboard. Set LLM_PROXY_ENABLED=0 to opt out.
+LLM_PROXY_ENABLED="${LLM_PROXY_ENABLED:-1}"
+LLM_PROXY_PORT="${LLM_PROXY_PORT:-8787}"
+PROXY_LOG="${LOG_DIR}/proxy-${MODE}.log"
 COUNT=0
 LAST_COMMAND_ID=""
 DESIRED_RUNNING=1
 AGENT_PID=""
 DASH_PID=""
+PROXY_PID=""
 
 mkdir -p "${LOG_DIR}"
 
@@ -130,9 +137,51 @@ ensure_dashboard() {
   fi
 }
 
+port_in_use() {
+  # Portable TCP probe — returns 0 if something is already listening on $1.
+  node -e "const net=require('net');const s=net.connect({host:'127.0.0.1',port:Number(process.argv[1])},()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>{s.destroy();process.exit(1)},1500);" "$1" 2>/dev/null
+}
+
+start_proxy() {
+  if [ "${LLM_PROXY_ENABLED}" != "1" ]; then return; fi
+  if [ -n "${PROXY_PID}" ] && kill -0 "${PROXY_PID}" 2>/dev/null; then return; fi
+  # Adopt an already-running proxy (e.g. started manually) instead of fighting
+  # over the port — the proxy exits on EADDRINUSE, which would loop us.
+  if port_in_use "${LLM_PROXY_PORT}"; then
+    log "LLM proxy already listening on ${LLM_PROXY_PORT} — adopting existing instance"
+    return
+  fi
+  log "Starting LLM proxy on port ${LLM_PROXY_PORT}"
+  (
+    cd "${ROOT_DIR}"
+    exec node local-claude-proxy.js
+  ) >>"${PROXY_LOG}" 2>&1 &
+  PROXY_PID=$!
+  log "LLM proxy pid=${PROXY_PID} log=${PROXY_LOG}"
+}
+
+stop_proxy() {
+  if [ -n "${PROXY_PID}" ] && kill -0 "${PROXY_PID}" 2>/dev/null; then
+    log "Stopping LLM proxy pid=${PROXY_PID}"
+    kill -TERM "${PROXY_PID}" 2>/dev/null || true
+    wait "${PROXY_PID}" 2>/dev/null || true
+  fi
+  PROXY_PID=""
+}
+
+ensure_proxy() {
+  if [ "${LLM_PROXY_ENABLED}" != "1" ]; then return; fi
+  # Restart only the proxy WE spawned; if an external one holds the port,
+  # start_proxy adopts it.
+  if [ -n "${PROXY_PID}" ] && kill -0 "${PROXY_PID}" 2>/dev/null; then return; fi
+  if [ -z "${PROXY_PID}" ] && port_in_use "${LLM_PROXY_PORT}"; then return; fi
+  start_proxy
+}
+
 cleanup_children() {
   stop_agent
   stop_dashboard
+  stop_proxy
 }
 trap cleanup_children EXIT INT TERM
 
@@ -191,10 +240,12 @@ else
 fi
 write_supervisor_state 0 "" "boot"
 start_dashboard
+start_proxy
 
 while true; do
   process_supervisor_command
   ensure_dashboard
+  ensure_proxy
 
   if [ "${DESIRED_RUNNING}" != "1" ]; then
     write_supervisor_state 0 "" "idle"
