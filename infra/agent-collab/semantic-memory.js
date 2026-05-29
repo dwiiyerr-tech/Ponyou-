@@ -7,7 +7,7 @@ import { getExperimentSummary } from "./experiment-tracker.js";
 import { atomicWriteText, withFileLock } from "../../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const MEMORY_FILE = path.join(__dirname, "semantic-memory.jsonl");
+const MEMORY_FILE = process.env.PONYOU_SEMANTIC_MEMORY_FILE || path.join(__dirname, "semantic-memory.jsonl");
 const RUFLO_BIN = path.join(__dirname, "../../node_modules/.bin/ruflo");
 const execFileAsync = promisify(execFile);
 

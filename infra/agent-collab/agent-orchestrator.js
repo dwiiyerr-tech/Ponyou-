@@ -6,7 +6,7 @@ import { getRecentSemanticMemory, searchSemanticMemory } from "./semantic-memory
 import { atomicWriteJson } from "../../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ORCH_FILE = path.join(__dirname, "orchestrator-state.json");
+const ORCH_FILE = process.env.PONYOU_ORCH_FILE || path.join(__dirname, "orchestrator-state.json");
 const SHARED_MEMORY_FILE = process.env.COLLAB_SHARED_MEMORY_PATH || path.join(__dirname, "../../shared-agent-memory.jsonl");
 const STAGES = ["research", "evaluate", "decide", "execute", "review", "learn"];
 const DEFAULT_OWNERS = { research: "gemini", evaluate: "codex", decide: "claude", execute: "codex", review: "claude", learn: "claude" };
