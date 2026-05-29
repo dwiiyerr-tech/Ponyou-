@@ -33,7 +33,7 @@ import {
 import { analyzeHolderStructure } from "./holder-memory.js";
 import { summarizeSmartWalletHistory } from "./smart-wallet-history.js";
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
-import { executeTool, registerCronRestarter, registerPonyouControls } from "./tools/executor.js";
+import { executeTool, registerCronRestarter, registerPonyouControls, selectFilledExecutions } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape, handleCallMessage } from "./telegram.js";
 import { startUserClient, stopUserClient, isUserClientEnabled, getUserClientStatus } from "./telegram-user-client.js";
 import { startHunter, stopHunter, getSocialScore } from "./social-hunter.js";
@@ -1257,7 +1257,13 @@ async function executePendingIntent(id) {
     success: !!succeeded,
     latencyMs: Date.now() - swapStartedAt,
   });
-  if (!succeeded) {
+  // Partial-fill aware: a split swap can report overall failure while some
+  // legs already filled (SOL spent, tokens held). Track those filled legs
+  // instead of orphaning the live positions.
+  const filledLegs = Array.isArray(result?.executions) && result.executions.length > 0
+    ? result.executions.filter(e => e.success || e.dry_run)
+    : [];
+  if (!succeeded && filledLegs.length === 0) {
     await consumeIntent(id, "failed", { error: result?.error || "unknown" });
     return sendHTML(`❌ #${id} swap rejected\n${fmt.code(JSON.stringify(result).slice(0, 200))}`);
   }
@@ -1288,12 +1294,10 @@ async function executePendingIntent(id) {
   // Await the disk flush: if the bot crashes between swap-success and persist,
   // we'd lose track of the freshly-deployed position. Critical for confirm-mode
   // BUYs where the user explicitly approved a real swap.
-  const executions = Array.isArray(result?.executions) && result.executions.length > 0
-    ? result.executions
-    : [{
-        wallet_address: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
-        amount: args.amount,
-      }];
+  const executions = selectFilledExecutions(result, {
+    wallet_address: result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null,
+    amount: args.amount,
+  });
   for (const exec of executions) {
     const walletAddress = exec.wallet_address || result?.wallet_address || args.wallet_address || getActiveWallet()?.address || null;
     await trackPosition({
@@ -1328,10 +1332,14 @@ async function executePendingIntent(id) {
     }
   }
   recordTrade(null);
-  await consumeIntent(id, "executed", { result: result?.hash || result?.signature || "ok" });
+  const partialFill = !succeeded && filledLegs.length > 0;
+  await consumeIntent(id, "executed", {
+    result: result?.hash || result?.signature || "ok",
+    ...(partialFill ? { partial_fill: true, error: result?.error || "partial split fill" } : {}),
+  });
 
   return sendHTML(
-    `✅ <b>Intent #${id}</b>\n` +
+    `${partialFill ? "⚠️" : "✅"} <b>Intent #${id}${partialFill ? " (partial fill)" : ""}</b>\n` +
     `Token: <code>${htmlEscape(symbol)}</code> · ${fmt.sol(Number(args.amount))}`
   );
 }
@@ -2222,7 +2230,18 @@ export async function runManagementCycle({ silent = false } = {}) {
   if (_managementBusy) return null;
   _managementBusy = true;
 
-  const gate = await checkAllGates("management");
+  // GUARD: checkAllGates runs BEFORE the main try/finally below. If it throws,
+  // the finally never runs and _managementBusy stays true forever — the cron
+  // cycle wedges permanently until process restart. Reset on throw here.
+  let gate;
+  try {
+    gate = await checkAllGates("management");
+  } catch (e) {
+    _managementBusy = false;
+    log("cron_error", `management gate check failed: ${e.message}`);
+    recordError("management_cycle");
+    return null;
+  }
   if (gate.blocked) {
     _managementBusy = false;
     agentBus.emit("management:gate_blocked", { reason: gate.reason, timestamp: Date.now() });
@@ -2850,7 +2869,18 @@ export async function runScreeningCycle({ silent = false } = {}) {
     return `Trading plan selesai (${s.trades_completed}/${s.target}). /resetplan untuk mulai sesi baru.`;
   }
 
-  const gate = await checkAllGates("screening");
+  // GUARD: checkAllGates runs BEFORE the main try/finally below. If it throws,
+  // the finally never runs and _screeningBusy stays true forever — the cron
+  // cycle wedges permanently until process restart. Reset on throw here.
+  let gate;
+  try {
+    gate = await checkAllGates("screening");
+  } catch (e) {
+    _screeningBusy = false;
+    log("cron_error", `screening gate check failed: ${e.message}`);
+    recordError("screening_cycle");
+    return null;
+  }
   if (gate.blocked) {
     _screeningBusy = false;
     agentBus.emit("screening:gate_blocked", { reason: gate.reason, timestamp: Date.now() });
@@ -3890,17 +3920,21 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
           if (name === "swap_token") {
             recordSwapOutcome({ success: !!(result?.success || result?.dry_run) });
           }
-          if (name === "swap_token" && (result.success || result.dry_run)) {
-            const token = passingCandidates.find(c =>
-              c.mint === result.token_out || c.mint === result.would_swap?.token_out
-            );
+          if (name === "swap_token") {
+            // Track every leg that actually filled — including partial-fill
+            // splits where the overall result.success is false but earlier
+            // legs already bought. Without this, those live positions are
+            // orphaned (bought but never tracked/managed/sold).
+            const executions = selectFilledExecutions(result, {
+              wallet_address: result.wallet_address || result.would_swap?.wallet_address || getActiveWallet()?.address || null,
+              amount: deployAmount,
+            });
+            const token = executions.length > 0
+              ? passingCandidates.find(c =>
+                  c.mint === result.token_out || c.mint === result.would_swap?.token_out
+                )
+              : null;
             if (token) {
-              const executions = Array.isArray(result.executions) && result.executions.length > 0
-                ? result.executions
-                : [{
-                    wallet_address: result.wallet_address || result.would_swap?.wallet_address || getActiveWallet()?.address || null,
-                    amount: deployAmount,
-                  }];
               for (const exec of executions) {
                 // Staged entry: only deploy stage-1 amount, not full allocation
                 const activeStrat = getStrategy(null, { regime: marketIntel.condition });
@@ -4740,6 +4774,13 @@ export function stopCronJobs() {
 
 async function shutdown(signal) {
   log("shutdown", signal);
+  // Watchdog: guarantee the process exits even if a cleanup step hangs
+  // (e.g. flushState awaiting slow disk/IO). Without this, SIGTERM/SIGINT
+  // and the "/off" command can wedge the process so only SIGKILL stops it.
+  const _killTimer = setTimeout(() => {
+    log("shutdown", `${signal} cleanup exceeded 5s — forcing exit`);
+    process.exit(0);
+  }, 5000);
   stopPolling();
   if (_dashboardIpcTimer) { clearInterval(_dashboardIpcTimer); _dashboardIpcTimer = null; }
   if (_ttyPromptTimer) { clearInterval(_ttyPromptTimer); _ttyPromptTimer = null; }
@@ -4751,6 +4792,7 @@ async function shutdown(signal) {
   try { shutdownSingletons(); } catch (_) {}
   try { shutdownWalletManager(); } catch (_) {}
   try { await flushState(); } catch (_) {}
+  clearTimeout(_killTimer);
   process.exit(0);
 }
 process.on("unhandledRejection", (reason, promise) => {

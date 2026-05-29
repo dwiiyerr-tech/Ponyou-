@@ -46,6 +46,7 @@ import { execSync, spawn } from "child_process";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 import { log, logAction } from "../logger.js";
+import { recordCounter } from "../metrics.js";
 import { notifyDeploy, notifyClose, notifySwap, sendHTML, isEnabled as telegramEnabled } from "../telegram.js";
 import { createPendingIntent } from "../intents.js";
 import { getStrategy } from "../strategies.js";
@@ -113,6 +114,29 @@ function _configWriteLock(work) {
 // as native tools without creating circular imports.
 let _ponyouControls = null;
 export function registerPonyouControls(controls) { _ponyouControls = controls; }
+
+/**
+ * Return the swap legs that actually filled so callers never orphan a
+ * partial-fill split (some legs bought, overall `result.success === false`).
+ *
+ * - Split result with an `executions[]` array → only the legs whose own
+ *   `success`/`dry_run` is truthy (drops the leg that failed and aborted).
+ * - Single swap (no `executions[]`) → `[fallback]` when the swap itself
+ *   succeeded, otherwise `[]`.
+ *
+ * @param {object} result  swap result from adaptiveSwap/executeJupiterSwap
+ * @param {object|null} fallback  synthesized leg for the single-swap case
+ * @returns {Array<object>} legs to track
+ */
+export function selectFilledExecutions(result, fallback = null) {
+  if (Array.isArray(result?.executions) && result.executions.length > 0) {
+    return result.executions.filter(e => e?.success || e?.dry_run);
+  }
+  if (result?.success || result?.dry_run) {
+    return fallback ? [fallback] : [];
+  }
+  return [];
+}
 
 function coerceBoolean(value, key) {
   if (typeof value === "boolean") return value;
@@ -217,7 +241,22 @@ async function adaptiveSwap(args = {}) {
         });
         executions.push({ wallet_address: slot.address, amount: slot.amount_sol, ...result });
         if (!(result.success || result.dry_run)) {
-          return { success: false, error: result.error || "split execution failed", executions, token_in: tokenIn, token_out: tokenOut };
+          // Partial fill: legs before this one may have already executed real
+          // swaps (SOL spent, tokens held). Surface them so the caller can
+          // track the filled legs instead of orphaning live positions.
+          const filled = executions.filter(e => e.success || e.dry_run);
+          if (filled.length > 0) {
+            log("executor_warn", `Split swap partial fill: ${filled.length}/${rankedWallets.length} legs filled before failure on ${tokenOut} — caller must track filled legs`);
+            recordCounter("executor_split_partial_fill");
+          }
+          return {
+            success: false,
+            partial_success: filled.length > 0,
+            error: result.error || "split execution failed",
+            executions,
+            token_in: tokenIn,
+            token_out: tokenOut,
+          };
         }
       }
       return {
