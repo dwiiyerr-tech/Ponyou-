@@ -105,3 +105,7 @@ pnpm-lock.yaml
 # Runtime state updated continuously by bot — never commit
 social-signals.json
 coin-conviction.json
+regime-memory.json
+
+# Atomic-write temp files (*.json.tmp.<pid>.<ts>)
+*.tmp.*
