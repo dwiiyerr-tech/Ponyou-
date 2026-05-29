@@ -95,3 +95,6 @@ __pycache__/
 .swarm/
 .claude-flow/
 ruvector.db
+
+# one-off state backups (e.g. shared-agent-memory.jsonl.bak-YYYYMMDD)
+*.bak-*
