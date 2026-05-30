@@ -34,6 +34,14 @@ export function aggregateSignal({
   narrativeTags = [],
   socialBuzz = 0,
 } = {}) {
+  // Default params only catch `undefined`; callers can pass `null` explicitly
+  // (e.g. index.js leaves `technicals` null when klines/momentum are missing),
+  // which would crash the guards below. Coalesce nulls to empty objects.
+  conviction = conviction || {};
+  regime     = regime || {};
+  kelly      = kelly || {};
+  technicals = technicals || {};
+
   const components = {};
 
   // 1. Conviction (weight: 0.28) — strongest because it carries trade history
@@ -91,7 +99,7 @@ export function aggregateSignal({
 
   // 6. Technical + regime (weight: 0.08)
   let techScore = 50;
-  if (technicals.momentum_score != null) {
+  if (technicals && technicals.momentum_score != null) {
     techScore = clamp(50 + Number(technicals.momentum_score) * 0.5, 0, 100);
   }
   if (marketCondition === "HOT") techScore = clamp(techScore + 10, 0, 100);

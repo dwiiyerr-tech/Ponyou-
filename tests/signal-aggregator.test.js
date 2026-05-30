@@ -95,4 +95,20 @@ describe("signal-aggregator — aggregateSignal", () => {
     });
     expect(result.components.velocity).toBeGreaterThan(0);
   });
+
+  // Regression: index.js leaves `technicals` null when klines/momentum are
+  // missing, and default params only catch `undefined`. Passing null must not
+  // throw "Cannot read properties of null (reading 'momentum_score')".
+  it("does not crash when object params are explicitly null", () => {
+    let result;
+    expect(() => {
+      result = aggregateSignal({
+        conviction: null,
+        regime: null,
+        kelly: null,
+        technicals: null,
+      });
+    }).not.toThrow();
+    expect(typeof result.signal_score).toBe("number");
+  });
 });
