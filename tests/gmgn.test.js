@@ -22,6 +22,7 @@ import {
   getWalletStats,
   getTokenSignals,
   getTrenches,
+  extractGmgnRowRisk,
   _resetGmgnState,
 } from "../tools/gmgn.js";
 
@@ -260,6 +261,35 @@ describe("gmgn: HTTP path (fetch stubbed)", () => {
       address: "Tok1", marketcap: 120000, change1h: 12.5, change5m: 3.2,
       smart_buy_count: 4, created_timestamp: 1780000000,
     });
+  });
+
+  it("trending: extracts GMGN pre-computed risk fields into _gmgn_risk", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okJson({
+      rank: [{
+        address: "RiskyTok", symbol: "RUG", price: "0.001",
+        rug_ratio: "0.42", sniper_count: "55", bundler_rate: "0.30",
+        top70_sniper_hold_rate: "0.18", rat_trader_amount_rate: "0.35",
+        dev_team_hold_rate: "0.05", suspected_insider_hold_rate: "0.28",
+        fresh_wallet_rate: "0.60",
+      }],
+    })));
+
+    const trending = await getTrendingTokens("1h", 40);
+    const risk = trending[0]._gmgn_risk;
+    expect(risk).toBeDefined();
+    expect(risk.rug_ratio).toBeCloseTo(0.42);
+    expect(risk.sniper_count).toBe(55);
+    expect(risk.bundler_rate).toBeCloseTo(0.30);
+    expect(risk.rat_trader_amount_rate).toBeCloseTo(0.35);
+    expect(risk.suspected_insider_hold_rate).toBeCloseTo(0.28);
+    expect(risk.fresh_wallet_rate).toBeCloseTo(0.60);
+  });
+
+  it("extractGmgnRowRisk: absent fields are null, not 0", () => {
+    const risk = extractGmgnRowRisk({ rug_ratio: "0.10" });
+    expect(risk.rug_ratio).toBeCloseTo(0.10);
+    expect(risk.sniper_count).toBeNull();
+    expect(risk.bundler_rate).toBeNull();
   });
 
   it("opens the circuit on 429 and stops issuing further requests", async () => {

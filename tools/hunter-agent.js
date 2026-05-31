@@ -22,7 +22,7 @@
 
 import { log } from "../logger.js";
 import { config } from "../config.js";
-import { getTrendingTokens, getTrenches, getTokenSignals, isGmgnEnabled } from "./gmgn.js";
+import { getTrendingTokens, getTrenches, getTokenSignals, isGmgnEnabled, extractGmgnRowRisk } from "./gmgn.js";
 
 // ─── Hunting Sources ────────────────────────────────────────────
 
@@ -616,6 +616,23 @@ let _hunterStats = {
 };
 
 /**
+ * Apply score penalty from GMGN's pre-computed per-row risk fields.
+ * Returns [penalizedScore, reasons[]] so the caller can append them.
+ * null fields = GMGN didn't report them; treated as no penalty (unknown ≠ risky).
+ */
+function applyGmgnRiskPenalty(score, risk) {
+  if (!risk) return [score, []];
+  const reasons = [];
+  const { rug_ratio, sniper_count, bundler_rate, rat_trader_amount_rate, suspected_insider_hold_rate } = risk;
+  if (rug_ratio != null && rug_ratio > 0.35) { score -= 20; reasons.push(`rug_ratio:${(rug_ratio * 100).toFixed(0)}%`); }
+  if (sniper_count != null && sniper_count > 30) { score -= 15; reasons.push(`snipers:${sniper_count}`); }
+  if (bundler_rate != null && bundler_rate > 0.25) { score -= 15; reasons.push(`bundlers:${(bundler_rate * 100).toFixed(0)}%`); }
+  if (rat_trader_amount_rate != null && rat_trader_amount_rate > 0.3) { score -= 10; reasons.push(`rats:${(rat_trader_amount_rate * 100).toFixed(0)}%`); }
+  if (suspected_insider_hold_rate != null && suspected_insider_hold_rate > 0.25) { score -= 10; reasons.push(`insiders:${(suspected_insider_hold_rate * 100).toFixed(0)}%`); }
+  return [Math.max(0, score), reasons];
+}
+
+/**
  * Hunt GMGN trending rank — tokens with highest activity on 1h and 5m intervals.
  * Returns tokens with GMGN-sourced momentum signals.
  */
@@ -651,6 +668,9 @@ async function huntGmgnTrending(strategy) {
         if (vol >= 50_000) score += 10;
         if (Number(t.smart_buy_count ?? 0) >= 3) score += 10; // smart money piling in
 
+        const [penalizedScore, riskReasons] = applyGmgnRiskPenalty(score, t._gmgn_risk);
+        const reasons = [`gmgn_trending_${interval}`, mcap ? `mcap:${Math.round(mcap / 1000)}k` : null, ...riskReasons].filter(Boolean);
+
         tokens.push({
           mint,
           symbol: t.symbol || "?",
@@ -672,9 +692,10 @@ async function huntGmgnTrending(strategy) {
           dex: "unknown",
           launchpad: t.launchpad || "unknown",
           _hunter_source: `gmgn_trending_${interval}`,
-          _hunter_score: Math.min(100, score),
-          _hunter_tier: score >= 70 ? "PRIORITY" : score >= 50 ? "GOOD" : "WATCH",
-          _hunter_reasons: [`gmgn_trending_${interval}`, mcap ? `mcap:${Math.round(mcap / 1000)}k` : null].filter(Boolean),
+          _hunter_score: Math.min(100, penalizedScore),
+          _hunter_tier: penalizedScore >= 70 ? "PRIORITY" : penalizedScore >= 50 ? "GOOD" : "WATCH",
+          _hunter_reasons: reasons,
+          _gmgn_risk: t._gmgn_risk || null,
           narrative_tags: [],
           hot_level: interval === "5m" ? 3 : 2,
           creator: null,
@@ -723,6 +744,10 @@ async function huntGmgnTrenches(strategy) {
       if (Number(t.volume_24h ?? 0) >= 10_000) score += 10;
       if (Number(t.smart_degen_count ?? 0) >= 2) score += 15; // smart money in early
 
+      const rowRisk = extractGmgnRowRisk(t);
+      const [penalizedScore, riskReasons] = applyGmgnRiskPenalty(score, rowRisk);
+      const reasons = [`trenches:${t._trench_type || "new"}`, isNearGrad ? "near_graduation" : null, ...riskReasons].filter(Boolean);
+
       tokens.push({
         mint,
         symbol: t.symbol || "?",
@@ -741,9 +766,10 @@ async function huntGmgnTrenches(strategy) {
         dex: "pump.fun",
         launchpad: t.launchpad || t.launchpad_platform || "pump.fun",
         _hunter_source: `gmgn_trenches_${t._trench_type || "new"}`,
-        _hunter_score: Math.min(100, score),
-        _hunter_tier: isNearGrad ? "GOOD" : "WATCH",
-        _hunter_reasons: [`trenches:${t._trench_type || "new"}`, isNearGrad ? "near_graduation" : null].filter(Boolean),
+        _hunter_score: Math.min(100, penalizedScore),
+        _hunter_tier: penalizedScore >= 50 ? "GOOD" : "WATCH",
+        _hunter_reasons: reasons,
+        _gmgn_risk: rowRisk,
         narrative_tags: [],
         hot_level: isNearGrad ? 2 : 1,
         creator: t.creator || null,

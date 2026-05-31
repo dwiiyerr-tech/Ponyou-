@@ -479,6 +479,25 @@ function normalizeWalletStats(r) {
 }
 
 /**
+ * Extract the pre-computed per-token risk fields that GMGN embeds in every
+ * /v1/market/rank and /v1/trenches row. All values are rates (0–1 fraction)
+ * or counts; null means GMGN didn't include the field (treat as unknown, not 0).
+ */
+export function extractGmgnRowRisk(t) {
+  const n = (v) => (v != null && v !== "") ? Number(v) : null;
+  return {
+    rug_ratio: n(t.rug_ratio),
+    sniper_count: n(t.sniper_count),
+    bundler_rate: n(t.bundler_rate),
+    top70_sniper_hold_rate: n(t.top70_sniper_hold_rate),
+    rat_trader_amount_rate: n(t.rat_trader_amount_rate),
+    dev_team_hold_rate: n(t.dev_team_hold_rate),
+    suspected_insider_hold_rate: n(t.suspected_insider_hold_rate),
+    fresh_wallet_rate: n(t.fresh_wallet_rate),
+  };
+}
+
+/**
  * Normalize a GMGN /market/rank (trending) row to a stable shape. GMGN uses
  * `marketcap`, `change1h/5m`, `volume`, `swaps`, `holder_count`; numeric fields
  * can arrive as strings, so everything is coerced via Number().
@@ -502,6 +521,7 @@ function normalizeTrendingToken(t) {
     smart_buy_count: Number(t.smart_degen_count ?? t.smart_buy_24h ?? 0),
     created_timestamp: t.creation_timestamp ?? t.open_timestamp ?? t.created_timestamp ?? t.created_at ?? null,
     launchpad: t.launchpad || t.launchpad_platform || "unknown",
+    _gmgn_risk: extractGmgnRowRisk(t),
   };
 }
 
