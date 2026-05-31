@@ -4855,11 +4855,14 @@ export function startCronJobs() {
     // Wallet pruning — prevent discovered-wallets.json bloat
     try {
       const { pruneDiscoveredWallets } = await import("./wallet-score-decay.js");
-      const { readFileSync, writeFileSync } = await import("fs");
+      const { readFileSync } = await import("fs");
       const wallets = JSON.parse(readFileSync("discovered-wallets.json", "utf8"));
       const result = pruneDiscoveredWallets(wallets, { maxAgeDays: 30, maxWallets: 200 });
       if (result.removed > 0) {
-        writeFileSync("discovered-wallets.json", JSON.stringify(result.pruned, null, 2));
+        // atomic write — every other discovered-wallets writer uses it; a raw
+        // writeFileSync here could leave a half-written/corrupt file if the
+        // process crashes or another instance reads mid-write.
+        atomicWriteJson("discovered-wallets.json", result.pruned);
         log("cron", `Wallet prune: removed ${result.removed} stale wallets, kept ${result.kept}`);
       }
     } catch (e) { /* file may not exist, OK */ }
