@@ -1,6 +1,7 @@
 import { Router } from "express";
+import crypto from "crypto";
 import { readConfig, writeConfig } from "../config-writer.js";
-import { writeWalletKeys, walletKeyStatus, WALLET_ENV_PATTERN } from "../env-writer.js";
+import { writeWalletKeys, walletKeyStatus, WALLET_ENV_PATTERN, gmgnKeyStatus, writeGmgnPrivateKey } from "../env-writer.js";
 import { stripSensitive } from "../sensitive.js";
 
 const BS58_PRIVKEY_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{80,90}$/;
@@ -72,6 +73,38 @@ export function createWizardRouter() {
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Current GMGN credential state (does ~/.config/gmgn/.env already have keys).
+  router.get("/gmgn-key-status", (req, res) => {
+    try { res.json({ ok: true, ...gmgnKeyStatus() }); }
+    catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // Generate an Ed25519 keypair for GMGN OpenAPI. The PRIVATE key (signing
+  // secret) is written to ~/.config/gmgn/.env (0600) and NEVER returned; only
+  // the PUBLIC key is sent back for the user to register at gmgn.ai/ai.
+  // Refuses to overwrite an existing private key unless {overwrite:true}, since
+  // regenerating invalidates the API key bound to the old public key.
+  router.post("/gmgn-keygen", (req, res) => {
+    try {
+      const overwrite = req.body?.overwrite === true;
+      const status = gmgnKeyStatus();
+      if (status.hasPrivateKey && !overwrite) {
+        return res.status(409).json({
+          ok: false, existed: true,
+          error: "A GMGN private key already exists. Regenerating it invalidates the API key bound to the old public key. Re-send with overwrite:true to replace.",
+        });
+      }
+      const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519", {
+        publicKeyEncoding: { type: "spki", format: "pem" },
+        privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      });
+      writeGmgnPrivateKey(privateKey); // private key stays on the machine
+      res.json({ ok: true, publicKey, regenerated: status.hasPrivateKey });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
     }
   });
 

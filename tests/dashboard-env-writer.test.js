@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { _setBasePath, readEnv, writeWalletKeys, walletKeyStatus, WALLET_ENV_PATTERN } from "../dashboard/env-writer.js";
+import { _setBasePath, readEnv, writeWalletKeys, walletKeyStatus, WALLET_ENV_PATTERN, gmgnKeyStatus, writeGmgnPrivateKey } from "../dashboard/env-writer.js";
 
 function makeTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ponyou-env-writer-"));
@@ -12,9 +12,45 @@ let tmp;
 beforeEach(() => {
   tmp = makeTmpDir();
   _setBasePath(tmp);
+  process.env.PONYOU_GMGN_ENV_DIR = path.join(tmp, "gmgn");
 });
 afterEach(() => {
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+  // keep PONYOU_GMGN_ENV_DIR set (beforeEach overrides per-test); deleting would
+  // remove the global tmp redirect from vitest.config.js for the rest of the worker.
+});
+
+const SAMPLE_PEM = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIBle+ fake +base64+content+for+test+only+pad==\n-----END PRIVATE KEY-----";
+
+describe("env-writer GMGN credentials", () => {
+  it("reports no keys for a missing gmgn .env", () => {
+    expect(gmgnKeyStatus()).toEqual({ hasApiKey: false, hasPrivateKey: false });
+  });
+
+  it("writes GMGN_PRIVATE_KEY (0600) and preserves an existing GMGN_API_KEY", () => {
+    const dir = path.join(tmp, "gmgn");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, ".env"), "GMGN_API_KEY=existing_tok\n");
+    writeGmgnPrivateKey(SAMPLE_PEM);
+    const content = fs.readFileSync(path.join(dir, ".env"), "utf8");
+    expect(content).toContain("GMGN_API_KEY=existing_tok");
+    expect(content).toMatch(/GMGN_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----/);
+    expect((fs.statSync(path.join(dir, ".env")).mode & 0o777).toString(8)).toBe("600");
+    const st = gmgnKeyStatus();
+    expect(st.hasApiKey).toBe(true);
+    expect(st.hasPrivateKey).toBe(true);
+  });
+
+  it("replaces the private key without duplicating the block", () => {
+    writeGmgnPrivateKey(SAMPLE_PEM);
+    writeGmgnPrivateKey(SAMPLE_PEM);
+    const content = fs.readFileSync(path.join(tmp, "gmgn", ".env"), "utf8");
+    expect((content.match(/GMGN_PRIVATE_KEY=/g) || []).length).toBe(1);
+  });
+
+  it("rejects a non-PEM value", () => {
+    expect(() => writeGmgnPrivateKey("not-a-pem")).toThrow(/PEM/);
+  });
 });
 
 describe("env-writer", () => {

@@ -168,7 +168,8 @@ const STEPS = [
   {
     title: "13/14 — GMGN OpenAPI (opsional)",
     fields: [
-      { key: "gmgnApiKey", label: "GMGN API Key", type: "password", hint: "Token dari gmgn.ai/ai — paste public key Ed25519 di sana, situs balikkan API Key. Kosongkan untuk SKIP GMGN. (Private key untuk skill eksekusi swap/cooking TIDAK di sini — manual-only di ~/.config/gmgn/.env)" },
+      { key: "_gmgnKeygen", type: "gmgn-keygen" },
+      { key: "gmgnApiKey", label: "GMGN API Key", type: "password", hint: "Tempel API Key yang diberikan gmgn.ai/ai setelah kamu daftarkan public key di atas. Kosongkan untuk SKIP GMGN." },
       { key: "gmgnDiscovery", label: "Wallet Discovery (smart-wallet scoring)", type: "checkbox", hint: "Centang = aktif (butuh API Key di atas)" },
       { key: "gmgnHunter", label: "Hunter — trending / trenches / signals feed", type: "checkbox" },
       { key: "gmgnCopyTrade", label: "Copy-Trade priority wallets", type: "checkbox" },
@@ -227,7 +228,7 @@ function setNestedVal(obj, key, val) {
 function renderStep() {
   const s = STEPS[currentStep];
   document.getElementById("stepNum").textContent = currentStep + 1;
-  document.getElementById("wizProgress").style.width = `${((currentStep + 1) / 13) * 100}%`;
+  document.getElementById("wizProgress").style.width = `${((currentStep + 1) / STEPS.length) * 100}%`;
   document.getElementById("btnBack").disabled = currentStep === 0;
   document.getElementById("btnSkip").style.display = (s.required || s.review) ? "none" : "inline-block";
   document.getElementById("btnNext").textContent = s.review ? "💾 Save & Launch" : "Next →";
@@ -268,6 +269,8 @@ function renderStep() {
       html += renderWalletList(f, enabled);
     } else if (f.type === "trash-wallet-list") {
       html += renderTrashWalletList(f);
+    } else if (f.type === "gmgn-keygen") {
+      html += renderGmgnKeygen();
     } else {
       html += `<div class="field-row"><label>${f.label}${f.required?" *":""}</label>
         <input type="${f.type}" data-key="${f.key}" value="${val}" placeholder="${f.hint||""}">
@@ -277,6 +280,47 @@ function renderStep() {
   if (s.extra) html += s.extra;
   html += "</div>";
   container.innerHTML = html;
+}
+
+function escHtmlW(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderGmgnKeygen() {
+  return `<div class="field-row" style="border:1px solid var(--border);border-radius:8px;padding:.75rem;margin-bottom:1rem">
+    <label>1. Generate GMGN Keypair (Ed25519)</label>
+    <div class="field-hint">Bot membuat keypair, menyimpan PRIVATE key di <code>~/.config/gmgn/.env</code> (0600, untuk signing trade), dan menampilkan PUBLIC key untuk kamu daftarkan. Sudah punya key? Lewati langkah ini.</div>
+    <label style="display:block;margin:.5rem 0;font-size:13px"><input type="checkbox" id="gmgnOverwrite"> Timpa key lama (regenerate — <b>memutus</b> API key yang sudah terikat)</label>
+    <button type="button" class="btn primary" onclick="generateGmgnKeypair()">🔑 Generate Keypair</button>
+    <div id="gmgnKeygenOut" style="margin-top:.75rem"></div>
+  </div>`;
+}
+
+async function generateGmgnKeypair() {
+  const overwrite = document.getElementById("gmgnOverwrite")?.checked === true;
+  const out = document.getElementById("gmgnKeygenOut");
+  out.innerHTML = "<span style='color:var(--muted);font-size:13px'>Generating…</span>";
+  try {
+    const res = await fetch("/wizard/gmgn-keygen", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overwrite }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      const warn = res.status === 409
+        ? `${escHtmlW(data.error)}<br>Centang "Timpa key lama" lalu klik lagi untuk regenerate.`
+        : escHtmlW(data.error || "failed");
+      out.innerHTML = `<div style="color:var(--negative);font-size:13px">⚠️ ${warn}</div>`;
+      return;
+    }
+    out.innerHTML = `
+      <div style="font-size:13px;margin-bottom:.35rem">${data.regenerated ? "♻️ Keypair di-regenerate" : "✅ Keypair dibuat"} — private key aman di <code>~/.config/gmgn/.env</code> (tidak pernah dikirim ke browser).</div>
+      <label style="font-size:12px;color:var(--muted)">PUBLIC KEY — copy, daftarkan di <a href="https://gmgn.ai/ai" target="_blank" rel="noopener">gmgn.ai/ai</a> (aktifkan swap), lalu tempel API Key-nya di field bawah:</label>
+      <textarea readonly rows="4" style="width:100%;font-family:monospace;font-size:11px;margin-top:.25rem" onclick="this.select()">${escHtmlW(data.publicKey)}</textarea>
+      <button type="button" class="btn" onclick='navigator.clipboard.writeText(${JSON.stringify(data.publicKey)}).then(()=>showToast("Public key copied",true))'>Copy public key</button>`;
+  } catch (e) {
+    out.innerHTML = `<div style="color:var(--negative);font-size:13px">❌ ${escHtmlW(e.message)}</div>`;
+  }
 }
 
 function renderWalletList(field, enabled) {

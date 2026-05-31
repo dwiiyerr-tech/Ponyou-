@@ -48,6 +48,8 @@ export function createDashboardServer({ port = 3000 } = {}) {
       { method: "POST", path: "/wizard/save" },
       { method: "GET",  path: "/wizard/wallet-status" },
       { method: "GET",  path: "/wizard/test-telegram" },
+      { method: "GET",  path: "/wizard/gmgn-key-status" },
+      { method: "POST", path: "/wizard/gmgn-keygen" },
     ];
     if (publicPaths.includes(req.path)) return next();
     if (wizardApiPaths.some(p => p.method === req.method && p.path === req.path) && isFirstTimeSetup()) {

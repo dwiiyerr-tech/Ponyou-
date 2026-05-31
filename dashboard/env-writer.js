@@ -1,7 +1,8 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { withFileLock, atomicWriteTextAsync } from "../atomic-write.js";
+import { withFileLock, atomicWriteText, atomicWriteTextAsync } from "../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BASE_PATH = path.join(__dirname, "..");
@@ -9,6 +10,48 @@ let BASE_PATH = path.join(__dirname, "..");
 export function _setBasePath(p) { BASE_PATH = p; }
 
 function envPath() { return path.join(BASE_PATH, ".env"); }
+
+// ── GMGN OpenAPI credential file (separate from the bot .env) ──────────────────
+// gmgn-cli reads GMGN_API_KEY + GMGN_PRIVATE_KEY from ~/.config/gmgn/.env. The
+// private key is an Ed25519 PEM used for LOCAL trade signing only. Env-overridable
+// so tests don't touch the real homedir file.
+function gmgnEnvDir() { return process.env.PONYOU_GMGN_ENV_DIR || path.join(os.homedir(), ".config", "gmgn"); }
+function gmgnEnvPath() { return path.join(gmgnEnvDir(), ".env"); }
+
+/** Which GMGN credentials are already present in ~/.config/gmgn/.env. */
+export function gmgnKeyStatus() {
+  try {
+    const f = gmgnEnvPath();
+    if (!fs.existsSync(f)) return { hasApiKey: false, hasPrivateKey: false };
+    const c = fs.readFileSync(f, "utf8");
+    return {
+      hasApiKey: /^\s*GMGN_API_KEY\s*=\s*\S/m.test(c),
+      hasPrivateKey: /GMGN_PRIVATE_KEY\s*=\s*"?\S/.test(c),
+    };
+  } catch { return { hasApiKey: false, hasPrivateKey: false }; }
+}
+
+/**
+ * Upsert GMGN_PRIVATE_KEY (Ed25519 PEM) into ~/.config/gmgn/.env, preserving
+ * GMGN_API_KEY and any other lines. The PEM is double-quoted (multiline; PEM
+ * never contains a `"` so the existing-block removal is safe). File is written
+ * 0600 — it holds a signing secret and must never be world-readable.
+ */
+export function writeGmgnPrivateKey(pem) {
+  if (typeof pem !== "string" || !/PRIVATE KEY/.test(pem)) throw new Error("invalid Ed25519 PEM private key");
+  const dir = gmgnEnvDir();
+  fs.mkdirSync(dir, { recursive: true });
+  try { fs.chmodSync(dir, 0o700); } catch {} // dir holds a signing secret
+  let content = "";
+  try { if (fs.existsSync(gmgnEnvPath())) content = fs.readFileSync(gmgnEnvPath(), "utf8"); } catch {}
+  // Strip any existing GMGN_PRIVATE_KEY (quoted multiline OR bare single line).
+  content = content.replace(/GMGN_PRIVATE_KEY\s*=\s*"[^"]*"\s*/g, "").replace(/^\s*GMGN_PRIVATE_KEY\s*=.*$/gm, "");
+  content = content.replace(/\n{3,}/g, "\n\n").trimEnd();
+  if (content.length) content += "\n";
+  content += `GMGN_PRIVATE_KEY="${pem.trimEnd()}"\n`;
+  atomicWriteText(gmgnEnvPath(), content); // atomic temp+rename (atomic-write.js)
+  try { fs.chmodSync(gmgnEnvPath(), 0o600); } catch {} // 0600 — never world-readable
+}
 
 export const WALLET_ENV_PATTERN = /^WALLET_KEY_(?:10|[1-9])$/;
 
