@@ -14,9 +14,9 @@ import { matchPatterns, learnPatterns } from "./tools/rug-patterns.js";
 import { getHolderMemoryRules } from "./holder-memory.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LESSONS_FILE = path.join(__dirname, "lessons.json");
-const PERF_FILE    = path.join(__dirname, "performance.json");
-const RUG_FILE     = path.join(__dirname, "rug-memory.json");
+const LESSONS_FILE = process.env.PONYOU_LESSONS_FILE    || path.join(__dirname, "lessons.json");
+const PERF_FILE    = process.env.PONYOU_PERF_FILE       || path.join(__dirname, "performance.json");
+const RUG_FILE     = process.env.PONYOU_RUG_MEMORY_FILE || path.join(__dirname, "rug-memory.json");
 
 // ─── Lessons ──────────────────────────────────────────────────
 
@@ -398,7 +398,7 @@ export function recordRug({ mint, symbol, creator, launchpad, rug_signals, patte
 
 function _learnedPatternCount() {
   try {
-    const f = path.join(__dirname, "rug-patterns-learned.json");
+    const f = process.env.PONYOU_RUG_PATTERNS_FILE || path.join(__dirname, "rug-patterns-learned.json");
     if (!fs.existsSync(f)) return 0;
     return (JSON.parse(fs.readFileSync(f, "utf8")).patterns || []).length;
   } catch { return 0; }
@@ -650,7 +650,7 @@ export function isTokenBlacklisted(mint) {
 
 // ─── Darwin Signal Weighting ──────────────────────────────────
 
-const DARWIN_FILE = path.join(__dirname, "darwin-weights.json");
+const DARWIN_FILE = process.env.PONYOU_DARWIN_FILE || path.join(__dirname, "darwin-weights.json");
 
 function loadDarwinWeights() {
   if (!fs.existsSync(DARWIN_FILE)) {

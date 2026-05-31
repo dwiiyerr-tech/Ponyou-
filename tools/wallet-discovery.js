@@ -21,6 +21,8 @@ import { heliusAcquire, heliusRelease, heliusCircuitOpen, helius429Hit, heliusSu
 import { getSharedConnection } from "./solana-rpc.js";
 import { getAdaptiveSmartWalletContext, evaluateSmartWalletCandidate, selectSmartWalletCandidates } from "../smart-wallet-strategy.js";
 import { applyScoreDecay } from "../wallet-score-decay.js";
+import { getSmartMoneyWallets, getKolWallets, getWalletStats, isGmgnEnabled } from "./gmgn.js";
+import { config } from "../config.js";
 
 export { applyScoreDecay } from "../wallet-score-decay.js";
 
@@ -255,8 +257,11 @@ export async function discoverSmartWallets({
   auto_add = false,
 } = {}) {
   const apiKey = process.env.HELIUS_API_KEY;
-  if (!apiKey || apiKey === "dummy-helius-key") {
-    return { error: "HELIUS_API_KEY not configured", discovered: [] };
+  const heliusOK = apiKey && apiKey !== "dummy-helius-key";
+  const gmgnOK = isGmgnEnabled() && config.gmgn?.discovery !== false;
+
+  if (!heliusOK && !gmgnOK) {
+    return { error: "No scoring provider configured (set GMGN_API_KEY or HELIUS_API_KEY)", discovered: [] };
   }
 
   const connection = getSolanaConnection();
@@ -290,27 +295,64 @@ export async function discoverSmartWallets({
   log("discovery", `Candidates after dedup: ${candidates.length}`);
   const adaptiveContext = getAdaptiveSmartWalletContext();
 
-  // Stage 3 — score each candidate via Helius (capped to control credits)
+  // Stage 3 — score each candidate.
+  // GMGN primary (no Helius quota cost) → Helius fallback when GMGN unavailable.
   const MAX_CANDIDATES_PER_SCAN = 20;
   const SCAN_CAP = Math.min(candidates.length, MAX_CANDIDATES_PER_SCAN);
   if (candidates.length > MAX_CANDIDATES_PER_SCAN) {
-    log("discovery", `Capping wallet candidates ${candidates.length} -> ${MAX_CANDIDATES_PER_SCAN} to avoid Helius burst`);
+    log("discovery", `Capping wallet candidates ${candidates.length} -> ${MAX_CANDIDATES_PER_SCAN}`);
   }
   const discovered = loadDiscovered();
   const results = [];
 
+  const useGmgn = gmgnOK;
+  const scoringSource = useGmgn ? "gmgn" : "helius";
+  log("discovery", `Scoring source: ${scoringSource}`);
+
   for (let i = 0; i < SCAN_CAP; i++) {
-    if (heliusCircuitOpen()) {
+    if (!useGmgn && heliusCircuitOpen()) {
       log("discovery", `Helius circuit open — stopping wallet scoring early (${i}/${SCAN_CAP} done)`);
       break;
     }
     const [addr, sourcesSet] = candidates[i];
     try {
-      const txns = await fetchHeliusTxns(addr, apiKey, 50);
-      if (!txns?.length) continue;
+      let stats;
 
-      const stats = analyzeWallet(txns);
-      if (stats.skip) continue;
+      // When the avg-hold figure is unknown (GMGN stats don't expose it) we must
+      // NOT fabricate a passing value — that would silently promote bot/MEV
+      // wallets the hold-time filter exists to reject. Track presence explicitly.
+      let holdKnown = true;
+
+      if (useGmgn) {
+        // GMGN path — wallet stats without Helius quota. getWalletStats returns
+        // the NORMALIZED shape (winRate 0–1, realizedPnlUsd in USD, tradeCount).
+        const raw = await getWalletStats(addr, "30d");
+        const w = Array.isArray(raw) ? raw[0] : raw;
+        if (!w) continue;
+        // GMGN wallet_stats does not expose an avg-hold figure — leave it unknown
+        // so the hold-time ceiling is skipped rather than fabricated.
+        holdKnown = false;
+        stats = {
+          winrate: Number(w.winRate ?? 0),
+          // NOTE: GMGN PnL is USD, not SOL. Stored in the realized_pnl_sol slot
+          // for now (the threshold/label below read it); unit correction is part
+          // of the gated rug/scoring activation work.
+          realized_pnl_sol: Number(w.realizedPnlUsd ?? 0),
+          completed_trades: Number(w.tradeCount ?? 0),
+          total_swaps: Number(w.tradeCount ?? 0),
+          avg_hold_seconds: null,
+          unique_tokens: Number(w.uniqueTokens ?? 0),
+          skip: false,
+          _source: "gmgn",
+        };
+        if (stats.completed_trades < 1) continue; // GMGN returned nothing useful
+      } else {
+        // Helius fallback path
+        const txns = await fetchHeliusTxns(addr, apiKey, 50);
+        if (!txns?.length) continue;
+        stats = analyzeWallet(txns);
+        if (stats.skip) continue;
+      }
 
       const botReason = looksLikeBot(stats);
       const qualifies =
@@ -318,7 +360,8 @@ export async function discoverSmartWallets({
         stats.completed_trades >= min_trades &&
         stats.winrate >= min_winrate &&
         stats.realized_pnl_sol >= min_realized_pnl_sol &&
-        stats.avg_hold_seconds <= max_avg_hold_seconds;
+        // Only enforce the hold-time ceiling when we actually have the figure.
+        (!holdKnown || stats.avg_hold_seconds <= max_avg_hold_seconds);
 
       const sourceTokens = [...new Set([...(discovered[addr]?.source_tokens || []), ...sourcesSet])];
 
@@ -413,4 +456,77 @@ export function listDiscoveredWallets({ qualified_only = false, limit = 50 } = {
       (b.stats?.realized_pnl_sol || 0) - (a.stats?.realized_pnl_sol || 0)
     )
     .slice(0, limit);
+}
+
+/**
+ * Sync GMGN smart money + KOL wallets into smart-wallets.json.
+ * Merges GMGN-curated list (already scored by GMGN) with existing wallets.
+ * Only adds wallets that meet minimum thresholds and aren't already tracked.
+ *
+ * @param {{ minWinRate?, minPnl?, maxNew? }} opts
+ * @returns {{ added, skipped, total }}
+ */
+export async function syncGmgnWallets({ minWinRate = 0.60, minPnl = 0, maxNew = 30 } = {}) {
+  if (!isGmgnEnabled() || config.gmgn?.discovery === false) {
+    return { added: 0, skipped: 0, total: 0, reason: "gmgn_disabled" };
+  }
+
+  const [smartMoney, kols] = await Promise.all([
+    getSmartMoneyWallets(100),
+    getKolWallets(50),
+  ]);
+
+  // smartmoney/kol are ACTIVITY FEEDS (no win rate); dedupe to distinct, untracked
+  // wallets, then enrich each via wallet_stats (the real 0–1 win rate + USD PnL)
+  // and filter on the enriched numbers — NOT on the feed (which has none).
+  const existing = new Set(listSmartWallets().map(w => w.address));
+  const candidates = [
+    ...(Array.isArray(smartMoney) ? smartMoney : []),
+    ...(Array.isArray(kols) ? kols : []),
+  ].filter(w => w.address && !existing.has(w.address));
+
+  if (candidates.length === 0) return { added: 0, skipped: 0, total: 0 };
+
+  let added = 0;
+  let scanned = 0;
+  for (const w of candidates) {
+    if (added >= maxNew) break;
+    scanned++;
+    try {
+      const stats = await getWalletStats(w.address, "30d");
+      const s = Array.isArray(stats) ? stats[0] : stats;
+      const winRate = s?.winRate ?? 0;
+      const pnlUsd = s?.realizedPnlUsd ?? 0;
+      // minPnl is interpreted in USD (GMGN's PnL unit).
+      if (winRate < minWinRate || pnlUsd < minPnl) continue;
+
+      await addSmartWallet({
+        address: w.address,
+        label: w.label || `gmgn_${w.type}`,
+        source_tokens: [],
+        stats: {
+          winrate: winRate,
+          realized_pnl_usd: pnlUsd,
+          completed_trades: s?.tradeCount ?? 0,
+          total_swaps: s?.tradeCount ?? 0,
+          last_active: s?.lastActive ?? null,
+        },
+        selection: {
+          selected: true,
+          score: Math.round(winRate * 100),
+          win_rate: winRate,
+          follow_mode: "shadow",
+          source: `gmgn_${w.type}`,
+        },
+        notes: `Auto-synced from GMGN ${w.type} feed`,
+      });
+      added++;
+    } catch (e) {
+      log("gmgn_sync_warn", `Failed to add wallet ${w.address.slice(0, 8)}: ${e.message}`);
+    }
+  }
+
+  const skipped = scanned - added;
+  log("gmgn_sync", `Synced GMGN wallets: +${added} added, ${skipped} skipped (${candidates.length} candidates)`);
+  return { added, skipped, total: candidates.length };
 }

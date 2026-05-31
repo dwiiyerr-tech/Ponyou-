@@ -164,26 +164,34 @@ async function legacyJitoFlow({ inputMint, outputMint, amountRaw, slippageBps, w
   return { hash, amount_out: quote.outAmount ?? null, jito_bundle_id: bundleId };
 }
 
+// Resolve a mint's decimals. On-chain RPC is authoritative; we only fall back
+// to a heuristic when RPC is unavailable, and refuse to guess for tokens whose
+// scale we can't infer — guessing wrong by one factor of 10³ would size a swap
+// 1000× off (pump.fun tokens are 6 decimals, not the SPL-typical 9).
+// Returns the decimal count, or `null` when the scale is genuinely unknown so
+// the caller can abort instead of sending a wrong-sized order.
 async function getDecimals(mint) {
   if (mint === SOL_MINT || mint === "SOL") return 9;
   try {
     const conn = new Connection(process.env.RPC_URL || "https://api.mainnet-beta.solana.com", "confirmed");
     const info = await conn.getParsedAccountInfo(new PublicKey(mint));
     const decimals = info.value?.data?.parsed?.info?.decimals;
-    if (decimals == null) {
-      // Token isn't a standard SPL Token mint — surface this. Quote API may
-      // still work but amountRaw conversion is risky.
-      log("jupiter_warn", `getDecimals: parsed-info missing for ${mint?.slice(0, 8)} — falling back to 9 (USDC/stables-like tokens use 6)`);
-      return 9;
-    }
-    return decimals;
+    if (decimals != null) return decimals;
+    log("jupiter_warn", `getDecimals: parsed-info missing for ${mint?.slice(0, 8)} — RPC didn't return a standard SPL mint`);
   } catch (e) {
-    // Connection failure: 9-decimal default is correct for ~all pumpfun /
-    // raydium memecoins but wrong for USDC (6), USDT (6), and some tokens.
-    // Warn so the operator can spot a misroute.
-    log("jupiter_warn", `getDecimals fetch failed for ${mint?.slice(0, 8)}: ${e.message} — falling back to 9`);
-    return 9;
+    log("jupiter_warn", `getDecimals fetch failed for ${mint?.slice(0, 8)}: ${e.message}`);
   }
+  // RPC unavailable. pump.fun mints (address ends with "pump") are always 6
+  // decimals — use that rather than a blind 9. The heuristic is RPC-consistent
+  // for real pump.fun tokens, so it only ever helps during an RPC outage.
+  if (typeof mint === "string" && mint.endsWith("pump")) {
+    log("jupiter_warn", `getDecimals: RPC unavailable for ${mint.slice(0, 8)} — assuming 6 (pump.fun convention)`);
+    return 6;
+  }
+  // Unknown scale and no RPC: do NOT guess. A wrong factor of 10 here mis-sizes
+  // real money. Caller must abort the swap.
+  log("jupiter_warn", `getDecimals: RPC unavailable & scale unknown for ${mint?.slice(0, 8)} — refusing to guess`);
+  return null;
 }
 
 /**
@@ -219,6 +227,7 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
       const inputMint = (token_in === "SOL") ? SOL_MINT : token_in;
       const outputMint = (token_out === "SOL") ? SOL_MINT : token_out;
       const decimals = await getDecimals(inputMint);
+      if (decimals == null) throw new Error(`token decimals unknown for ${inputMint.slice(0, 8)} (RPC unavailable) — cannot size quote safely`);
       const amountRaw = Math.floor(amount * Math.pow(10, decimals)).toString();
       const slippageBps = toSafeSlippageBps(slippage, "dry_run");
       const quoteUrl = `${JUPITER_V6}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}`;
@@ -226,7 +235,9 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
       if (quoteRes.ok) {
         const quote = await quoteRes.json();
         if (!quote.error) {
-          const outDecimals = await getDecimals(outputMint);
+          // Output decimals affect only the human-readable estimate below, so a
+          // missing scale safely defaults to 9 here (never sizes a real order).
+          const outDecimals = (await getDecimals(outputMint)) ?? 9;
           const outAmount = Number(quote.outAmount) / Math.pow(10, outDecimals);
           // Normalize to percent at the API boundary (was previously
           // displayed as raw decimal which read "0.00%" for 0.42% impact).
@@ -238,7 +249,12 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
             token_in: inputMint,
             token_out: outputMint,
             amount,
-            amount_out: outAmount,
+            // JUP-DRY-1: `amount_out` MUST be RAW smallest-units to match the
+            // live paths (jupiter_ultra / Jito both return quote.outAmount raw).
+            // Downstream PnL telemetry does `amount_out / 1e9` — returning the
+            // decimal value here made demo report ~-100% realized PnL on every
+            // exit. The human-readable decimal is already in `message` below.
+            amount_out: Number(quote.outAmount),
             price_impact_pct: priceImpactPct,
             slippage: slippage ?? 0.5,
             wallet_address,
@@ -286,6 +302,21 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
     const inputMint   = (token_in  === "SOL") ? SOL_MINT : token_in;
     const outputMint  = (token_out === "SOL") ? SOL_MINT : token_out;
     const decimals    = await getDecimals(inputMint);
+    if (decimals == null) {
+      // Refuse to send a wrong-sized order when we can't resolve the input
+      // mint's scale (RPC down + non-pump token). Surfacing this is far safer
+      // than guessing and over/under-selling by a factor of 1000.
+      log("swap_error", `Aborting swap: decimals unknown for ${inputMint.slice(0, 8)} (RPC lookup failed)`);
+      return {
+        success: false,
+        error: `decimals_unknown: cannot size order for ${inputMint.slice(0, 8)} (RPC lookup failed) — aborted to avoid a wrong-sized swap`,
+        token_in: inputMint,
+        token_out: outputMint,
+        amount,
+        wallet_address: activeWalletAddress,
+        execution_context: execCtx,
+      };
+    }
     const amountRaw   = Math.floor(amount * Math.pow(10, decimals)).toString();
     const slippageBps = toSafeSlippageBps(slippage, `swap ${inputMint.slice(0, 8)}→${outputMint.slice(0, 8)}`);
 

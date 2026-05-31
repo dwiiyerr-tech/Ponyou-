@@ -27,6 +27,12 @@ if (u.llmModel)  process.env.LLM_MODEL          ||= u.llmModel;
 if (u.llmBaseUrl) process.env.LLM_BASE_URL      ||= u.llmBaseUrl;
 if (u.llmApiKey)  process.env.LLM_API_KEY       ||= u.llmApiKey;
 if (u.shyftApiKey) process.env.SHYFT_API_KEY    ||= u.shyftApiKey;
+if (u.gmgnApiKey)  process.env.GMGN_API_KEY     ||= u.gmgnApiKey;
+// Paper trading (demo-only virtual balance for testing the full trade loop).
+if (u.paperTrading != null)  process.env.PAPER_TRADING   ||= String(u.paperTrading);
+if (u.paperStartSol != null) process.env.PAPER_START_SOL ||= String(u.paperStartSol);
+// Demo strict gates: run confirmMode + safety-check in demo too (opt-in fidelity).
+if (u.demoStrictGates != null) process.env.DEMO_STRICT_GATES ||= String(u.demoStrictGates);
 if (u.publicApiKey) process.env.PUBLIC_API_KEY ||= u.publicApiKey;
 if (u.agentMeridianApiUrl) process.env.AGENT_MERIDIAN_API_URL ||= u.agentMeridianApiUrl;
 applyExecutionMode({ userConfig: u });
@@ -324,6 +330,76 @@ export const config = {
     managementIntervalMin:  u.managementIntervalMin  ?? 10,
     screeningIntervalMin:   u.screeningIntervalMin   ?? 30,
     healthCheckIntervalMin: u.healthCheckIntervalMin ?? 60,
+  },
+
+  // ─── GMGN feature flags ────────────────────
+  // GMGN activates when GMGN_API_KEY is set (see top of file). These flags
+  // stage activation PER SURFACE instead of all-at-once. All default ON, so
+  // behavior is unchanged when the key is present; set any to false to keep
+  // that surface on the legacy (Helius/DexScreener) path. The `rugSignals`
+  // surface feeds rug scoring — keep it gated behind an experiment per CLAUDE.md
+  // when changing what it consumes.
+  gmgn: {
+    discovery:    u.gmgnDiscovery    !== false, // syncGmgnWallets + GMGN wallet scoring
+    hunter:       u.gmgnHunter       !== false, // trending / trenches / signals hunt
+    copyTrade:    u.gmgnCopyTrade    !== false, // live priority-wallet list
+    rugSignals:   u.gmgnRugSignals   !== false, // GMGN top-holder tags in rug scoring
+    holderEnrich: u.gmgnHolderEnrich !== false, // holder-data-enricher GMGN path
+    // Cap on per-wallet wallet_stats enrichment calls (each is rate-gated ~300ms;
+    // results cache 15min). Lower = faster dashboard/discovery, fewer fresh stats.
+    enrichCap:    finiteNumber(u.gmgnEnrichCap, 25),
+  },
+
+  // ─── Portfolio Manager (Phase 2 — OpenClaw multi-strategy) ──
+  // Runs N active strategy-skills in PARALLEL (ensemble) instead of one rotated
+  // active strategy. Staged exactly like gmgn.*: default OFF, and even when
+  // enabled it starts in "shadow" (decisions computed + logged, never actioned).
+  // Flip mode → "active" only behind an experiment_id per CLAUDE.md.
+  portfolio: {
+    enabled: u.portfolioEnabled === true,           // default OFF — opt in explicitly
+    mode:    u.portfolioMode === "active" ? "active" : "shadow", // shadow | active
+    // Ensemble decision gate: need >= minAgree passing skills AND ensemble
+    // score >= minEnsembleScore (0-100) before the book votes BUY.
+    minAgree:          finiteNumber(u.portfolioMinAgree, 2),
+    minEnsembleScore:  finiteNumber(u.portfolioMinEnsembleScore, 55),
+    // Correlation guard: max concurrent open positions sharing one narrative
+    // cluster (memecoin "sector" correlation). Reuses the same-narrative count
+    // the decision-workflow already tracks.
+    maxPerCluster:     finiteNumber(u.portfolioMaxPerCluster, 2),
+    // Per-skill share of deployable capital (fraction of the skill's weighted
+    // slice). 0.5 = half-Kelly-ish conservatism on top of the registry weight.
+    perSkillRiskBudget: finiteNumber(u.portfolioPerSkillRiskBudget, 0.5),
+    // Book rebalancing (orchestrator): per-skill min closed sample before its
+    // weight is judged on live/paper expectancy, and the max weight change per
+    // rebalance (damps whiplash). Only runs when portfolio.enabled.
+    rebalanceMinSample: finiteNumber(u.portfolioRebalanceMinSample, 20),
+    rebalanceMaxStep:   finiteNumber(u.portfolioRebalanceMaxStep, 0.1),
+  },
+
+  // ─── Skill-Codifier Loop (Phase 3 — Hermes self-improvement) ──
+  // Mines winning patterns → AUTHORS a loop strategy-skill → backtests it → if
+  // the scorecard clears the promotion gate, registers it as SHADOW (paper).
+  // HARD GATE (locked decision): the loop NEVER promotes a skill to live
+  // capital on its own — that always requires explicit human approval. Staged
+  // OFF by default; even enabled it only ever produces draft/shadow skills.
+  skillLoop: {
+    enabled: u.skillLoopEnabled === true,            // default OFF — opt in explicitly
+    // Min profit-pattern observations before a winning pattern is codified.
+    minPatternSample: finiteNumber(u.skillLoopMinPatternSample, 5),
+    // Min shadow/paper trades a loop skill must accrue before it is surfaced
+    // for manual promotion approval.
+    minShadowSample: finiteNumber(u.skillLoopMinShadowSample, 30),
+    // Hard cap on the weight a freshly-approved loop skill may be promoted at
+    // (small first slice — scale up later behind another experiment).
+    promotionMaxWeight: finiteNumber(u.skillLoopPromotionMaxWeight, 0.1),
+  },
+
+  // ─── Hunter ────────────────────────────────
+  hunter: {
+    // Max pre-scored hunter "prey" injected into a single screening cycle.
+    // GMGN trending/trenches/signals now feed the hunter, so this bounds how
+    // much extra load lands on the (timeout-sensitive) screening pipeline.
+    preyCap: finiteNumber(u.hunterPreyCap, 10),
   },
 
   // ─── LLM Settings ──────────────────────

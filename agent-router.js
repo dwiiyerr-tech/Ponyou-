@@ -176,13 +176,18 @@ class AgentRouter {
     // entry handles the case where the bin is on the system PATH (npm
     // install -g, brew, apt, etc.).
     const env = process.env;
-    const candidates = [
-      env.PONYOU_CODEX_BIN,
-      env.CODEX_BIN,
-      env.HOME ? `${env.HOME}/.npm-global/bin/codex` : null,
-      "/usr/local/bin/codex",
-      "codex",                  // last resort: rely on PATH
-    ].filter(Boolean);
+    // AR-12: when the operator pins PONYOU_CODEX_BIN, honor ONLY that path.
+    // Silently falling through to some *other* codex on the box is surprising
+    // (and made the "binary unavailable" test non-deterministic on hosts that
+    // happen to have codex on PATH). An explicit pin means "use this or fail".
+    const candidates = (env.PONYOU_CODEX_BIN
+      ? [env.PONYOU_CODEX_BIN]
+      : [
+          env.CODEX_BIN,
+          env.HOME ? `${env.HOME}/.npm-global/bin/codex` : null,
+          "/usr/local/bin/codex",
+          "codex",                  // last resort: rely on PATH
+        ]).filter(Boolean);
     let lastErr;
     for (const bin of candidates) {
       try {

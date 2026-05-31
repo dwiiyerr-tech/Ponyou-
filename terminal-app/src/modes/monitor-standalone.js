@@ -158,8 +158,8 @@ function render() {
 
   // ── Header ──
   const wsTag   = wsConnected ? '{green-fg}LIVE{/green-fg}' : '{#555555-fg}FILE{/#555555-fg}';
-  const modeTag = s.mode === 'live'  ? '{green-fg}LIVE{/green-fg}' :
-                  s.mode === 'paper' ? '{yellow-fg}PAPER{/yellow-fg}' :
+  const modeTag = s.mode === 'live'        ? '{green-fg}LIVE{/green-fg}' :
+                  (s.paper || s.mode === 'paper') ? '{yellow-fg}PAPER{/yellow-fg}' :
                                        '{#888888-fg}DEMO{/#888888-fg}';
   const solTag  = s.solPrice > 0 ? `{white-fg}$${s.solPrice.toFixed(2)}{/white-fg}` : '{#888888-fg}--{/#888888-fg}';
   const walletStr = s.config.walletAddress
@@ -315,6 +315,25 @@ function render() {
     ? (lessons[lessons.length - 1].lesson || lessons[lessons.length - 1].text || '').slice(0, 40)
     : null;
 
+  // ── social / telegram calls (hunters-social + telegram-user-client) ──
+  const socialSignals = s.socialSignals || [];
+  const socialLines = socialSignals.length > 0
+    ? socialSignals.slice(0, 5).map(sig => {
+        const src  = (sig.source || '?').slice(0, 4);
+        const scC  = sig.score >= 60 ? 'green' : sig.score >= 30 ? 'yellow' : '#555555';
+        const mult = sig.mentions > 1 ? ' ×' + sig.mentions : '';
+        return `  {#555555-fg}${pad((sig.symbol || '?').slice(0, 7), 8)}{/#555555-fg}${lc(scC)}${rpad(sig.score, 3)}${lce(scC)} {#444444-fg}${src}${mult}{/#444444-fg}`;
+      })
+    : [`  {#333333-fg}no social signals{/#333333-fg}`];
+
+  // Telegram user-client (MTProto) — watches monitored channels for calls.
+  const tg = s.telegram || {};
+  const tgLine = !tg.enabled
+    ? `  {#555555-fg}telegram{/#555555-fg} {#333333-fg}not configured{/#333333-fg}`
+    : tg.connected
+      ? `  {#555555-fg}telegram{/#555555-fg} {green-fg}● monitoring{/green-fg} {#444444-fg}${tg.monitor_mode || ''}{/#444444-fg}`
+      : `  {#555555-fg}telegram{/#555555-fg} {red-fg}○ offline{/red-fg} {#444444-fg}${tg.has_session ? 'reconnecting' : 'no session'}{/#444444-fg}`;
+
   // Solid separator — full ─ line matching panel width
   const SEP = ` {#555555-fg}${'─'.repeat(Math.max(4, D.RW - 3))}{/#555555-fg}`;
 
@@ -356,6 +375,10 @@ function render() {
     `  {yellow-fg}exec routes{/yellow-fg}`,
     ...routeLines,
     ...(coinLines.length > 0 ? [``, `  {yellow-fg}conviction{/yellow-fg}`, ...coinLines] : []),
+    ``,
+    `  {yellow-fg}social · calls{/yellow-fg}`,
+    tgLine,
+    ...socialLines,
     ...(lastLesson ? [``, `  {yellow-fg}last lesson{/yellow-fg}`, `  {#888888-fg}${lastLesson}{/#888888-fg}`] : []),
   ];
   wRight.setContent(rightContent.join('\n'));

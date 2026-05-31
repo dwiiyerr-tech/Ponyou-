@@ -17,7 +17,7 @@ import { atomicWriteJson } from "./atomic-write.js";
 import { log } from "./logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PLAN_FILE = path.join(__dirname, "trading-plan.json");
+const PLAN_FILE = process.env.PONYOU_PLAN_FILE || path.join(__dirname, "trading-plan.json");
 
 // ─── Plan Math ────────────────────────────────────────────────
 
@@ -341,7 +341,6 @@ export function advanceDay(actualCapitalUsd, activeStrategyId = null) {
   // B4: Recompute remaining schedule from actual balance
   // Prevent compound schedule from diverging indefinitely from reality
   if (Number.isFinite(actualCapitalUsd) && actualCapitalUsd > 0) {
-    const remainingDays = plan.days - plan.currentDay;
     let capital = actualCapitalUsd;
     for (let i = plan.currentDay; i < plan.days; i++) {
       const target = capital * (1 + plan.dailyTargetPct / 100);

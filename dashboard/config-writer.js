@@ -27,7 +27,7 @@ export function readConfig() {
 const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 const ALLOWED_KEYS = new Set([
-  "preset", "rpcUrl", "rpcUrls", "rpcMode", "shyftApiKey",
+  "preset", "rpcUrl", "rpcUrls", "rpcMode", "shyftApiKey", "gmgnApiKey",
   "geyserGrpcUrl", "geyserGrpcToken",
   "walletAddress", "privateKey",
   "telegramBotToken", "telegramChatId",

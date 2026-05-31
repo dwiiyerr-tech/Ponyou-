@@ -32,8 +32,15 @@ import {
 } from "./dexscreener.js";
 import { getHolderHistory } from "./holder-dump-monitor.js";
 import { heliusCircuitOpen, fetchShyftHolders, fetchShyftTokenSupply } from "./rug-signals.js";
+import { getTopHolders as gmgnTopHolders, getWalletActivity as gmgnWalletActivity, normalizeTopHolder, isGmgnEnabled } from "./gmgn.js";
+import { config } from "../config.js";
 import { log } from "../logger.js";
 import { recordCounter } from "../metrics.js";
+
+// GMGN holder-enrich surface gate (key present AND feature flag on).
+function gmgnHolderOn() {
+  return isGmgnEnabled() && config.gmgn?.holderEnrich !== false;
+}
 
 const { parseSolanaSwap } = _internalSmartMoney;
 
@@ -111,20 +118,48 @@ function dumpSuspected(mint, freshHolders) {
 }
 
 /**
- * Probe recent sells for a token by reading each top holder's recent SWAP
- * history from Helius and keeping the sells of THIS mint. Bounded to
- * SELL_PROBE_HOLDERS wallets and only the last SELL_LOOKBACK_MS.
+ * Probe recent sells for a token from each top holder's activity.
+ * GMGN wallet activity primary (no Helius quota), Helius tx parsing fallback.
  */
 async function probeRecentSells(mint, topHolders) {
-  const apiKey = process.env.HELIUS_API_KEY;
-  if (!apiKey || apiKey === "dummy-helius-key") return [];
-  if (heliusCircuitOpen()) return [];
-
   const owners = [...new Set(topHolders.map((h) => h.wallet).filter(Boolean))].slice(0, SELL_PROBE_HOLDERS);
   if (owners.length === 0) return [];
 
   const cutoffSec = (Date.now() - SELL_LOOKBACK_MS) / 1000;
   const sells = [];
+
+  // ── GMGN path ──────────────────────────────────────────────────────────────
+  if (gmgnHolderOn()) {
+    for (const owner of owners) {
+      try {
+        const activity = await gmgnWalletActivity(owner, 20);
+        const trades = Array.isArray(activity) ? activity : (activity?.trades ?? activity?.swaps ?? []);
+        for (const t of trades) {
+          const ts = Number(t.timestamp ?? t.time ?? 0);
+          if (ts < cutoffSec) continue;
+          const tradeType = (t.type ?? t.side ?? "").toLowerCase();
+          if (tradeType !== "sell") continue;
+          const tradeMint = t.token_address || t.token_mint || t.mint;
+          if (tradeMint !== mint) continue;
+          sells.push({
+            address: owner,
+            amountUsd: Number(t.sol_amount ?? t.value ?? 0),
+            amount: Number(t.token_amount ?? t.amount ?? 0),
+            timestamp: new Date(ts * 1000).toISOString(),
+            txSignature: t.signature || t.tx_hash || null,
+          });
+        }
+      } catch (e) {
+        log("holder_enrich_warn", `GMGN sell probe ${owner.slice(0, 8)}: ${e.message}`);
+      }
+    }
+    if (sells.length > 0) return sells;
+  }
+
+  // ── Helius fallback ────────────────────────────────────────────────────────
+  const apiKey = process.env.HELIUS_API_KEY;
+  if (!apiKey || apiKey === "dummy-helius-key") return [];
+  if (heliusCircuitOpen()) return [];
 
   for (const owner of owners) {
     try {
@@ -137,8 +172,6 @@ async function probeRecentSells(mint, topHolders) {
         if (swap.token_mint !== mint) continue;
         sells.push({
           address: owner,
-          // sol_value is SOL-denominated; the rug detector only needs relative
-          // magnitudes (coefficient of variation), so SOL units are fine here.
           amountUsd: swap.sol_value,
           amount: swap.token_amount,
           timestamp: new Date(swap.timestamp * 1000).toISOString(),
@@ -146,8 +179,6 @@ async function probeRecentSells(mint, topHolders) {
         });
       }
     } catch (e) {
-      // Circuit may have opened mid-probe, or a single wallet errored — keep
-      // whatever we gathered so far.
       log("holder_enrich_warn", `sell probe ${owner.slice(0, 8)}: ${e.message}`);
       if (heliusCircuitOpen()) break;
     }
@@ -172,15 +203,25 @@ async function fetchPriceHistory(mint) {
 }
 
 /**
- * Fetch top holders for a mint, preferring Shyft (a separate provider — keeps
- * load off Helius, whose 429s are structural) and falling back to a Helius RPC
- * read only when Shyft is unconfigured / empty / missing supply.
- *
- * Both paths key holders by OWNER wallet so dump-monitor snapshots compare like
- * for like across cycles regardless of which source served a given cycle.
- * Returns [{address, wallet, balance, pct}].
+ * Fetch top holders for a mint.
+ * Priority: GMGN (richest data: smart/KOL/rat/bundler tags) → Shyft → Helius RPC.
+ * All paths key holders by owner wallet so dump-monitor snapshots compare like-for-like.
+ * Returns [{address, wallet, balance, pct, tags?}].
  */
 async function fetchTopHolders(mint) {
+  // Layer 0: GMGN — most data-rich, offloads Helius completely when available.
+  if (gmgnHolderOn()) {
+    try {
+      const raw = await gmgnTopHolders(mint, 20);
+      if (Array.isArray(raw) && raw.length > 0) {
+        recordCounter("holder_enrich_source_gmgn");
+        return raw.slice(0, 20).map(normalizeTopHolder);
+      }
+    } catch (e) {
+      log("holder_enrich_warn", `gmgn top holders ${mint.slice(0, 8)}: ${e.message}`);
+    }
+  }
+
   const shyftKey = process.env.SHYFT_API_KEY;
   if (shyftKey && shyftKey !== "dummy-shyft-key") {
     try {

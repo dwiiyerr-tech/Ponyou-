@@ -22,6 +22,7 @@
 
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { getTrendingTokens, getTrenches, getTokenSignals, isGmgnEnabled } from "./gmgn.js";
 
 // ─── Hunting Sources ────────────────────────────────────────────
 
@@ -614,6 +615,183 @@ let _hunterStats = {
   lastError: null,
 };
 
+/**
+ * Hunt GMGN trending rank — tokens with highest activity on 1h and 5m intervals.
+ * Returns tokens with GMGN-sourced momentum signals.
+ */
+async function huntGmgnTrending(strategy) {
+  if (!isGmgnEnabled() || config.gmgn?.hunter === false) return [];
+  try {
+    const [rank1h, rank5m] = await Promise.all([
+      getTrendingTokens("1h", 40),
+      getTrendingTokens("5m", 20),
+    ]);
+
+    const seen = new Set();
+    const tokens = [];
+
+    const process = (items, interval) => {
+      if (!Array.isArray(items)) return;
+      for (const t of items) {
+        // getTrendingTokens() already returns the normalized shape.
+        const mint = t.address;
+        if (!mint || seen.has(mint)) continue;
+        seen.add(mint);
+
+        const mcap = Number(t.marketcap ?? 0);
+        const liq = Number(t.liquidity ?? 0);
+        const vol = Number(t.volume ?? 0);
+        const swaps = Number(t.swaps ?? 0);
+
+        let score = 35;
+        if (interval === "5m") score += 20; // faster signal = higher urgency
+        if (mcap >= 100_000 && mcap <= 10_000_000) score += 15;
+        if (liq >= 10_000) score += 10;
+        if (swaps >= 50) score += 10;
+        if (vol >= 50_000) score += 10;
+        if (Number(t.smart_buy_count ?? 0) >= 3) score += 10; // smart money piling in
+
+        tokens.push({
+          mint,
+          symbol: t.symbol || "?",
+          name: t.name || t.symbol || "?",
+          price: Number(t.price ?? 0),
+          mcap,
+          liquidity: liq,
+          volume: vol,
+          swaps,
+          buys: 0,
+          sells: 0,
+          price_change_1h: Number(t.change1h ?? 0),
+          price_change_6h: 0,
+          price_change_24h: Number(t.change24h ?? 0),
+          buy_vol: 0,
+          sell_vol: 0,
+          created_at: t.created_timestamp || null,
+          pair_address: null,
+          dex: "unknown",
+          launchpad: t.launchpad || "unknown",
+          _hunter_source: `gmgn_trending_${interval}`,
+          _hunter_score: Math.min(100, score),
+          _hunter_tier: score >= 70 ? "PRIORITY" : score >= 50 ? "GOOD" : "WATCH",
+          _hunter_reasons: [`gmgn_trending_${interval}`, mcap ? `mcap:${Math.round(mcap / 1000)}k` : null].filter(Boolean),
+          narrative_tags: [],
+          hot_level: interval === "5m" ? 3 : 2,
+          creator: null,
+        });
+      }
+    };
+
+    process(rank1h, "1h");
+    process(rank5m, "5m");
+    return tokens;
+  } catch (e) {
+    log("hunter_error", `GMGN trending hunt failed: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Hunt GMGN trenches — new pump.fun launches and near-graduation tokens.
+ * These are earlier signals than DexScreener; high risk but first-mover advantage.
+ */
+async function huntGmgnTrenches(strategy) {
+  if (!isGmgnEnabled() || config.gmgn?.hunter === false) return [];
+  try {
+    const [signals, trenches] = await Promise.all([
+      getTokenSignals(),                   // all supported signal types (1–13,17,18)
+      getTrenches(["new_creation", "near_completion"], 30),
+    ]);
+
+    const seen = new Set();
+    const tokens = [];
+
+    // getTrenches() returns a flat array, each item tagged with _trench_type.
+    const trenchList = Array.isArray(trenches) ? trenches : [];
+
+    for (const t of trenchList) {
+      const mint = t.address || t.token_address || t.mint;
+      if (!mint || seen.has(mint)) continue;
+      seen.add(mint);
+
+      // Real trenches buckets: new_creation / pump (early, bonding curve) vs
+      // completed (graduated to DEX) / near_completion (about to). Graduated/
+      // near-graduated = more validated, lower rug risk → higher base score.
+      const isNearGrad = t._trench_type === "completed" || t._trench_type === "near_completion";
+      let score = isNearGrad ? 45 : 25;
+      if (Number(t.holder_count ?? 0) >= 100) score += 15;
+      if (Number(t.volume_24h ?? 0) >= 10_000) score += 10;
+      if (Number(t.smart_degen_count ?? 0) >= 2) score += 15; // smart money in early
+
+      tokens.push({
+        mint,
+        symbol: t.symbol || "?",
+        name: t.name || t.symbol || "?",
+        price: Number(t.price ?? 0),
+        // trenches numeric fields arrive as strings — Number() coerces them.
+        mcap: Number(t.usd_market_cap ?? t.market_cap ?? 0),
+        liquidity: Number(t.liquidity ?? 0),
+        volume: Number(t.volume_24h ?? t.volume_1h ?? 0),
+        swaps: Number(t.swaps_24h ?? t.swaps_1h ?? 0),
+        buys: 0, sells: 0,
+        price_change_1h: 0, price_change_6h: 0, price_change_24h: 0,
+        buy_vol: 0, sell_vol: 0,
+        created_at: t.created_timestamp || null,
+        pair_address: null,
+        dex: "pump.fun",
+        launchpad: t.launchpad || t.launchpad_platform || "pump.fun",
+        _hunter_source: `gmgn_trenches_${t._trench_type || "new"}`,
+        _hunter_score: Math.min(100, score),
+        _hunter_tier: isNearGrad ? "GOOD" : "WATCH",
+        _hunter_reasons: [`trenches:${t._trench_type || "new"}`, isNearGrad ? "near_graduation" : null].filter(Boolean),
+        narrative_tags: [],
+        hot_level: isNearGrad ? 2 : 1,
+        creator: t.creator || null,
+      });
+    }
+
+    // Overlay smart money signals — bump scores for tokens that signal wallets are buying
+    const signalList = Array.isArray(signals) ? signals
+      : Array.isArray(signals?.tokens) ? signals.tokens : [];
+    for (const s of signalList) {
+      const mint = s.address || s.token_address || s.mint;
+      if (!mint) continue;
+      const existing = tokens.find(t => t.mint === mint);
+      if (existing) {
+        existing._hunter_score = Math.min(100, existing._hunter_score + 20);
+        existing._hunter_reasons.push("gmgn_signal");
+        existing.hot_level = Math.min(3, existing.hot_level + 1);
+      } else if (!seen.has(mint)) {
+        seen.add(mint);
+        tokens.push({
+          mint,
+          symbol: s.symbol || "?",
+          name: s.name || s.symbol || "?",
+          price: Number(s.price ?? 0),
+          mcap: Number(s.market_cap ?? 0),
+          liquidity: Number(s.liquidity ?? 0),
+          volume: Number(s.volume ?? 0),
+          swaps: 0, buys: 0, sells: 0,
+          price_change_1h: 0, price_change_6h: 0, price_change_24h: 0,
+          buy_vol: 0, sell_vol: 0,
+          created_at: null, pair_address: null,
+          dex: "unknown", launchpad: "unknown",
+          _hunter_source: "gmgn_signal",
+          _hunter_score: 55,
+          _hunter_tier: "GOOD",
+          _hunter_reasons: ["gmgn_smart_money_signal"],
+          narrative_tags: [], hot_level: 3, creator: null,
+        });
+      }
+    }
+
+    return tokens;
+  } catch (e) {
+    log("hunter_error", `GMGN trenches hunt failed: ${e.message}`);
+    return [];
+  }
+}
+
 // Prey cache — stores latest hunt results for injection into screening
 let _preyCache = [];
 const PREY_TTL_MS = 10 * 60 * 1000; // 10 min TTL
@@ -649,10 +827,11 @@ export async function runHunterExpedition({ strategy = null } = {}) {
       narratives: config.screening?.narrativeFilter || [],
     };
 
-    // Hunt across ALL sources in parallel — 7 pairs of eyes
+    // Hunt across ALL sources in parallel — 9 pairs of eyes
     const [
       searchResults, pumpFunResults, gainerResults,
       newestResults, geckoResults, smartMoneyResults, jupiterResults,
+      gmgnTrendingResults, gmgnTrenchesResults,
     ] = await Promise.allSettled([
       huntDexScreenerSearch(strategyParams),   // Eye 1: Multi-query search (45 keywords)
       huntPumpFun(strategyParams),              // Eye 2: pump.fun ecosystem
@@ -661,6 +840,8 @@ export async function runHunterExpedition({ strategy = null } = {}) {
       huntGeckoTerminal(strategyParams),       // Eye 5: GeckoTerminal trending
       huntSmartMoney(strategyParams),          // Eye 6: Smart Money inflow (wallet ping)
       huntJupiter(strategyParams),             // Eye 7: Jupiter active pairs
+      huntGmgnTrending(strategyParams),        // Eye 8: GMGN trending rank (1h + 5m)
+      huntGmgnTrenches(strategyParams),        // Eye 9: GMGN trenches + smart money signals
     ]);
 
     const allTokens = [];
@@ -688,6 +869,8 @@ export async function runHunterExpedition({ strategy = null } = {}) {
     const geckoAdded = collectResults(geckoResults, "geckoterminal");
     const smAdded = collectResults(smartMoneyResults, "smart_money");
     const jupiterAdded = collectResults(jupiterResults, "jupiter");
+    const gmgnTrendAdded = collectResults(gmgnTrendingResults, "gmgn_trending");
+    const gmgnTrenchAdded = collectResults(gmgnTrenchesResults, "gmgn_trenches");
 
     // Sort by hunter score descending, then by liquidity
     allTokens.sort((a, b) => {
@@ -710,7 +893,7 @@ export async function runHunterExpedition({ strategy = null } = {}) {
 
     log("hunter", [
       `Expedition #${_hunterStats.cycles}: ${allTokens.length} tokens`,
-      `(src: ${searchAdded}s, ${pumpFunAdded}pf, ${gainerAdded}g, ${newestAdded}n, ${geckoAdded}gk, ${smAdded}sm, ${jupiterAdded}jp)`,
+      `(src: ${searchAdded}s, ${pumpFunAdded}pf, ${gainerAdded}g, ${newestAdded}n, ${geckoAdded}gk, ${smAdded}sm, ${jupiterAdded}jp, ${gmgnTrendAdded}gt, ${gmgnTrenchAdded}gtr)`,
       `${priorityTokens.length} priority`,
       `${durationMs}ms`,
     ].join(" | "));

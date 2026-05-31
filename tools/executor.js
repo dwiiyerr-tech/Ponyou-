@@ -9,6 +9,7 @@ import {
 } from "./dexscreener.js";
 import { swapToken as executeJupiterSwap } from "./jupiter.js";
 import { getWalletBalances } from "./wallet.js";
+import { demoStrictGates } from "../runtime-mode.js";
 import { scanRefundableTokenAccounts, closeRefundableTokenAccounts } from "../rent-refund.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons, recordRug, scoreRugRisk, getRugMemorySummary } from "../lessons.js";
 import { setPositionInstruction, getTrackedPosition, flushState } from "../state.js";
@@ -748,7 +749,9 @@ export async function executeTool(name, args) {
  */
 async function maybeParkAsConfirmIntent(args) {
   if (!config.trading?.confirmMode) return null;
-  if (process.env.DRY_RUN === "true") return null;
+  // Demo bypasses parking by default; with strict gates on it parks too so the
+  // /yes approval flow is exercised in demo.
+  if (process.env.DRY_RUN === "true" && !demoStrictGates()) return null;
   if (args?.token_in !== "SOL") return null;
   if (!args?.token_out || args.token_out === "SOL") return null;
 
@@ -834,7 +837,9 @@ async function runSafetyChecks(name, args) {
   switch (name) {
     case "swap_token":
     case "jupiter_swap": {
-      if (process.env.DRY_RUN !== "true") {
+      // Live always runs the balance safety-check; demo runs it too when strict
+      // gates are on (checks the virtual balance covers amount+gas / token held).
+      if (process.env.DRY_RUN !== "true" || demoStrictGates()) {
         const balance = await getWalletBalances();
         const gasReserve = config.management.gasReserve;
         const amount = args.amount || 0;

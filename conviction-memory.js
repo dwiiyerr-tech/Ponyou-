@@ -809,13 +809,17 @@ export function getProfitPatternSummary() {
   const strategyFreq  = {};
 
   for (const fp of patterns) {
-    for (const wp of (fp.win_patterns || [])) {
+    // Fingerprints store these nested (market.*, narrative.tags, win_reasons);
+    // read the nested keys so the aggregation isn't all "undefined"/empty.
+    for (const wp of (fp.win_reasons || fp.win_patterns || [])) {
       patternFreq[wp] = (patternFreq[wp] || 0) + 1;
     }
-    mcapFreq[fp.mcap_tier]      = (mcapFreq[fp.mcap_tier]      || 0) + 1;
-    launchpadFreq[fp.launchpad] = (launchpadFreq[fp.launchpad] || 0) + 1;
+    const mcapTier  = fp.market?.mcap_tier ?? fp.mcap_tier;
+    const launchpad = fp.market?.launchpad ?? fp.launchpad;
+    if (mcapTier  != null) mcapFreq[mcapTier]   = (mcapFreq[mcapTier]   || 0) + 1;
+    if (launchpad != null) launchpadFreq[launchpad] = (launchpadFreq[launchpad] || 0) + 1;
     strategyFreq[fp.strategy]   = (strategyFreq[fp.strategy]   || 0) + 1;
-    for (const n of (fp.narratives || [])) {
+    for (const n of (fp.narrative?.tags || fp.narratives || [])) {
       narrativeFreq[n] = (narrativeFreq[n] || 0) + 1;
     }
   }
@@ -840,6 +844,21 @@ export function getProfitPatternSummary() {
     best_strategies:  topStrategies,
     last_updated:     data.last_updated,
   };
+}
+
+/**
+ * Recent winning-trade mints (newest first, de-duped). Feeds the Phase-3
+ * skill-codifier's backtest loader so authored skills are scored on the tokens
+ * the bot actually profited from.
+ */
+export function getRecentProfitMints({ limit = 50 } = {}) {
+  const patterns = loadProfitPatterns().patterns || [];
+  const mints = [];
+  for (let i = patterns.length - 1; i >= 0 && mints.length < limit; i--) {
+    const m = patterns[i]?.mint;
+    if (m && !mints.includes(m)) mints.push(m);
+  }
+  return mints;
 }
 
 // ─── Signal Score ─────────────────────────────────────────────────────────────

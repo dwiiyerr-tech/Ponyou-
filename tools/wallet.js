@@ -2,6 +2,7 @@ import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { isPaperMode, getPaperBalances } from "../paper-wallet.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -108,6 +109,13 @@ async function getWalletBalancesHelius(walletAddress) {
 }
 
 export async function getWalletBalances(walletAddress = null) {
+  // Paper-trading: virtual balance derived from open positions (demo-only; the
+  // isPaperMode() guard hard-fails in live). Resolved before any wallet lookup
+  // so it also works with no real wallet configured.
+  if (isPaperMode()) {
+    return getPaperBalances(walletAddress, getSolPrice);
+  }
+
   if (!walletAddress) {
     try {
       walletAddress = getWallet().publicKey.toString();

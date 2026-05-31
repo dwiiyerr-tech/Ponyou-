@@ -64,3 +64,46 @@ describe("POST /api/cmd", () => {
     expect(res.body.ok).toBe(true);
   });
 });
+
+describe("Strategy Lab routes (Phase 2/3/4)", () => {
+  it("GET /api/portfolio surfaces staged flags + book", async () => {
+    const res = await request(app).get("/api/portfolio");
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body).toHaveProperty("enabled");
+    expect(res.body).toHaveProperty("mode");
+  });
+
+  it("GET /api/skill-loop returns the loop dashboard", async () => {
+    const res = await request(app).get("/api/skill-loop");
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(Array.isArray(res.body.shadowSkills)).toBe(true);
+  });
+
+  it("GET /api/skill-registry returns imported packages", async () => {
+    const res = await request(app).get("/api/skill-registry");
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(Array.isArray(res.body.imported)).toBe(true);
+  });
+
+  it("POST /api/skill-loop/action requires a skillId", async () => {
+    const res = await request(app).post("/api/skill-loop/action").send({ action: "promote" });
+    expect(res.status).toBe(400);
+    expect(res.body.ok).toBe(false);
+  });
+
+  it("POST /api/skill-loop/action promotes a vetted shadow skill", async () => {
+    const { _resetRegistryForTests, upsertStrategySkill, setStrategySkillScorecard, setStrategySkillStatus } = await import("../strategy-skills.js");
+    _resetRegistryForTests();
+    upsertStrategySkill({ id: "lab_skill", type: "composite", params: { filters: {} }, status: "draft", weight: 0 });
+    const m = { sample: 35, win_rate: 0.5, expectancy_pct: 8, max_drawdown_pct: 25, sharpe: 0.4 };
+    setStrategySkillScorecard("lab_skill", { sample: 50, metrics: { ...m, sample: 50 }, walk_forward: { in_sample: m, out_of_sample: m } });
+    setStrategySkillStatus("lab_skill", "shadow");
+    const res = await request(app).post("/api/skill-loop/action").send({ action: "promote", skillId: "lab_skill" });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.status).toBe("active");
+  });
+});

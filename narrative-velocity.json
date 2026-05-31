@@ -1,44 +1,58 @@
 {
   "batches": [
     {
-      "ts": "2026-05-25T16:11:01.263Z",
+      "ts": "2026-05-31T00:06:02.584Z",
       "trending": [
-        "SCIFI"
+        "TECH",
+        "SCIFI",
+        "FINANCE",
+        "SPORTS"
       ],
       "narrative_count": 7
     },
     {
-      "ts": "2026-05-25T16:16:01.681Z",
+      "ts": "2026-05-31T00:11:02.399Z",
       "trending": [
-        "SCIFI"
-      ],
-      "narrative_count": 6
-    },
-    {
-      "ts": "2026-05-25T16:21:01.666Z",
-      "trending": [
-        "SCIFI"
+        "TECH",
+        "SCIFI",
+        "FINANCE",
+        "SPORTS"
       ],
       "narrative_count": 7
     },
     {
-      "ts": "2026-05-25T16:26:01.546Z",
+      "ts": "2026-05-31T00:11:02.403Z",
       "trending": [
-        "SCIFI"
+        "TECH",
+        "SCIFI",
+        "FINANCE",
+        "SPORTS"
+      ],
+      "narrative_count": 7
+    },
+    {
+      "ts": "2026-05-31T00:16:02.939Z",
+      "trending": [
+        "TECH",
+        "SCIFI",
+        "SPORTS",
+        "FINANCE"
+      ],
+      "narrative_count": 7
+    },
+    {
+      "ts": "2026-05-31T00:21:03.214Z",
+      "trending": [
+        "SCIFI",
+        "TECH"
       ],
       "narrative_count": 6
     },
     {
-      "ts": "2026-05-25T16:26:01.554Z",
+      "ts": "2026-05-31T00:21:03.285Z",
       "trending": [
-        "SCIFI"
-      ],
-      "narrative_count": 6
-    },
-    {
-      "ts": "2026-05-25T16:26:01.630Z",
-      "trending": [
-        "SCIFI"
+        "SCIFI",
+        "TECH"
       ],
       "narrative_count": 6
     }
@@ -46,21 +60,11 @@
   "narratives": {
     "SCIFI": {
       "cross_batch_score": 100,
-      "peak_batch_score": 87,
-      "total_batches_seen": 368,
+      "peak_batch_score": 97,
+      "total_batches_seen": 543,
       "consecutive_cycles": 1,
       "was_trending_last": true,
       "tokens_accumulated": [
-        "RAVI",
-        "SOL",
-        "Popus",
-        "Staccana",
-        "BELIEF",
-        "TRALALERO",
-        "Together",
-        "BULL",
-        "GENWEALTH",
-        "WAIFU",
         "AI",
         "$GGO",
         "UF",
@@ -70,133 +74,133 @@
         "TROLLCUP",
         "SOLdiers",
         "Giggles",
-        "Popaude"
+        "Popaude",
+        "SPCXELON",
+        "WBTC",
+        "WETH",
+        "SPCX",
+        "TROLL",
+        "Goblin",
+        "SPCXCUM",
+        "MM",
+        "SPCXTROLL",
+        "Literally"
       ],
-      "last_token_count": 3,
-      "last_buy_ratio": 0.55,
-      "last_total_volume": 10649,
-      "last_seen_at": "2026-05-25T16:26:01.630Z"
-    },
-    "CULTURE": {
-      "cross_batch_score": 32,
-      "peak_batch_score": 85,
-      "total_batches_seen": 321,
-      "consecutive_cycles": 1,
-      "was_trending_last": false,
-      "tokens_accumulated": [
-        "DEGEN",
-        "MHOOD",
-        "PEPETIDE",
-        "BABYTROLL",
-        "AGS",
-        "PTROLL",
-        "四",
-        "TROLL CUP",
-        "NEEK",
-        "TROLLCUP",
-        "VOICE"
-      ],
-      "last_token_count": 1,
-      "last_buy_ratio": 0.41,
-      "last_total_volume": 7034,
-      "last_seen_at": "2026-05-25T16:26:01.630Z"
-    },
-    "NUMBERS": {
-      "cross_batch_score": 32,
-      "peak_batch_score": 45,
-      "total_batches_seen": 321,
-      "consecutive_cycles": 1,
-      "was_trending_last": false,
-      "tokens_accumulated": [
-        "DEGEN",
-        "VOICE"
-      ],
-      "last_token_count": 1,
-      "last_buy_ratio": 0.41,
-      "last_total_volume": 7034,
-      "last_seen_at": "2026-05-25T16:26:01.630Z"
+      "last_token_count": 4,
+      "last_buy_ratio": 0.59,
+      "last_total_volume": 367182,
+      "last_seen_at": "2026-05-31T00:21:03.285Z"
     },
     "TECH": {
-      "cross_batch_score": 53,
-      "peak_batch_score": 85,
-      "total_batches_seen": 310,
+      "cross_batch_score": 100,
+      "peak_batch_score": 90,
+      "total_batches_seen": 485,
       "consecutive_cycles": 1,
-      "was_trending_last": false,
+      "was_trending_last": true,
       "tokens_accumulated": [
-        "PBTC",
-        "POWERSOL",
-        "Staccana",
-        "BTCBANK",
-        "USA",
+        "MANIFEST",
+        "TCG",
+        "MSTHDA",
+        "XCAT",
         "SOL",
-        "Together",
-        "SOLdiers"
+        "XCHAT",
+        "Goblin",
+        "OBX",
+        "WBTC",
+        "JitoSOL",
+        "67",
+        "CARDLY",
+        "YIELD",
+        "ZINC",
+        "BABYTROLL",
+        "MOMO",
+        "ballish",
+        "SHIKOKU",
+        "WORLDCUP",
+        "S&P500"
       ],
-      "last_token_count": 1,
-      "last_buy_ratio": 0.43,
-      "last_total_volume": 2501,
-      "last_seen_at": "2026-05-25T16:26:01.630Z"
+      "last_token_count": 10,
+      "last_buy_ratio": 0.57,
+      "last_total_volume": 5552125,
+      "last_seen_at": "2026-05-31T00:21:03.285Z"
     },
-    "AI": {
-      "cross_batch_score": 43,
-      "peak_batch_score": 81,
-      "total_batches_seen": 115,
+    "FINANCE": {
+      "cross_batch_score": 100,
+      "peak_batch_score": 90,
+      "total_batches_seen": 175,
       "consecutive_cycles": 1,
       "was_trending_last": false,
       "tokens_accumulated": [
-        "Popus",
-        "WAIFU",
-        "AI",
-        "Popaude"
+        "USDC",
+        "USELESS",
+        "888Coin",
+        "Genitals",
+        "YIELD"
       ],
-      "last_token_count": 1,
-      "last_buy_ratio": 0.25,
-      "last_total_volume": 2,
-      "last_seen_at": "2026-05-25T16:26:01.630Z"
-    },
-    "POLITICAL": {
-      "cross_batch_score": 3.1,
-      "peak_batch_score": 43,
-      "total_batches_seen": 41,
-      "consecutive_cycles": 0,
-      "was_trending_last": false,
-      "tokens_accumulated": [
-        "Patriot"
-      ],
-      "last_token_count": 1,
-      "last_buy_ratio": 0.4,
-      "last_total_volume": 597,
-      "last_seen_at": "2026-05-25T16:06:01.961Z"
+      "last_token_count": 2,
+      "last_buy_ratio": 0.51,
+      "last_total_volume": 4468526,
+      "last_seen_at": "2026-05-31T00:21:03.285Z"
     },
     "SPORTS": {
-      "cross_batch_score": 14.35,
-      "peak_batch_score": 45,
-      "total_batches_seen": 18,
-      "consecutive_cycles": 0,
-      "was_trending_last": false,
-      "tokens_accumulated": [
-        "SOL"
-      ],
-      "last_token_count": 1,
-      "last_buy_ratio": 0,
-      "last_total_volume": 75,
-      "last_seen_at": "2026-05-25T16:21:01.666Z"
-    },
-    "CELEBRITY": {
-      "cross_batch_score": 55,
-      "peak_batch_score": 42,
-      "total_batches_seen": 8,
+      "cross_batch_score": 91,
+      "peak_batch_score": 70,
+      "total_batches_seen": 50,
       "consecutive_cycles": 1,
       "was_trending_last": false,
       "tokens_accumulated": [
-        "QEDSVM"
+        "SOL",
+        "WORLDCUP"
       ],
       "last_token_count": 1,
-      "last_buy_ratio": 0.55,
-      "last_total_volume": 15694,
-      "last_seen_at": "2026-05-25T16:26:01.630Z"
+      "last_buy_ratio": 0.58,
+      "last_total_volume": 556935,
+      "last_seen_at": "2026-05-31T00:21:03.285Z"
+    },
+    "NUMBERS": {
+      "cross_batch_score": 17.44,
+      "peak_batch_score": 20,
+      "total_batches_seen": 25,
+      "consecutive_cycles": 0,
+      "was_trending_last": false,
+      "tokens_accumulated": [
+        "PUMP"
+      ],
+      "last_token_count": 1,
+      "last_buy_ratio": 0.34,
+      "last_total_volume": 1055,
+      "last_seen_at": "2026-05-31T00:16:02.939Z"
+    },
+    "CULTURE": {
+      "cross_batch_score": 75,
+      "peak_batch_score": 66,
+      "total_batches_seen": 15,
+      "consecutive_cycles": 1,
+      "was_trending_last": false,
+      "tokens_accumulated": [
+        "TROLL",
+        "SPCXTROLL"
+      ],
+      "last_token_count": 1,
+      "last_buy_ratio": 0.85,
+      "last_total_volume": 10387,
+      "last_seen_at": "2026-05-31T00:21:03.285Z"
+    },
+    "POLITICAL": {
+      "cross_batch_score": 44,
+      "peak_batch_score": 38,
+      "total_batches_seen": 6,
+      "consecutive_cycles": 1,
+      "was_trending_last": false,
+      "tokens_accumulated": [
+        "Literally"
+      ],
+      "last_token_count": 1,
+      "last_buy_ratio": 0.52,
+      "last_total_volume": 25412,
+      "last_seen_at": "2026-05-31T00:21:03.285Z"
     }
   },
-  "last_updated": "2026-05-25T16:26:01.630Z",
+  "last_updated": "2026-05-31T00:21:03.285Z",
   "_v": 1
 }

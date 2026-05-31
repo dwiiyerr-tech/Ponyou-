@@ -16,6 +16,7 @@
   <div class="tabs">
     <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
     <button class="tab-btn" data-tab="commands">Commands</button>
+    <button class="tab-btn" data-tab="strategylab">🧪 Strategy Lab</button>
     <button class="tab-btn" data-tab="settings">⚙ Settings</button>
   </div>
 </div>
@@ -200,6 +201,32 @@
 </div>
 
 <!-- TAB: SETTINGS -->
+<!-- TAB: STRATEGY LAB (Phase 2/3/4 — portfolio book, self-improvement loop, marketplace) -->
+<div class="tab-pane" id="tab-strategylab">
+  <div style="max-width:720px;margin:2rem auto;padding:0 1rem">
+    <div class="panel">
+      <h3>Portfolio Book <span id="portfolioMode" style="font-size:12px;color:var(--muted)"></span></h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Active strategy-skills run in parallel (ensemble). Default OFF/shadow — enable via <code>portfolioEnabled</code> in config. Weights are auto-rebalanced by live/paper expectancy.</p>
+      <div id="portfolioBookPanel">Loading…</div>
+      <button class="btn" onclick="loadPortfolioBook()" style="margin-top:.5rem">Refresh</button>
+    </div>
+
+    <div class="panel" style="margin-top:1rem">
+      <h3>Self-Improvement Loop <span id="skillLoopMode" style="font-size:12px;color:var(--muted)"></span></h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Loop-authored SHADOW skills (paper only). 🤖 = authored by the loop. Promotion to live capital is MANUAL — the loop never auto-promotes.</p>
+      <div id="skillLoopPanel">Loading…</div>
+      <button class="btn" onclick="loadSkillLoop()" style="margin-top:.5rem">Refresh</button>
+    </div>
+
+    <div class="panel" style="margin-top:1rem">
+      <h3>Skill Marketplace (Imported)</h3>
+      <p style="color:var(--muted);font-size:13px;margin:.5rem 0 1rem">Imported strategy-skill packages + vetting verdict. Execution-class imports are QUARANTINED and can never auto-exec.</p>
+      <div id="skillRegistryPanel">Loading…</div>
+      <button class="btn" onclick="loadSkillRegistry()" style="margin-top:.5rem">Refresh</button>
+    </div>
+  </div>
+</div>
+
 <div class="tab-pane" id="tab-settings">
   <div style="max-width:720px;margin:2rem auto;padding:0 1rem">
     <div class="panel">

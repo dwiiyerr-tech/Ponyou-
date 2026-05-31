@@ -138,7 +138,12 @@ describe("scoreRugRisk fail-safe guards", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    // preferAgent "codex" — binary likely missing or fails. Should fallback to Claude.
+    // Pin a nonexistent codex binary so this is deterministic even on hosts
+    // that have codex installed on PATH. #callCodex honors PONYOU_CODEX_BIN
+    // exclusively, so this guarantees the "unavailable" path (ENOENT → fallback).
+    process.env.PONYOU_CODEX_BIN = "/nonexistent/ponyou-codex-test-bin";
+
+    // preferAgent "codex" — binary missing → must fall back to Claude.
     const result = await router.invoke("write code for a Solana swap", { preferAgent: "codex", timeoutMs: 2000 });
 
     // Either codex succeeded or fell back to claude — both are OK.
@@ -146,6 +151,7 @@ describe("scoreRugRisk fail-safe guards", () => {
     expect(result).toHaveProperty("agent");
     expect(result).toHaveProperty("result");
 
+    delete process.env.PONYOU_CODEX_BIN;
     warnSpy.mockRestore();
   });
 });

@@ -36,6 +36,13 @@ export default defineConfig({
       PONYOU_CONVICTION_FILE: path.join(STATE_TMP, "coin-conviction.json"),
       PONYOU_PROFIT_PATTERNS_FILE: path.join(STATE_TMP, "profit-patterns.json"),
       PONYOU_LOSS_PATTERNS_FILE: path.join(STATE_TMP, "loss-patterns.json"),
+      // strategy-skill registry + its hash-pin lockfile (must not touch the
+      // live registry / skills-lock.json during tests)
+      PONYOU_STRATEGY_SKILLS_FILE: path.join(STATE_TMP, "strategy-skills.json"),
+      PONYOU_SKILLS_LOCK_FILE: path.join(STATE_TMP, "skills-lock.json"),
+      // per-skill P&L attribution written by the portfolio manager
+      PONYOU_SKILL_ATTRIBUTION_FILE: path.join(STATE_TMP, "skill-attribution.json"),
+      PONYOU_BACKTEST_DATA_DIR: STATE_TMP,
     },
   },
 });

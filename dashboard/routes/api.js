@@ -19,12 +19,19 @@ import { resetTradingPlan } from "../../trading-plan-30.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets } from "../../smart-wallets.js";
 import { blockDev, unblockDev, listBlockedDevs } from "../../dev-blocklist.js";
 import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../../token-blacklist.js";
-import { getPriorityWallets, getCopyTradeConfig, getCopyTradeStats, getRecentSignals, confirmCopySignal, rejectCopySignal } from "../../tools/wallet-copy-trade.js";
+import { getPriorityWallets, getGmgnPriorityWallets, getCopyTradeConfig, getCopyTradeStats, getRecentSignals, confirmCopySignal, rejectCopySignal } from "../../tools/wallet-copy-trade.js";
 import { getSmartMoneyCandidates, getRugDevAlerts, getWalletSignalStats, checkRugDevDeployer, autoBlockRugDevToken } from "../../tools/wallet-signal-injector.js";
 import { getPositionLimitsConfig, getPositionLimitDashboard, computeKellyPositions } from "../../tools/position-limits.js";
 import { getFeeTrackerDashboard, DEX_FEE_BPS, PLATFORM_FEE_BPS, getRentStats, getRpcCostStats } from "../../tools/fee-tracker.js";
 import { getPerformanceSummary } from "../../lessons.js";
 import { PRESETS, getStrategy, setStrategyOverride, clearStrategyOverrides } from "../../strategies.js";
+import { isGmgnEnabled, gmgnCircuitOpen } from "../../tools/gmgn.js";
+import { getPortfolioDashboard } from "../../agents/portfolio-manager.js";
+import { getSkillLoopDashboard, promoteSkillWithApproval, buildApprovalRequest } from "../../agents/skill-codifier.js";
+import { listImportedSkills } from "../../skill-registry.js";
+import { setStrategySkillStatus } from "../../strategy-skills.js";
+import { getStats } from "../../metrics.js";
+import { config } from "../../config.js";
 
 const ALLOWED_LIFECYCLE_CMDS = new Set(["start", "stop"]);
 const ALLOWED_SLASH_CMDS = new Set([
@@ -32,6 +39,7 @@ const ALLOWED_SLASH_CMDS = new Set([
   "/confirm", "/dailyguard", "/continue", "/resetplan", "/plan", "/stoptrade",
   "/pending", "/no", "/yes", "/metrics", "/kill", "/unkill", "/killstate",
   "/wallets", "/pnl", "/status", "/health", "/feature", "/devcheck", "/dayphase",
+  "/skills", "/promoteskill", "/rejectskill",
 ]);
 
 export function createApiRouter() {
@@ -42,6 +50,82 @@ export function createApiRouter() {
       res.json(await readBotState());
     } catch (e) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GMGN integration health — surfaces whether the optional GMGN layer is live,
+  // whether its rate-limit circuit is currently open, the per-surface feature
+  // flags, and the adapter's success/rate-limit/skip counters. Lets an operator
+  // tell at a glance if GMGN is silently degraded (circuit open) before relying
+  // on its signals.
+  router.get("/gmgn-health", (req, res) => {
+    try {
+      const counters = getStats()?.counters || {};
+      res.json({
+        ok: true,
+        enabled: isGmgnEnabled(),
+        circuit_open: gmgnCircuitOpen(),
+        features: config.gmgn || null,
+        counters: {
+          ok: counters.gmgn_ok || 0,
+          rate_limit: counters.gmgn_rate_limit || 0,
+          circuit_skip: counters.gmgn_circuit_skip || 0,
+        },
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Phase 2 — multi-strategy portfolio book: staged flags, weighted book, and
+  // per-skill P&L attribution. Reads registry/attribution from disk directly.
+  router.get("/portfolio", (req, res) => {
+    try {
+      res.json({ ok: true, ...getPortfolioDashboard() });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Phase 3 — self-improvement loop: loop-authored shadow skills + their paper
+  // sample, awaiting MANUAL promotion approval (loop never auto-promotes).
+  router.get("/skill-loop", (req, res) => {
+    try {
+      res.json({ ok: true, ...getSkillLoopDashboard() });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Phase 3 — MANUAL governance gate. The loop never auto-promotes; an operator
+  // approves a shadow skill here, which promotes it to active at a capped weight.
+  // promoteSkillWithApproval refuses unless approved:true, and the registry
+  // re-checks the scorecard gate + quarantine, so this can't bypass safety.
+  router.post("/skill-loop/action", (req, res) => {
+    const { action, skillId } = req.body || {};
+    if (typeof skillId !== "string" || !skillId.trim()) return res.status(400).json({ ok: false, error: "skillId required" });
+    try {
+      if (action === "promote") {
+        const skill = promoteSkillWithApproval(skillId, { approved: true });
+        return res.json({ ok: true, action, skillId, status: skill.status, weight: skill.weight });
+      }
+      if (action === "reject") {
+        const skill = setStrategySkillStatus(skillId, "retired");
+        return res.json({ ok: true, action, skillId, status: skill.status });
+      }
+      return res.status(400).json({ ok: false, error: "Unknown action. Use: promote, reject" });
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Phase 4 — internal skill marketplace: imported strategy-skill packages and
+  // their vetting verdict (execution-class imports are quarantined, never auto-exec).
+  router.get("/skill-registry", (req, res) => {
+    try {
+      res.json({ ok: true, imported: listImportedSkills() });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
     }
   });
 
@@ -239,11 +323,17 @@ export function createApiRouter() {
   });
 
   // ─── Priority Wallets (win rate >= 70%) ─────────────────
-  router.get("/priority-wallets", (req, res) => {
+  router.get("/priority-wallets", async (req, res) => {
     try {
       const minWr = req.query.min_win_rate ? parseFloat(req.query.min_win_rate) : undefined;
-      const wallets = getPriorityWallets(Number.isFinite(minWr) ? minWr : undefined);
-      res.json({ ok: true, count: wallets.length, wallets });
+      const threshold = Number.isFinite(minWr) ? minWr : undefined;
+      const local = getPriorityWallets(threshold);
+      // Augment with GMGN's live smart-money/KOL priority list (no-op without a
+      // GMGN key). Dedup by address — local (tracked) entries win.
+      const gmgn = await getGmgnPriorityWallets(threshold).catch(() => []);
+      const seen = new Set(local.map((w) => w.address));
+      const wallets = [...local, ...gmgn.filter((w) => w.address && !seen.has(w.address))];
+      res.json({ ok: true, count: wallets.length, local_count: local.length, gmgn_count: wallets.length - local.length, wallets });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

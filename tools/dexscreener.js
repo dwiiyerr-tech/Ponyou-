@@ -13,6 +13,7 @@ import { detectBundledLaunch, gatherRugSignals, heliusAcquire, heliusRelease, he
 import { classifyNarrative, summarizeNarrative } from "./narratives.js";
 import { createCachedFetcher } from "../cache-util.js";
 import { discoverBirdeyeTokens, enrichTokensWithBirdeye, isBirdeyeEnabled } from "./birdeye.js";
+import { getWalletActivity, getTokenSignals, isGmgnEnabled } from "./gmgn.js";
 
 const DS_BASE = "https://api.dexscreener.com";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -993,23 +994,67 @@ function analyzeSmartWalletPerformance(swaps = []) {
 
 /**
  * Rank tracked smart wallets by recent P&L performance.
- * Requires valid HELIUS_API_KEY and wallets added via addSmartWallet().
+ * GMGN primary (wallet activity without Helius quota), Helius fallback.
  */
 export async function getSmartMoneyRank({ timeframe = "24h" } = {}) {
-  const apiKey = process.env.HELIUS_API_KEY;
-  if (!apiKey || apiKey === "dummy-helius-key") {
-    return { timeframe, wallets: [], note: "Set HELIUS_API_KEY in .env to enable smart money tracking" };
-  }
-
   const wallets = listSmartWallets();
   if (wallets.length === 0) {
     return { timeframe, wallets: [], note: "No wallets tracked. Use add_smart_wallet tool to add wallets." };
   }
 
-  const cutoff = Date.now() / 1000 - (SMART_MONEY_TF_SECONDS[timeframe] || SMART_MONEY_TF_SECONDS["24h"]);
   const results = [];
 
-  for (const wallet of wallets.slice(0, 10)) { // cap at 10 to avoid rate limits
+  // ── GMGN path ──────────────────────────────────────────────────────────────
+  if (isGmgnEnabled()) {
+    for (const wallet of wallets.slice(0, 15)) {
+      try {
+        const activity = await getWalletActivity(wallet.address, 30);
+        const swaps = Array.isArray(activity) ? activity : (activity?.trades ?? activity?.swaps ?? []);
+        const cutoffSec = Date.now() / 1000 - (SMART_MONEY_TF_SECONDS[timeframe] || SMART_MONEY_TF_SECONDS["24h"]);
+        const recent = swaps.filter(s => Number(s.timestamp ?? s.time ?? 0) >= cutoffSec);
+        const performance = analyzeSmartWalletPerformance(recent.map(s => ({
+          type: s.type === "buy" || s.side === "buy" ? "buy" : "sell",
+          token_mint: s.token_address || s.token_mint || s.mint,
+          sol_value: Number(s.sol_amount ?? s.value ?? 0),
+          token_amount: Number(s.token_amount ?? s.amount ?? 0),
+          timestamp: Number(s.timestamp ?? s.time ?? 0),
+          price_usd: Number(s.price_usd ?? 0),
+        })).filter(s => s.token_mint));
+
+        await recordSmartWalletSnapshot(wallet.address, { ...performance, timeframe });
+        const history = summarizeSmartWalletHistory(wallet.address, { timeframe, limit: 12 });
+
+        results.push({
+          address: wallet.address,
+          label: wallet.label,
+          follow_mode: wallet.follow_mode || wallet.selection?.follow_mode || "shadow",
+          selection_score: wallet.selection?.score ?? null,
+          swap_count: recent.length,
+          ...performance,
+          history,
+        });
+      } catch (e) {
+        log("smart_money_warn", `GMGN rank for ${wallet.address.slice(0, 8)}: ${e.message}`);
+      }
+    }
+    if (results.length > 0) {
+      results.sort((a, b) =>
+        (b.realized_pnl_sol - a.realized_pnl_sol) || (b.winrate - a.winrate) ||
+        ((b.history?.stability_score || 0) - (a.history?.stability_score || 0)) ||
+        (b.conviction_score - a.conviction_score) || (b.swap_count - a.swap_count)
+      );
+      return { timeframe, wallets: results, source: "gmgn" };
+    }
+  }
+
+  // ── Helius fallback ────────────────────────────────────────────────────────
+  const apiKey = process.env.HELIUS_API_KEY;
+  if (!apiKey || apiKey === "dummy-helius-key") {
+    return { timeframe, wallets: [], note: "Set GMGN_API_KEY or HELIUS_API_KEY to enable smart money tracking" };
+  }
+
+  const cutoff = Date.now() / 1000 - (SMART_MONEY_TF_SECONDS[timeframe] || SMART_MONEY_TF_SECONDS["24h"]);
+  for (const wallet of wallets.slice(0, 10)) {
     try {
       const txns = await fetchHeliusTxns(wallet.address, apiKey, 50);
       const recentTxns = txns.filter(tx => tx.timestamp >= cutoff);
@@ -1017,7 +1062,6 @@ export async function getSmartMoneyRank({ timeframe = "24h" } = {}) {
       const performance = analyzeSmartWalletPerformance(swaps);
       await recordSmartWalletSnapshot(wallet.address, { ...performance, timeframe });
       const history = summarizeSmartWalletHistory(wallet.address, { timeframe, limit: 12 });
-
       results.push({
         address: wallet.address,
         label: wallet.label,
@@ -1028,28 +1072,106 @@ export async function getSmartMoneyRank({ timeframe = "24h" } = {}) {
         history,
       });
     } catch (e) {
-      log("smart_money_warn", `Helius fetch for ${wallet.address.slice(0, 8)}: ${e.message}`);
+      log("smart_money_warn", `Helius rank for ${wallet.address.slice(0, 8)}: ${e.message}`);
     }
   }
-
   results.sort((a, b) =>
-    (b.realized_pnl_sol - a.realized_pnl_sol) ||
-    (b.winrate - a.winrate) ||
+    (b.realized_pnl_sol - a.realized_pnl_sol) || (b.winrate - a.winrate) ||
     ((b.history?.stability_score || 0) - (a.history?.stability_score || 0)) ||
-    (b.conviction_score - a.conviction_score) ||
-    (b.swap_count - a.swap_count)
+    (b.conviction_score - a.conviction_score) || (b.swap_count - a.swap_count)
   );
   return { timeframe, wallets: results, source: "helius" };
 }
 
 /**
  * Detect which tokens tracked smart wallets are buying right now.
+ * GMGN token signals primary (direct signal feed), wallet activity + Helius as fallbacks.
  * Returns tokens sorted by number of smart wallets accumulating.
  */
 export async function getSmartMoneyInflow({ timeframe = "1h" } = {}) {
+  // ── GMGN signal path — direct smart money signal feed (fastest, no Helius) ──
+  if (isGmgnEnabled()) {
+    try {
+      const signals = await getTokenSignals(); // all supported signal types
+      const list = Array.isArray(signals) ? signals
+        : Array.isArray(signals?.tokens) ? signals.tokens : [];
+      if (list.length > 0) {
+        const tokens = list.map(s => {
+          // Real GMGN signal rows expose token_address + signal_times (how many
+          // times the signal fired = strength proxy), not wallet_count/score.
+          const strength = Number(s.signal_times ?? s.wallet_count ?? s.smart_money_count ?? 1) || 1;
+          return {
+            mint: s.token_address || s.address || s.mint,
+            symbol: s.symbol,
+            price: Number(s.price ?? s.cur_data?.price ?? 0),
+            unique_wallets: strength,
+            buy_count: Number(s.buy_count ?? 1),
+            sell_count: Number(s.sell_count ?? 0),
+            buy_ratio: Number(s.buy_ratio ?? 1),
+            weighted_buy_score: strength,
+            top_wallet_label: s.top_wallet_label || null,
+          };
+        }).filter(t => t.mint);
+        if (tokens.length > 0) {
+          return { timeframe, tokens, source: "gmgn_signal", wallets_tracked: 0 };
+        }
+      }
+    } catch (e) {
+      log("smart_money_warn", `GMGN signal inflow: ${e.message}`);
+    }
+
+    // GMGN wallet activity path — check each tracked wallet's recent buys
+    const wallets = listSmartWallets();
+    if (wallets.length > 0) {
+      const cutoff = Date.now() / 1000 - (timeframe === "1h" ? 3600 : timeframe === "6h" ? 21600 : 86400);
+      const tokenAccum = new Map();
+
+      for (const wallet of wallets.slice(0, 12)) {
+        try {
+          const activity = await getWalletActivity(wallet.address, 30);
+          const trades = Array.isArray(activity) ? activity : (activity?.trades ?? activity?.swaps ?? []);
+          const history = summarizeSmartWalletHistory(wallet.address, { timeframe: "24h", limit: 12 });
+          const walletWeight = 1 + ((wallet.selection?.score || 0) / 100) + ((history.stability_score || 0) / 150);
+
+          for (const t of trades) {
+            const ts = Number(t.timestamp ?? t.time ?? 0);
+            if (ts < cutoff) continue;
+            const mint = t.token_address || t.token_mint || t.mint;
+            if (!mint) continue;
+            if (!tokenAccum.has(mint)) tokenAccum.set(mint, { wallets: new Set(), buy_count: 0, sell_count: 0, weighted_buy_score: 0, symbol: t.symbol });
+            const entry = tokenAccum.get(mint);
+            entry.wallets.add(wallet.address);
+            if (t.type === "buy" || t.side === "buy") { entry.buy_count++; entry.weighted_buy_score += walletWeight; }
+            else entry.sell_count++;
+          }
+        } catch (e) {
+          log("smart_money_warn", `GMGN inflow wallet ${wallet.address.slice(0, 8)}: ${e.message}`);
+        }
+      }
+
+      const tokens = [...tokenAccum.entries()]
+        .map(([mint, d]) => ({
+          mint, symbol: d.symbol,
+          unique_wallets: d.wallets.size,
+          buy_count: d.buy_count, sell_count: d.sell_count,
+          buy_ratio: d.buy_count / (d.buy_count + d.sell_count || 1),
+          weighted_buy_score: Number(d.weighted_buy_score.toFixed(3)),
+          top_wallet_label: null,
+        }))
+        .filter(t => t.buy_count > t.sell_count)
+        .sort((a, b) => b.weighted_buy_score - a.weighted_buy_score || b.unique_wallets - a.unique_wallets)
+        .slice(0, 20);
+
+      if (tokens.length > 0) {
+        return { timeframe, tokens, source: "gmgn_activity", wallets_tracked: wallets.length };
+      }
+    }
+  }
+
+  // ── Helius fallback ────────────────────────────────────────────────────────
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey || apiKey === "dummy-helius-key") {
-    return { timeframe, tokens: [], note: "Set HELIUS_API_KEY in .env to enable smart money inflow" };
+    return { timeframe, tokens: [], note: "Set GMGN_API_KEY or HELIUS_API_KEY to enable smart money inflow" };
   }
 
   const wallets = listSmartWallets();

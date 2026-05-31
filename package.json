@@ -23,6 +23,7 @@
     "collab:triage": "node infra/agent-collab/collab-triage.js",
     "collab:submit": "node infra/agent-collab/collab-submit.js",
     "backtest": "node tools/backtest-cli.js",
+    "promote-demo": "node scripts/promote-demo.js",
     "agent:24x7": "bash ./ops/run-24x7.sh live",
     "agent:24x7:demo": "bash ./ops/run-24x7.sh demo",
     "wizard": "node terminal-app/src/modes/wizard-standalone.js",

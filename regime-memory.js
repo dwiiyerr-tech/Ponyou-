@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REGIME_FILE = path.join(__dirname, "regime-memory.json");
+const REGIME_FILE = process.env.PONYOU_REGIME_FILE || path.join(__dirname, "regime-memory.json");
 const DECAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function clamp(value, min, max) {

@@ -180,8 +180,14 @@ export function getOperationalReadiness({
     if (runtimeConfig.multiWallet?.enabled && !walletTopology.ok) {
       errors.push(...walletTopology.errors);
     }
-    if (!env.HELIUS_API_KEY || env.HELIUS_API_KEY === "dummy-helius-key") {
-      errors.push("HELIUS_API_KEY is missing.");
+    // Helius API key is now optional when GMGN is configured — GMGN covers rug
+    // signals, holder enrichment, wallet scoring, and smart money tracking.
+    const heliusMissing = !env.HELIUS_API_KEY || env.HELIUS_API_KEY === "dummy-helius-key";
+    const gmgnPresent = !!(env.GMGN_API_KEY && env.GMGN_API_KEY !== "dummy-gmgn-key");
+    if (heliusMissing && !gmgnPresent) {
+      errors.push("HELIUS_API_KEY is missing and GMGN_API_KEY is not set. At least one data provider is required for live trading.");
+    } else if (heliusMissing && gmgnPresent) {
+      warnings.push("HELIUS_API_KEY is missing. GMGN is covering rug signals and enrichment, but some on-chain tx-history paths will be unavailable.");
     }
 
     // ── Data floor checks ──────────────────────────────────────────
@@ -231,7 +237,7 @@ export function getOperationalReadiness({
     }
 
     // ── Soft warnings (not blockers, but important) ──────────
-    if (!env.SHYFT_API_KEY) {
+    if (!env.SHYFT_API_KEY && !gmgnPresent) {
       warnings.push("SHYFT_API_KEY is missing. Helius fallback provider unavailable.");
     }
     if (!runtimeConfig.trading?.confirmMode) {
@@ -250,11 +256,17 @@ export function getOperationalReadiness({
     if (!hasWalletConfigured({ env, runtime, config: runtimeConfig })) {
       warnings.push("No trading wallet is configured. Demo mode will skip real balance validation.");
     }
-    if (!env.HELIUS_API_KEY || env.HELIUS_API_KEY === "dummy-helius-key") {
-      warnings.push("HELIUS_API_KEY is missing. Security enrichment and wallet checks will be degraded.");
-    }
-    if (!env.SHYFT_API_KEY) {
-      warnings.push("SHYFT_API_KEY is missing. Helius fallback provider unavailable.");
+    {
+      const heliusMissingDemo = !env.HELIUS_API_KEY || env.HELIUS_API_KEY === "dummy-helius-key";
+      const gmgnPresentDemo = !!(env.GMGN_API_KEY && env.GMGN_API_KEY !== "dummy-gmgn-key");
+      if (heliusMissingDemo && !gmgnPresentDemo) {
+        warnings.push("HELIUS_API_KEY is missing. Security enrichment and wallet checks will be degraded.");
+      } else if (heliusMissingDemo && gmgnPresentDemo) {
+        warnings.push("HELIUS_API_KEY is missing. GMGN active — most enrichment paths covered.");
+      }
+      if (!env.SHYFT_API_KEY && !gmgnPresentDemo) {
+        warnings.push("SHYFT_API_KEY is missing. Helius fallback provider unavailable.");
+      }
     }
   }
 

@@ -16,7 +16,7 @@ describe("getOperationalReadiness", () => {
     expect(readiness.ok).toBe(false);
     expect(readiness.errors).toContain("RPC_URL is not configured.");
     expect(readiness.errors).toContain("No trading wallet is configured.");
-    expect(readiness.errors).toContain("HELIUS_API_KEY is missing.");
+    expect(readiness.errors).toContain("HELIUS_API_KEY is missing and GMGN_API_KEY is not set. At least one data provider is required for live trading.");
   });
 
   it("passes with the minimum live prerequisites and warns about optional safety rails", () => {

@@ -1,9 +1,10 @@
 /**
- * Rug Signal Collector — gathers on-chain + Helius-powered indicators that
+ * Rug Signal Collector — gathers on-chain + behavioural indicators that
  * scoreRugRisk() uses to decide whether to skip a token.
  *
  * Layer 1: Token-2022 mint extension parsing (transfer fee, hook, permanent delegate)
- * Layer 2: Helius-powered behavioural signals (fresh holders, sybil cluster, bundle snipers, wash trades)
+ * Layer 2a: GMGN-powered signals (bundler/sniper/rat tags — primary when key available)
+ * Layer 2b: Helius-powered signals (fresh holders, sybil cluster, bundle snipers — fallback)
  *
  * All checks are best-effort. If a data source fails, we degrade gracefully
  * rather than blocking the entire scoring pipeline.
@@ -11,6 +12,8 @@
 
 import { Connection, PublicKey } from "@solana/web3.js";
 import { log } from "../logger.js";
+import { getTopHolders as gmgnTopHolders, normalizeTopHolder, isGmgnEnabled } from "./gmgn.js";
+import { config } from "../config.js";
 
 const HELIUS_BASE = "https://api.helius.xyz/v0";
 const SHYFT_BASE = "https://api.shyft.to/sol/v1";
@@ -550,58 +553,84 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
   let heliusErrorCount = 0;
   let shyftFallbackUsed = false;
   let shyftReason = null;
+  let gmgnUsed = false;
 
-  if (dexscreenerOnly) {
-    // DexScreener-only mode — skip all Helius/Shyft wallet analysis.
-    // Only DexScreener-derived metrics (LP lock, wash trade, holder conc).
-    heliusDegraded = false;
-    heliusReason = "dexscreener_only_mode";
-  } else if (heliusExpected && heliusCircuitOpen()) {
-    // Try Shyft fallback first.
-    const shyftKey = process.env.SHYFT_API_KEY;
-    if (shyftKey && holderOwners.length > 0) {
-      let shyftError = null;
-      try {
-        const shyftResult = await getFreshFundedCountShyft(mint, shyftKey);
-        shyftError = shyftResult?._error ? new Error(shyftResult._error) : null;
-        if (shyftResult == null || shyftResult === 0 || Number(shyftResult?.fresh_funded_holders || 0) === 0 || shyftError) {
-          heliusDegraded = true;
-          heliusReason = "Helius circuit open, Shyft fallback degraded";
-          shyftReason = shyftError?.message || "empty_response";
-        } else {
-          fresh = shyftResult;
-          shyftFallbackUsed = true;
-          heliusReason = "helius_circuit_open:shyft_fallback_used";
-          log("rug_signal_info", `Shyft fallback: fresh_funded=${fresh.fresh_funded_holders}`);
-        }
-      } catch (e) {
-        shyftError = e;
-        heliusDegraded = true;
-        heliusReason = `Helius circuit open, Shyft fallback failed: ${e.message}`;
-        shyftReason = shyftError?.message || "empty_response";
+  // ── Layer 2a: GMGN-powered signals (primary — no rate-limit cost on Helius) ──
+  // GMGN top-holder tags encode exactly what Helius txn-parsing was computing:
+  //   bundler → wallet funded by same parent in short window (fresh + sybil)
+  //   sniper  → wallet bought in first seconds after pool creation (bundle buyer)
+  //   rat     → known pump-and-dump wallet (extra fresh-funded signal)
+  if (!dexscreenerOnly && isGmgnEnabled() && config.gmgn?.rugSignals !== false) {
+    try {
+      const gmgnHolders = await gmgnTopHolders(mint, 20);
+      if (Array.isArray(gmgnHolders) && gmgnHolders.length > 0) {
+        const norm = gmgnHolders.map(normalizeTopHolder);
+        const bundlers = norm.filter(h => h.tags.bundler);
+        const snipers  = norm.filter(h => h.tags.sniper);
+        const rats     = norm.filter(h => h.tags.rat);
+
+        // fresh_funded: bundlers + rats are wallets created/funded close to launch
+        fresh = { fresh_funded_holders: bundlers.length + rats.length, scanned: norm.length, _source: "gmgn" };
+        // same_funder: bundlers are clustered by common funder by definition
+        sybil = { same_funder_holders: bundlers.length, common_funder: null, scanned: norm.length, _source: "gmgn" };
+        // bundle_buyers: snipers bought in the first window after launch
+        const snipedPct = snipers.reduce((sum, h) => sum + (Number(h.pct) || 0), 0);
+        bundle = { bundle_buyers_pct: Math.min(100, Math.round(snipedPct)), bundle_wallets: snipers.length, _source: "gmgn" };
+
+        gmgnUsed = true;
+        heliusReason = "gmgn_primary";
       }
-    } else {
-      heliusDegraded = true;
-      heliusReason = "Helius circuit open, no Shyft key configured";
+    } catch (e) {
+      log("rug_signal_warn", `GMGN rug signals ${mint.slice(0, 8)}: ${e.message}`);
     }
   }
 
-  if (!dexscreenerOnly && !shyftFallbackUsed && !heliusDegraded && heliusOK && holderOwners.length > 0) {
-    fresh = await getFreshFundedCount(holderOwners, apiKey, launchTs || Math.floor(Date.now() / 1000));
-    sybil = await getSameFunderCluster(holderOwners, apiKey);
-    heliusErrorCount += Number(fresh?._error_count || 0) + Number(sybil?._error_count || 0);
-    heliusReason = fresh?._error || sybil?._error || heliusReason;
-    if ((Number(fresh?._error_count || 0) > 0 && Number(fresh?.scanned || 0) === 0) ||
-        (Number(sybil?._error_count || 0) > 0 && Number(sybil?.scanned || 0) === 0)) {
-      heliusDegraded = true;
+  // ── Layer 2b: Helius fallback (only when GMGN unavailable or returned empty) ──
+  if (!dexscreenerOnly && !gmgnUsed) {
+    if (heliusExpected && heliusCircuitOpen()) {
+      // Helius circuit open — try Shyft fallback for fresh-funded check only
+      const shyftKey = process.env.SHYFT_API_KEY;
+      if (shyftKey && holderOwners.length > 0) {
+        try {
+          const shyftResult = await getFreshFundedCountShyft(mint, shyftKey);
+          const shyftErr = shyftResult?._error ? new Error(shyftResult._error) : null;
+          if (!shyftErr && shyftResult?.fresh_funded_holders != null) {
+            fresh = shyftResult;
+            shyftFallbackUsed = true;
+            heliusReason = "helius_circuit_open:shyft_fallback_used";
+          } else {
+            heliusDegraded = true;
+            heliusReason = "Helius circuit open, Shyft fallback degraded";
+            shyftReason = shyftErr?.message || "empty_response";
+          }
+        } catch (e) {
+          heliusDegraded = true;
+          heliusReason = `Helius circuit open, Shyft fallback failed: ${e.message}`;
+          shyftReason = e.message;
+        }
+      } else {
+        heliusDegraded = true;
+        heliusReason = "Helius circuit open, no Shyft key configured";
+      }
     }
-  }
-  if (!dexscreenerOnly && !shyftFallbackUsed && !heliusDegraded && heliusOK && launchTs) {
-    bundle = await getBundleBuyersPct(mint, apiKey, launchTs);
-    if (bundle?._error) {
-      heliusDegraded = true;
-      heliusReason = bundle._error;
-      heliusErrorCount += 1;
+
+    if (!shyftFallbackUsed && !heliusDegraded && heliusOK && holderOwners.length > 0) {
+      fresh = await getFreshFundedCount(holderOwners, apiKey, launchTs || Math.floor(Date.now() / 1000));
+      sybil = await getSameFunderCluster(holderOwners, apiKey);
+      heliusErrorCount += Number(fresh?._error_count || 0) + Number(sybil?._error_count || 0);
+      heliusReason = fresh?._error || sybil?._error || heliusReason;
+      if ((Number(fresh?._error_count || 0) > 0 && Number(fresh?.scanned || 0) === 0) ||
+          (Number(sybil?._error_count || 0) > 0 && Number(sybil?.scanned || 0) === 0)) {
+        heliusDegraded = true;
+      }
+    }
+    if (!shyftFallbackUsed && !heliusDegraded && heliusOK && launchTs) {
+      bundle = await getBundleBuyersPct(mint, apiKey, launchTs);
+      if (bundle?._error) {
+        heliusDegraded = true;
+        heliusReason = bundle._error;
+        heliusErrorCount += 1;
+      }
     }
   }
 
@@ -615,10 +644,11 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
     ...bundle,
     ...lp,
     ...wash,
-    _helius_used: dexscreenerOnly ? false : heliusOK,
+    _gmgn_used: gmgnUsed,
+    _helius_used: dexscreenerOnly ? false : (!gmgnUsed && heliusOK),
     _helius_expected: dexscreenerOnly ? false : heliusExpected,
     _helius_degraded: heliusDegraded,
-    _data_quality: dexscreenerOnly ? "dexscreener" : (heliusDegraded ? "degraded" : "full"),
+    _data_quality: dexscreenerOnly ? "dexscreener" : gmgnUsed ? "gmgn" : (heliusDegraded ? "degraded" : "full"),
     _helius_reason: heliusReason,
     _shyft_reason: shyftReason,
     _helius_error_count: heliusErrorCount,

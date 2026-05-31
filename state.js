@@ -15,7 +15,7 @@ import { log } from "./logger.js";
 import { atomicWriteJsonAsync } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const STATE_FILE = path.join(__dirname, "state.json");
+const STATE_FILE = process.env.PONYOU_STATE_FILE || path.join(__dirname, "state.json");
 
 const MAX_RECENT_EVENTS = 20;
 const MAX_INSTRUCTION_LENGTH = 280;

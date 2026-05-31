@@ -12,6 +12,7 @@
 import { listSmartWallets } from "../smart-wallets.js";
 import { config } from "../config.js";
 import { log } from "../logger.js";
+import { getSmartMoneyWallets, getKolWallets, getWalletStats, isGmgnEnabled } from "./gmgn.js";
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -54,6 +55,60 @@ export function getPriorityWallets(minWinRate = null) {
       lastActive: w.last_active || null,
     }))
     .sort((a, b) => b.winRate - a.winRate || b.realizedPnlSol - a.realizedPnlSol);
+}
+
+/**
+ * Fetch live GMGN smart money + KOL wallets that meet priority threshold.
+ * GMGN's smartmoney/kol endpoints are ACTIVITY FEEDS with no win rate, so we
+ * derive distinct wallets, then enrich the most-active ones via wallet_stats
+ * (where the real 0–1 win rate + USD PnL live) before applying the threshold.
+ *
+ * NOTE: realizedPnlUsd is in USD (GMGN's unit), not SOL.
+ *
+ * @param {number} [minWinRate=0.70]
+ * @returns {Promise<Array>}
+ */
+export async function getGmgnPriorityWallets(minWinRate = null) {
+  if (!isGmgnEnabled() || config.gmgn?.copyTrade === false) return [];
+  const threshold = minWinRate ?? config.copyTrade?.minWalletWinRate ?? 0.70;
+  // Cap enrichment: each wallet_stats call is rate-gated (~300ms) but cached
+  // 15min, so warm calls are cheap; the cap bounds cold-cache latency.
+  const enrichCap = config.gmgn?.enrichCap ?? 25;
+
+  try {
+    const [smartMoney, kols] = await Promise.all([
+      getSmartMoneyWallets(100),
+      getKolWallets(50),
+    ]);
+    const feed = [
+      ...(Array.isArray(smartMoney) ? smartMoney : []),
+      ...(Array.isArray(kols) ? kols : []),
+    ].filter(w => w.address);
+
+    // Enrich the most-active wallets only (each stat call is rate-gated).
+    const out = [];
+    for (const w of feed.slice(0, enrichCap)) {
+      const stats = await getWalletStats(w.address, "30d");
+      const s = Array.isArray(stats) ? stats[0] : stats;
+      const winRate = s?.winRate ?? 0;
+      if (winRate < threshold) continue;
+      out.push({
+        address: w.address,
+        label: w.label || `gmgn_${w.type}`,
+        winRate,
+        totalTrades: s?.tradeCount ?? 0,
+        realizedPnlUsd: s?.realizedPnlUsd ?? 0,
+        followMode: "shadow",
+        isPriority: true,
+        lastActive: s?.lastActive ?? null,
+        source: w.source || `gmgn_${w.type}`,
+      });
+    }
+    return out.sort((a, b) => b.winRate - a.winRate || b.realizedPnlUsd - a.realizedPnlUsd);
+  } catch (e) {
+    log("copy_trade_warn", `GMGN priority wallets fetch failed: ${e.message}`);
+    return [];
+  }
 }
 
 // ─── Copy Trade Config ─────────────────────────────────

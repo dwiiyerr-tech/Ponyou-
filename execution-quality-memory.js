@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const EXEC_FILE = path.join(__dirname, "execution-quality.json");
+const EXEC_FILE = process.env.PONYOU_EXEC_QUALITY_FILE || path.join(__dirname, "execution-quality.json");
 const DECAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function clamp(value, min, max) {

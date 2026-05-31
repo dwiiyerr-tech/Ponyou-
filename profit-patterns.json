@@ -75,15 +75,16 @@
         "fast_pump"
       ],
       "temporal": {
-        "hour_utc": 19,
-        "day_of_week": 4,
+        "hour_utc": 3,
+        "day_of_week": 5,
         "is_weekend": false,
-        "session": "new_york"
+        "session": "asia"
       },
-      "recorded_at": "2026-05-28T19:06:28.792Z"
+      "recorded_at": "2026-05-29T03:53:53.453Z"
     }
   ],
-  "last_updated": "2026-05-28T19:06:28.792Z",
+  "last_updated": "2026-05-29T03:53:53.453Z",
   "total_wins": 1,
-  "avg_pnl": 55
+  "avg_pnl": 55,
+  "_v": 1
 }

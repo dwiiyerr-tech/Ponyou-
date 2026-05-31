@@ -1,3 +1,9 @@
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const _MODE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
 export function normalizeBooleanFlag(value) {
   if (value === true || value === false) return value;
   if (typeof value === "number") return value !== 0;
@@ -6,6 +12,68 @@ export function normalizeBooleanFlag(value) {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return null;
+}
+
+/**
+ * DEMO_STRICT_GATES — opt-in fidelity switch. When ON (demo only), the live
+ * execution gates also run in demo:
+ *   • confirmMode parking — BUYs are parked as pending intents needing /yes
+ *   • balance safety-check — verifies the (virtual) balance covers amount+gas
+ * so the approval flow and safety gate get exercised against the virtual
+ * balance. OFF by default (demo stays fast/frictionless). Callers already
+ * guard on DRY_RUN, so this only takes effect in demo.
+ */
+export function demoStrictGates() {
+  return normalizeBooleanFlag(process.env.DEMO_STRICT_GATES) === true;
+}
+
+/**
+ * Learning / trade-outcome stores to ISOLATE in paper mode so simulated trades
+ * never pollute the live decision corpus. Map: env override → default filename.
+ * (Stores that already read these env vars need no change; the rest get a
+ * one-line `process.env.X || default` added.)
+ *
+ * Pure-market observations (smart-wallet-history) and ops counters (metrics) are
+ * intentionally LEFT SHARED — they're real on-chain data, mode-independent.
+ */
+export const PAPER_REDIRECT_STORES = {
+  PONYOU_STATE_FILE:             "state.json",              // open positions
+  PONYOU_CONVICTION_FILE:        "coin-conviction.json",
+  PONYOU_PROFIT_PATTERNS_FILE:   "profit-patterns.json",
+  PONYOU_LOSS_PATTERNS_FILE:     "loss-patterns.json",
+  PONYOU_LESSONS_FILE:           "lessons.json",
+  PONYOU_PERF_FILE:              "performance.json",
+  PONYOU_DARWIN_FILE:            "darwin-weights.json",
+  PONYOU_RUG_MEMORY_FILE:        "rug-memory.json",
+  PONYOU_RUG_PATTERNS_FILE:      "rug-patterns-learned.json",
+  PONYOU_REGIME_FILE:            "regime-memory.json",
+  PONYOU_TRADE_ATTRIBUTION_FILE: "trade-attribution.json",
+  PONYOU_EXEC_QUALITY_FILE:      "execution-quality.json",
+  PONYOU_DAILY_GUARD_STATE:      "daily-trade-guard-state.json",
+  PONYOU_PLAN_FILE:              "trading-plan.json",
+  // Safety state: recordSwapOutcome() runs in demo too, so a paper-trade
+  // losing streak must NOT trip the live kill-switch / daily guard.
+  PONYOU_KILL_SWITCH_STATE:      "kill-switch-state.json",
+  PONYOU_KILL_SWITCH_FLAG:       "kill-switch.flag",
+};
+
+/**
+ * When paper mode is active (demo + PAPER_TRADING not disabled), point every
+ * learning/trade store at a `demo/` subdir — UNLESS the env var is already set
+ * (test isolation wins). Returns the demo dir, or null when not applied.
+ *
+ * Must run before any store evaluates its path const; callers ensure config.js
+ * (which calls this via applyExecutionMode) loads first.
+ */
+export function applyPaperDataRedirect({ isDemo, env = process.env, baseDir = _MODE_DIR } = {}) {
+  const paperActive = !!isDemo && normalizeBooleanFlag(env.PAPER_TRADING) !== false;
+  if (!paperActive) return null;
+  const dir = path.join(baseDir, "demo");
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* best-effort */ }
+  for (const [k, fname] of Object.entries(PAPER_REDIRECT_STORES)) {
+    if (!env[k]) env[k] = path.join(dir, fname); // ||= : explicit override wins
+  }
+  return dir;
 }
 
 const DEVNET_RPC = "https://api.devnet.solana.com";
@@ -112,6 +180,9 @@ export function applyExecutionMode(options = {}) {
   } else {
     process.env.DRY_RUN = "false";
   }
+
+  // Isolate paper-trade learning into demo/ so it never pollutes live stores.
+  applyPaperDataRedirect({ isDemo: resolved.isDemo, env: process.env });
 
   return resolved;
 }

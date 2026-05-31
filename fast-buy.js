@@ -28,6 +28,7 @@ import {
 } from "./metrics.js";
 import { log } from "./logger.js";
 import { config } from "./config.js";
+import { demoStrictGates } from "./runtime-mode.js";
 import { recordExecutionQuality } from "./execution-quality-memory.js";
 
 const DEFAULT_GATE = {
@@ -105,7 +106,9 @@ export async function executeFastBuy({
     return { success: false, error: "deployAmountSol must be > 0" };
   }
 
-  if (config.trading?.confirmMode && process.env.DRY_RUN !== "true") {
+  // confirmMode blocks live BUYs; also blocks demo BUYs when strict gates are on
+  // (so the approval flow gets exercised in demo).
+  if (config.trading?.confirmMode && (process.env.DRY_RUN !== "true" || demoStrictGates())) {
     recordCounter("fast_buy_blocked_confirm_mode");
     return {
       success: false,
@@ -336,7 +339,6 @@ export async function runFastTrackBatch({
         break;
       }
     }
-    if (!castNetUsed && executionSlots.length === 0) remaining.push(token);
   }
 
   return { deployed, remaining, skipped };

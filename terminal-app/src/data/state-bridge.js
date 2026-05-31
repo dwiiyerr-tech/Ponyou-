@@ -60,6 +60,31 @@ function safeReadCached(fpath, fallback) {
   } catch { return fallback; }
 }
 
+// ── Demo-redirect awareness ──
+// In paper mode the bot isolates learning/trade stores into demo/ (see
+// runtime-mode.js applyPaperDataRedirect). This monitor is a SEPARATE process
+// without the PONYOU_*_FILE env, so it detects paper mode from user-config and
+// reads the demo/ copies — otherwise it shows an empty live corpus while the
+// bot is actively paper-trading. Must mirror runtime-mode's PAPER_REDIRECT_STORES.
+const REDIRECTED_STORES = new Set([
+  'state.json', 'coin-conviction.json', 'regime-memory.json',
+  'execution-quality.json', 'lessons.json', 'trading-plan.json',
+]);
+
+function isPaperMode(config) {
+  const mode = String(config?.executionMode || '').toLowerCase();
+  const demo = mode === 'demo' || mode === 'dry' || mode === 'dry-run' || config?.dryRun === true;
+  if (!demo) return false;
+  return config?.paperTrading !== false; // default ON in demo
+}
+
+// Resolve a store filename to its real path, honoring the demo/ redirect.
+function storePath(name, paper) {
+  return (paper && REDIRECTED_STORES.has(name))
+    ? resolve(ROOT, 'demo', name)
+    : resolve(ROOT, name);
+}
+
 // ── WebSocket connect ──
 export async function connectWebSocket(port = 3000) {
   if (_ws || _stopped) return;
@@ -147,36 +172,70 @@ export function readPonyouState() {
 
   // Supplement with file data that WS may not include
   const config = safeRead(resolve(ROOT, 'user-config.json'), {});
+  const paper = isPaperMode(config); // demo → read the isolated demo/ stores
   const metrics = safeRead(resolve(ROOT, 'metrics.json'), {});
   const marketIntel = safeRead(resolve(ROOT, 'market-heatmap-state.json'), {});
-  const observedTokens = safeReadCached(resolve(ROOT, 'observed-tokens.json'), []);
-  const smartWallets = safeReadCached(resolve(ROOT, 'smart-wallets.json'), []);
-  const lessons = safeReadCached(resolve(ROOT, 'lessons.json'), []);
-  const regimeMemory = safeRead(resolve(ROOT, 'regime-memory.json'), {});
-  const executionQuality = safeRead(resolve(ROOT, 'execution-quality.json'), {});
+  const smartWalletsRaw = safeReadCached(storePath('smart-wallets.json', false), {});
+  // smart-wallets.json is an OBJECT keyed by address — normalize to an array.
+  const smartWallets = Array.isArray(smartWalletsRaw)
+    ? smartWalletsRaw
+    : Object.entries(smartWalletsRaw || {}).map(([address, w]) => ({ address, ...(w || {}) }));
+  const lessons = safeReadCached(storePath('lessons.json', paper), []);
+  const regimeMemory = safeRead(storePath('regime-memory.json', paper), {});
+  const executionQuality = safeRead(storePath('execution-quality.json', paper), {});
   // Closed positions archive can be many MB; cache by mtime so we don't
   // re-parse on every 1s render.
   const closedPositions = safeReadCached(resolve(ROOT, 'closed-positions-archive.json'), []);
   const automationState = safeRead(resolve(ROOT, 'automation-state.json'), {});
-  const conviction = safeRead(resolve(ROOT, 'coin-conviction.json'), {});
+  const conviction = safeRead(storePath('coin-conviction.json', paper), {});
   const lastReport = safeRead(resolve(ROOT, 'last-report.json'), {});
   const narrative = safeRead(resolve(ROOT, 'narrative-velocity.json'), {});
   const activeStrategy = safeRead(resolve(ROOT, 'active-strategy.json'), {});
+  // Social/Telegram hunter signals (source: telegram=channel calls, reddit,
+  // coingecko, dexscreener, discord, nitter). Written by social-hunter.js +
+  // telegram-user-client.js call handler. Not redirected (market data).
+  const socialCache = safeReadCached(resolve(ROOT, 'social-signals.json'), {});
+  const socialSignals = (Array.isArray(socialCache?.signals) ? socialCache.signals : [])
+    .map(s => ({
+      symbol: s.symbol || '?',
+      source: s.source || 'social',
+      score: s.socialScore ?? 0,
+      mentions: s.mentions ?? 0,
+      mint: s.mint || null,
+    }))
+    .sort((a, b) => (b.score || 0) - (a.score || 0));
+
+  // "Observed tokens" — observed-tokens.json is dead (nothing writes it). Derive
+  // the recent-tokens panel from the live conviction corpus instead.
+  const observedTokens = Object.entries(conviction.coins || {})
+    .map(([mint, c]) => ({
+      symbol: (c.symbol || mint).slice(0, 8),
+      mint,
+      score: Math.round(c.conviction_score ?? c.score ?? 0),
+      seen: c.observations ?? c.times_seen ?? 0,
+      lastSeen: c.last_seen || c.updated_at || null,
+    }))
+    .sort((a, b) => (new Date(b.lastSeen || 0)) - (new Date(a.lastSeen || 0)));
 
   // Positions from WS or file state
   const wsPositions = ws.positions || [];
-  const fileState = safeRead(resolve(ROOT, 'state.json'), {});
+  const fileState = safeRead(storePath('state.json', paper), {});
+  // Schema (state.js trackPosition): key off `closed` (boolean, NOT `status`),
+  // mint is `position`, symbol in signal_snapshot/pool_name, size is amount_sol,
+  // pnl is peak_pnl_pct, age derived from deployed_at.
   const filePositions = Object.entries(fileState.positions || {})
-    .filter(([, v]) => v && v.status !== 'closed')
+    .filter(([, v]) => v && !v.closed)
     .map(([k, v]) => ({
-      sym: (v.symbol || k).slice(0, 8),
-      side: v.side || 'BUY',
-      entry: v.entryPrice || 0,
-      current: v.currentPrice || v.entryPrice || 0,
-      pnlPct: v.pnlPct || 0,
-      size: v.sizeSol || v.amountSol || 0,
-      risk: v.riskLevel || 'MED',
-      age: v.holdDuration || '--',
+      sym: (v.signal_snapshot?.symbol || v.pool_name || v.symbol || v.position || k).slice(0, 8),
+      side: 'BUY',
+      entry: v.signal_snapshot?.entry_price || 0,
+      current: 0,
+      pnlPct: v.peak_pnl_pct || 0,
+      size: v.amount_sol || 0,
+      risk: (v.signal_snapshot?.rug_score >= 60 ? 'HIGH' : v.signal_snapshot?.rug_score >= 30 ? 'MED' : 'LOW'),
+      age: v.deployed_at
+        ? Math.round((Date.now() - new Date(v.deployed_at).getTime()) / 60000) + 'm'
+        : '--',
     }));
 
   const openPositions = wsPositions.length > 0
@@ -198,6 +257,7 @@ export function readPonyouState() {
   return {
     agentName: config.agentName || 'ponyou-agent',
     mode: config.executionMode || 'demo',
+    paper, // paper-trading active (virtual balance + demo/ isolated stores)
     strategy: config.strategy || 'scalping',
     network: 'Solana',
     balance,
@@ -214,7 +274,7 @@ export function readPonyouState() {
     walletStatus: config.walletAddress ? 'connected' : 'disabled',
     scanRate: metrics.scansPerMinute || 0,
     watchlistCount: smartWallets.length || 0,
-    signalCount: metrics.signalsToday || 0,
+    signalCount: metrics.signalsToday || socialSignals.length || 0,
     nextScanSec: 8,
     version: '2.0.0',
     sessionId: (fileState.sessionId || '').slice(0, 12),
@@ -237,8 +297,11 @@ export function readPonyouState() {
 
     // Supplementary data
     observedTokens: (Array.isArray(observedTokens) ? observedTokens : []).slice(0, 10),
-    recentTokens: (Array.isArray(observedTokens) ? observedTokens : []).slice(-6),
+    recentTokens: (Array.isArray(observedTokens) ? observedTokens : []).slice(0, 6),
     smartWallets: (Array.isArray(smartWallets) ? smartWallets : []).slice(0, 20),
+    socialSignals: socialSignals.slice(0, 12), // hunters-social + telegram/discord calls
+    // Telegram user-client status (live via WS; file mode only knows bot polling).
+    telegram: ws.telegram || { enabled: false, connected: false, bot_polling: !!automationState.telegramPolling },
     lessons: (Array.isArray(lessons) ? lessons : []).slice(-5),
     regimeMemory,
     marketIntel,

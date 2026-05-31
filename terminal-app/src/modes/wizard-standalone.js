@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // PONYOU Setup Wizard — minimalist full-featured config
-// ponyou wizard  ▸  12 sections  ▸  writes user-config.json
+// ponyou wizard  ▸  13 sections  ▸  writes user-config.json
 
 import blessed from 'blessed';
 import { readFileSync, existsSync, writeFileSync } from 'fs';
@@ -141,6 +141,7 @@ const SECTIONS = [
       { key: 'rpcUrl',            label: 'RPC URL',             hint: 'Helius, QuickNode, or Triton endpoint', type: 'text' },
       { key: 'walletKey',         label: 'Wallet Private Key',  hint: 'Base58 encoded · stored locally only',  type: 'secret' },
       { key: 'shyftApiKey',       label: 'Shyft API Key',       hint: 'Required for on-chain data queries',    type: 'secret' },
+      { key: 'gmgnApiKey',        label: 'GMGN API Key',        hint: 'Optional · smart money, KOL & trending data', type: 'secret' },
       { key: 'telegramBotToken',  label: 'Telegram Bot Token',  hint: 'Optional · for Telegram trade alerts',  type: 'secret' },
       { key: 'telegramChatId',    label: 'Telegram Chat ID',    hint: 'Optional · your Telegram chat ID',      type: 'text' },
     ],
@@ -153,6 +154,15 @@ const SECTIONS = [
       { value: 'demo',   label: 'Demo',   desc: 'Paper trading · no real SOL spent · uses live mainnet data' },
       { value: 'live',   label: 'Live',   desc: 'Real trades on mainnet · spends real SOL' },
       { value: 'devnet', label: 'Devnet', desc: 'Free devnet SOL · for testing only' },
+    ],
+  },
+  {
+    id: 'paper', label: 'Paper Trading', icon: '◈', type: 'fields',
+    description: 'Demo virtual balance — runs the full buy→exit loop with no real SOL (demo mode only)',
+    fields: [
+      { key: 'paperTrading',    label: 'Virtual Balance',  hint: 'Demo uses fake SOL so trades actually run. Off = demo reads a real funded wallet.', type: 'toggle', default: true },
+      { key: 'paperStartSol',   label: 'Starting SOL',     hint: 'Virtual capital for paper trading (demo only)',                                       type: 'number', default: 5 },
+      { key: 'demoStrictGates', label: 'Strict Gates',     hint: 'Run confirmMode approval + balance safety-check in demo too (1:1 with live)',         type: 'toggle', default: false },
     ],
   },
   {

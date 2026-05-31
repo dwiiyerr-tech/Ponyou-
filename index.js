@@ -1,4 +1,9 @@
 import "dotenv/config";
+// MUST be the first project import: config.js runs applyExecutionMode(), which
+// (in paper mode) redirects learning/trade stores into demo/. This has to happen
+// before any store module evaluates its path const — several stores load via
+// tools/wallet.js below, ahead of the named config import further down.
+import "./config.js";
 import cron from "node-cron";
 import readline from "readline";
 import { createRugCircuitBreaker } from "./rug-circuit-breaker.js";
@@ -111,8 +116,11 @@ import {
 } from "./learning-continuous.js";
 import {
   getCoinConviction, recordCoinObservation, recordObservationOutcomes, recordTradeConvictionOutcome,
-  getNarrativeConviction, getProfitPatternSummary, getConvictionPromptLine,
+  getNarrativeConviction, getProfitPatternSummary, getConvictionPromptLine, getRecentProfitMints,
 } from "./conviction-memory.js";
+import { runCodifierCycle, promoteSkillWithApproval, buildApprovalRequest } from "./agents/skill-codifier.js";
+import { listStrategySkills, setStrategySkillStatus, bootstrapFromPresets } from "./strategy-skills.js";
+import { loadTrades } from "./backtest-data/loader.js";
 import {
   buildTokenRegime, getRegimeAssessment, recordRegimeObservation, recordRegimeTradeOutcome,
 } from "./regime-memory.js";
@@ -136,6 +144,7 @@ import { getRugCheckReport, rugCheckToSignals } from "./tools/rugcheck.js";
 import { blacklistDev, checkDevBlacklist, getDevBlacklist } from "./tools/dev-blacklist.js";
 import { recordNarrativeOutcome, detectNarrativeVelocity, trackCrossBatchVelocity, getCrossBatchVelocity } from "./tools/narratives.js";
 import { aggregateSignal } from "./signal-aggregator.js";
+import { computePortfolioDecision, rebalancePortfolioBook, recordSkillAttribution } from "./agents/portfolio-manager.js";
 import { registerDefaultFeatures, runAllFeatures, listFeatures, getHealthSummary, enableFeature, disableFeature, autoResetBreakers } from "./feature-registry.js";
 import { analyzeCabalPlay, CabalAgentAction } from "./tools/cabal-play-analyzer.js";
 import { runAllMaintenance } from "./data-maintenance.js";
@@ -156,7 +165,7 @@ import {
   analyzeMomentum, checkEntryConfirmation, adjustSizeByRSI,
   checkTrendBreakExit, getMomentumScore,
 } from "./momentum-analysis.js";
-import { resolveExecutionMode } from "./runtime-mode.js";
+import { resolveExecutionMode, demoStrictGates } from "./runtime-mode.js";
 import {
   recordTrade as recordTradingPlanTrade, isSessionComplete,
   getTradingPlanStatus, resetTradingPlan, isTradingPlanEnabled,
@@ -187,6 +196,16 @@ import { isPartialTPLanded, markPartialTPLanded, clearPartialTPGuard } from "./p
 log("startup", "Ponyou AI Agent starting...");
 const executionMode = resolveExecutionMode();
 log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " — paper trading (mainnet data, simulated execution, no real SOL)" : " — live mainnet (real SOL)"}`);
+import("./paper-wallet.js").then(({ isPaperMode, getPaperStartSol }) => {
+  if (isPaperMode()) {
+    log("startup", `📝 PAPER WALLET active — virtual balance ${getPaperStartSol()} SOL (fake). Trades simulate; balance derives from open positions.`);
+    log("startup", "🧪 Learning isolated to demo/ — paper trades train a separate corpus; live memory untouched.");
+  }
+  // Independent of paper mode: strict gates can be on with a real-wallet demo too.
+  if (executionMode.isDemo && demoStrictGates()) {
+    log("startup", "🔒 DEMO_STRICT_GATES on — confirmMode approval + balance safety-check run in demo (live-fidelity).");
+  }
+}).catch(() => {});
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
 
 // Devnet faucet: auto-fund wallet with devnet SOL only when using devnet RPC.
@@ -340,6 +359,17 @@ initOrchestratorAgent({
 setFullAutomationMode(true); // Enable full automation
 
 setAgentStatus("orchestrator", "running", "Orchestrator active — full automation workflow");
+// Portfolio book bootstrap (Phase 2) — register the built-in presets as the
+// initial active strategy-skills so the PortfolioManager has a book to run.
+// Guarded by config.portfolio.enabled so the registry stays untouched (feature
+// fully inert) until an operator opts in. Idempotent.
+if (config.portfolio?.enabled) {
+  try {
+    const { added, total } = bootstrapFromPresets();
+    log("portfolio", `book bootstrap: ${added} preset(s) registered (${total} total skills)`);
+  } catch (e) { log("portfolio", `book bootstrap failed: ${e.message}`); }
+}
+
 initProOrchestrator(); // Pro mode — activates after automation approved
 registerAgent("pro-orchestrator", { role: "screening", healthCheck: () => getProDashboard() });
 setAgentStatus("pro-orchestrator", isProModeActive() ? "running" : "stopped",
@@ -672,6 +702,7 @@ async function getPortfolioSnapshot() {
 let _cronTasks = [];
 let _managementBusy = false;
 let _screeningBusy = false;
+let _codifierBusy = false;
 let _lastSolPrice = null;
 // cronStarted is hoisted here so startCronJobs / stopCronJobs (defined below
 // and exported) can safely reference it from another module's evaluation order.
@@ -687,7 +718,13 @@ function withTimeout(promise, ms, label = "op") {
   ]);
 }
 
-const CYCLE_RPC_TIMEOUT_MS = 45_000; // 45s timeout for RPC calls in cron cycles
+const CYCLE_RPC_TIMEOUT_MS = 45_000; // 45s timeout for RPC calls in cron cycles (mgmt)
+// Screening scores up to 8 candidates, each with a sequential getTokenKlines
+// network call; under Helius free-tier rate limiting (429 + backoff) a full
+// cycle legitimately runs past 45s. Give it its own longer budget so a slow-but-
+// healthy cycle isn't flagged as a timeout error. The busy-guard (_screeningBusy)
+// still prevents overlap, and the 5-min cron interval >> this budget.
+const SCREENING_CYCLE_TIMEOUT_MS = 90_000; // 90s timeout for the screening cycle
 
 function stripThink(t) {
   return t ? t.replace(/<think>[\s\S]*?<\/think>/gi, "").trim() : t;
@@ -921,6 +958,52 @@ async function handleStrategyTelegramCommand(text) {
     }
     const parsed = setStrategyOverride(id, key, value);
     await sendHTML(`✅ <code>${id}.${key} = ${parsed}</code> (hot-applied)`);
+    return true;
+  }
+
+  // ─── Strategy-Skill governance (Phase 3 manual approval gate) ──
+  if (cmd === "/skills") {
+    const all = listStrategySkills();
+    if (all.length === 0) { await sendHTML("No strategy-skills registered yet."); return true; }
+    const byStatus = { active: [], shadow: [], draft: [], retired: [] };
+    for (const s of all) (byStatus[s.status] || (byStatus[s.status] = [])).push(s);
+    const lines = ["<b>Strategy-Skills</b>"];
+    for (const st of ["active", "shadow", "draft"]) {
+      const list = byStatus[st] || [];
+      if (list.length === 0) continue;
+      lines.push(`\n<b>${st.toUpperCase()}</b>`);
+      for (const s of list) {
+        const loop = s.provenance?.author === "loop" ? " 🤖" : "";
+        const ready = st === "shadow" && buildApprovalRequest(s.id) ? " ✅<i>ready</i>" : "";
+        lines.push(`• <code>${s.id}</code> w=${(s.weight || 0).toFixed(2)}${loop}${ready}`);
+      }
+    }
+    lines.push(`\nPromote: <code>/promoteskill &lt;id&gt;</code> · Reject: <code>/rejectskill &lt;id&gt;</code>`);
+    await sendHTML(lines.join("\n"));
+    return true;
+  }
+
+  if (cmd === "/promoteskill") {
+    const id = parts[1];
+    if (!id) { await sendHTML("Usage: <code>/promoteskill &lt;id&gt;</code>"); return true; }
+    try {
+      const skill = promoteSkillWithApproval(id, { approved: true });
+      await sendHTML(`✅ Promoted <code>${id}</code> → <b>active</b> @ weight ${skill.weight} (manually approved)`);
+    } catch (e) {
+      await sendHTML(`❌ Cannot promote <code>${id}</code>: ${e.message}`);
+    }
+    return true;
+  }
+
+  if (cmd === "/rejectskill") {
+    const id = parts[1];
+    if (!id) { await sendHTML("Usage: <code>/rejectskill &lt;id&gt;</code>"); return true; }
+    try {
+      setStrategySkillStatus(id, "retired");
+      await sendHTML(`🗑️ Retired <code>${id}</code>`);
+    } catch (e) {
+      await sendHTML(`❌ ${e.message}`);
+    }
     return true;
   }
 
@@ -2540,6 +2623,13 @@ export async function runManagementCycle({ silent = false } = {}) {
           token:        tokenData || {},          // profil lengkap untuk profit fingerprint
           strategy:     tokenData?.strategy_id || null,
         });
+        // Per-skill P&L attribution (Phase 2/3): credit/blame the strategy-skills
+        // that actionably voted for this entry. No-op when the book wasn't active
+        // (empty votes). Feeds the codifier loop + book rebalancing.
+        const skillVotes = tracked?.signal_snapshot?.portfolio_skill_votes;
+        if (Array.isArray(skillVotes) && skillVotes.length > 0) {
+          await recordSkillAttribution({ skillIds: skillVotes, pnlPct: tradePnl, mint: exit.mint, symbol: exit.symbol });
+        }
         // Cumulative PnL tracking
         const tradeUsdDelta = (tracked?.initial_value_usd || 0) > 0
           ? (tracked.initial_value_usd * tradePnl) / 100
@@ -2764,11 +2854,14 @@ TUGAS:
               // accounting entirely instead of guessing.
               const trackedPos = getTrackedPosition(tokenIn, walletAddress);
               const solPriceUsd = Number(remainingBalance?.sol_price) || 0;
-              // result.amount_out is the raw output (lamports for SOL → / 1e9)
+              // result.amount_out is the raw output (lamports for SOL → / 1e9).
+              // Demo returns it raw too (JUP-DRY-1), so the simulated exit PnL is
+              // accurate — the bot LEARNS from paper trades as well as live. We
+              // only require valid entry/exit USD; mode no longer gates learning.
               const exitSolAmount = Number(result.amount_out || 0) / 1e9;
               const exitUsd = exitSolAmount * solPriceUsd;
               const entryUsd = Number(trackedPos?.initial_value_usd) || 0;
-              const canComputePnl = !result.dry_run && entryUsd > 0 && exitUsd > 0;
+              const canComputePnl = entryUsd > 0 && exitUsd > 0;
               const pnlPct = canComputePnl ? ((exitUsd - entryUsd) / entryUsd) * 100 : null;
               const isWin = pnlPct != null ? pnlPct > 0 : null;
 
@@ -2787,7 +2880,7 @@ TUGAS:
                 });
               } else {
                 log("management_warn",
-                  `LLM exit ${tokenIn?.slice(0, 8)}: PnL unavailable (entry=$${entryUsd.toFixed(2)}, exit=$${exitUsd.toFixed(2)}, dry_run=${!!result.dry_run}) — skipping win/loss telemetry`,
+                  `LLM exit ${tokenIn?.slice(0, 8)}: PnL unavailable (entry=$${entryUsd.toFixed(2)}, exit=$${exitUsd.toFixed(2)}) — missing entry/exit value, skipping win/loss telemetry`,
                 );
               }
 
@@ -2972,7 +3065,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const cachedPrey = getCachedPrey();
     if (cachedPrey.length > 0) {
       const before = cappedCandidates.length;
-      cappedCandidates = injectHunterPrey(cappedCandidates, cachedPrey, 10);
+      cappedCandidates = injectHunterPrey(cappedCandidates, cachedPrey, config.hunter?.preyCap ?? 10);
       const hunterPrio = cachedPrey.filter(t => t._hunter_score >= 50).length;
       log("screening", `Hunter injected ${cappedCandidates.length - before} prey (${hunterPrio} priority) → ${cappedCandidates.length} total candidates`);
     }
@@ -3558,6 +3651,39 @@ export async function runScreeningCycle({ silent = false } = {}) {
         flags.push(`Workflow skip: ${workflow.reasons.join(", ") || "caution score terlalu tinggi"}`);
       }
 
+      // ─── Portfolio ensemble shadow-compare (Phase 2) ────────────
+      // When config.portfolio.enabled (default OFF), compute how the parallel
+      // strategy-skill book WOULD have voted vs the live single-strategy
+      // decision. In shadow mode this never acts — it only surfaces the
+      // comparison so the operator can validate before flipping to active.
+      let portfolioShadow = null;
+      if (config.portfolio?.enabled) {
+        try {
+          portfolioShadow = computePortfolioDecision({
+            candidate: {
+              mint: enhancedToken.mint,
+              symbol: token.symbol,
+              mcap_usd: enhancedToken.mcap ?? token.mcap ?? null,
+              holders: enhancedToken.holders ?? token.holders ?? null,
+              age_minutes: token.age_minutes ?? null,
+              flags_count: flags.length,
+              narrative_tags: narrativeTags,
+              conviction,
+            },
+            baseSignal: signal.signal_score,
+            walletSol,
+            openPositions: openTokens.map(t => ({ narrative_tags: t.narrative_tags || [] })),
+          });
+          if (portfolioShadow?.active) {
+            log("portfolio",
+              `shadow-compare ${token.symbol}: book=${portfolioShadow.decision} `
+              + `(ens=${portfolioShadow.ensemble.ensembleScore} agree=${portfolioShadow.ensemble.agreeCount}/${portfolioShadow.ensemble.activeCount}) `
+              + `vs live=${passed ? "BUY" : "SKIP"}`
+            );
+          }
+        } catch (e) { /* shadow-compare is observability-only — never block live */ }
+      }
+
       // ─── Pro Orchestrator BUY Gate ─────────────────────────────
       let proBuySkipped = false;
       if (passed && isProModeActive()) {
@@ -3631,7 +3757,21 @@ export async function runScreeningCycle({ silent = false } = {}) {
         }
       } catch {}
 
-      const finalPassed = passed && !proBuySkipped && !intel.intel_blocked;
+      let finalPassed = passed && !proBuySkipped && !intel.intel_blocked;
+
+      // Portfolio book ACTIVE gate (Phase 2 live cutover). When the book is
+      // live (config.portfolio.enabled + mode "active"), the ensemble becomes
+      // an ADDITIONAL required endorsement: it can only make entries MORE
+      // selective and NEVER bypasses the rug/intel/pro gates above (we already
+      // require the legacy `passed`). Candidates the book doesn't actionably
+      // endorse are held. In shadow mode this is inert (only the log above).
+      if (finalPassed && config.portfolio?.enabled && portfolioShadow?.mode === "active" && !portfolioShadow.actionable) {
+        finalPassed = false;
+        flags.push(
+          `Portfolio book gate: ${portfolioShadow.decision} `
+          + `(ens=${portfolioShadow.ensemble?.ensembleScore} agree=${portfolioShadow.ensemble?.agreeCount}/${portfolioShadow.ensemble?.activeCount})`
+        );
+      }
 
       // ─── G3: Per-coin strategy match ─────────────────────────────
       // Score this candidate against every preset and pick the best fit.
@@ -3702,6 +3842,20 @@ export async function runScreeningCycle({ silent = false } = {}) {
         const sizeMultiplier = Math.max(floor, Math.min(cap, regime.size_multiplier || 1));
         recommendedAmount = Number((preRegimeAmount * sizeMultiplier).toFixed(4));
       }
+      // Portfolio active sizing: when the book is live + actionable, the
+      // ensemble's per-skill capital allocation (already bounded by deploy
+      // floor/ceil in the allocator) drives the position size.
+      if (config.portfolio?.enabled && portfolioShadow?.mode === "active" && portfolioShadow.actionable
+          && portfolioShadow.allocation?.totalSizeSol > 0) {
+        recommendedAmount = Number(portfolioShadow.allocation.totalSizeSol.toFixed(4));
+      }
+      // Skills (active + shadow) whose filters this entry cleared — persisted so
+      // the exit can attribute the trade's P&L back to them. Active skills get
+      // live credit; shadow skills accrue the PAPER sample that earns promotion
+      // (Phase 3 loop input). Empty unless the book is enabled.
+      const portfolioSkillVotes = (portfolioShadow?.ensemble?.perSkill || [])
+        .filter(v => v.passed)
+        .map(v => v.skillId);
 
       scoredCandidates.push({
         ...enhancedToken, ...filterResult,
@@ -3733,6 +3887,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         strategy_match: strategyMatch,
         selected_strategy: strategyMatch?.selected_strategy || getActiveStrategyId(),
         intel,
+        portfolio_skill_votes: portfolioSkillVotes,
       });
     }
 
@@ -3975,6 +4130,11 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                   signal_snapshot: {
                     mint: token.mint,
                     symbol: token.symbol,
+                    // Entry price + token qty: used by paper-wallet for accurate
+                    // virtual holdings, and by live exits (which already look for
+                    // signal_snapshot.entry_price) instead of re-deriving it.
+                    entry_price: token.price || 0,
+                    token_amount: token.price > 0 ? entryUsd / token.price : 0,
                     market_condition: token.market_condition || marketIntel.condition,
                     rug_score: token.rug_score || 0,
                     conviction: token.conviction || null,
@@ -3984,6 +4144,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                     staged_entry: stagedTracking,
                     entry_fee_breakdown: entryFeeBreakdown,
                     entry_dex: token.dex || token.launchpad || "unknown",
+                    portfolio_skill_votes: token.portfolio_skill_votes || [],
                     execution_context: {
                       wallet_address: exec.wallet_address || null,
                       provider: result?.execution_provider || "auto",
@@ -4167,13 +4328,31 @@ async function seedSmartWallets() {
     log("smart_wallets", `Discovered-wallets promotion failed: ${e.message}`);
   }
 
-  // Path 2: Helius-powered discovery (only if API key available)
-  if (process.env.SCREENING_MODE === "dexscreener" || !process.env.HELIUS_API_KEY) {
-    log("smart_wallets", "No Helius — skip live discovery. Run with HELIUS_API_KEY for fresh wallet scanning.");
+  // Path 2: live discovery. Needs a PnL-scoring provider — Helius (tx scoring)
+  // OR GMGN (curated wallet stats + smart-money/KOL sync).
+  const _gmgnOn = !!(process.env.GMGN_API_KEY && process.env.GMGN_API_KEY !== "dummy-gmgn-key");
+  const _heliusOn = !!(process.env.HELIUS_API_KEY && process.env.HELIUS_API_KEY !== "dummy-helius-key");
+  if (process.env.SCREENING_MODE === "dexscreener" && !_gmgnOn) {
+    log("smart_wallets", "DexScreener-only mode, no GMGN — skip live discovery.");
+    return;
+  }
+  if (!_heliusOn && !_gmgnOn) {
+    log("smart_wallets", "No Helius or GMGN — skip live discovery. Set GMGN_API_KEY or HELIUS_API_KEY.");
     return;
   }
 
-  log("smart_wallets", "Running live Helius discovery…");
+  // GMGN seed: sync GMGN's curated smart-money/KOL list (no-op without a key).
+  if (_gmgnOn) {
+    try {
+      const { syncGmgnWallets } = await import("./tools/wallet-discovery.js");
+      const sync = await syncGmgnWallets();
+      if (sync?.added > 0) log("smart_wallets", `GMGN sync: +${sync.added} wallets (${sync.total} candidates)`);
+    } catch (e) {
+      log("smart_wallets", `GMGN sync failed: ${e.message}`);
+    }
+  }
+
+  log("smart_wallets", _heliusOn ? "Running live Helius discovery…" : "Running GMGN-backed discovery…");
   try {
     const result = await discoverSmartWallets({ source_tokens: 5, min_winrate: 0.6, min_trades: 5, auto_add: false });
     if (result.error) { log("smart_wallets", `Auto-seed skipped: ${result.error}`); return; }
@@ -4546,7 +4725,7 @@ export function startCronJobs() {
   // Screening (offset +1 menit dari management agar tidak tabrakan — :01,:31 bukan :00,:30)
   tasks.push(cron.schedule(screeningCronPattern(config.schedule.screeningIntervalMin), async () => {
     try {
-      await withTimeout(runScreeningCycle(), CYCLE_RPC_TIMEOUT_MS, "screening");
+      await withTimeout(runScreeningCycle(), SCREENING_CYCLE_TIMEOUT_MS, "screening");
     } catch (e) { log("screening_cron_error", e.message); }
   }));
 
@@ -4581,6 +4760,15 @@ export function startCronJobs() {
         getStrategyFn: (id, opts) => getStrategy(id, opts),
         getMarketIntelFn: () => getMarketIntelligence(),
       });
+
+      // Portfolio book rebalancing (Phase 2) — opt-in (config.portfolio.enabled,
+      // default OFF). Reweights active strategy-skills by their live/paper
+      // expectancy. Adjusts only registry weights the PortfolioManager reads;
+      // never opens a trade and is inert while the book is in shadow mode.
+      if (config.portfolio?.enabled) {
+        const rb = rebalancePortfolioBook();
+        if (rb.applied) log("portfolio", `book rebalanced: ${rb.count} skill(s) reweighted`);
+      }
     } catch (e) { log("orchestrator_cron_error", e.message); }
   }));
 
@@ -4611,6 +4799,30 @@ export function startCronJobs() {
       const strategy = getStrategy(null, { regime: getMarketIntelligence().condition });
       await runHuntersExpedition({ strategy });
     } catch (e) { log("hunters_cron_error", e.message); }
+  }));
+
+  // Skill-Codifier Loop (Phase 3) — opt-in (config.skillLoop.enabled, default
+  // OFF). Mines winning patterns → authors a loop strategy-skill → backtests it
+  // on REAL OHLCV of recently-profitable tokens → registers SHADOW (paper) if
+  // the scorecard clears the gate. HARD GATE: it NEVER promotes to live capital
+  // — promotion stays a manual, approved-only step.
+  tasks.push(cron.schedule("13,43 * * * *", async () => {
+    if (!config.skillLoop?.enabled || _codifierBusy) return;
+    _codifierBusy = true;
+    try {
+      const report = await runCodifierCycle({
+        loadTradesFn: async () => {
+          const mints = getRecentProfitMints({ limit: 60 });
+          return mints.length ? await loadTrades(mints, { resolution: "5m" }) : [];
+        },
+      });
+      if (report.authored) {
+        log("skill_codifier", `Authored SHADOW skill ${report.skillId} — awaiting paper sample + manual approval`);
+      } else if (report.ran) {
+        log("skill_codifier", `cycle: ${report.reason}`);
+      }
+    } catch (e) { log("skill_codifier_cron_error", e.message); }
+    finally { _codifierBusy = false; }
   }));
 
   // Continuous Learning (setiap 30 menit, offset +2 agar tidak tabrakan)

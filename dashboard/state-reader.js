@@ -7,9 +7,20 @@ let BASE_PATH = path.join(__dirname, "..");
 
 export function _setBasePath(p) { BASE_PATH = p; }
 
+// Stores that get redirected to demo/ in paper mode (runtime-mode.js
+// applyPaperDataRedirect). This reader runs IN the bot process, so the
+// PONYOU_*_FILE env points at the exact file the bot is writing — honor it so
+// the dashboard isn't blind while paper trading.
+const ENV_OVERRIDE = {
+  "state.json": "PONYOU_STATE_FILE",
+  "execution-quality.json": "PONYOU_EXEC_QUALITY_FILE",
+  "trading-plan.json": "PONYOU_PLAN_FILE",
+};
+
 function readJson(filename, fallback = {}) {
   try {
-    const fp = path.join(BASE_PATH, filename);
+    const envVar = ENV_OVERRIDE[filename];
+    const fp = (envVar && process.env[envVar]) || path.join(BASE_PATH, filename);
     if (!fs.existsSync(fp)) return fallback;
     return JSON.parse(fs.readFileSync(fp, "utf8"));
   } catch { return fallback; }
@@ -30,9 +41,17 @@ export async function readBotState() {
   const positions = Object.values(state.positions || {})
     .filter(p => !p?.closed)
     .map(p => ({
-      symbol: p.symbol || "?",
-      mint: p.mint || "",
+      // Schema (state.js trackPosition): mint is `position`, symbol lives in
+      // signal_snapshot/pool_name, and only `peak_pnl_pct` is persisted (live
+      // pnl is computed in the management cycle, not stored here). Top-level
+      // symbol/mint/pnl_pct kept as fallbacks for older snapshots.
+      symbol: p.signal_snapshot?.symbol || p.pool_name || p.symbol || (p.position || "?").slice(0, 8),
+      mint: p.position || p.mint || "",
+      // Do NOT fall back to peak_pnl_pct here: it's monotonic (best-ever), so a
+      // retraced position would render a falsely-positive "current" PnL. Show the
+      // true current pnl (0 when unknown) and expose peak separately.
       pnl_pct: p.pnl_pct ?? 0,
+      peak_pnl_pct: p.peak_pnl_pct ?? null,
       hold_minutes: p.deployed_at
         ? Math.round((Date.now() - new Date(p.deployed_at).getTime()) / 60000)
         : 0,
@@ -43,6 +62,15 @@ export async function readBotState() {
 
   const vaultCfg = cfg.vault?.sweep ?? cfg.vault ?? {};
   const planCfg = cfg.tradingPlan ?? {};
+
+  // Telegram user-client (MTProto) status — logs into the user's account to
+  // watch monitored channels for incoming "calls". Lives in-process, so we read
+  // it live; dynamic import keeps the reader usable in tests without telegram.
+  let telegram = { enabled: false, connected: false };
+  try {
+    const { getUserClientStatus } = await import("../telegram-user-client.js");
+    telegram = { ...getUserClientStatus(), bot_polling: Boolean(state.telegram_polling ?? false) };
+  } catch { /* telegram module/dep unavailable — leave defaults */ }
 
   return {
     bot_running: Boolean(state.cron_started ?? false),
@@ -84,5 +112,6 @@ export async function readBotState() {
       vault_wallet: vaultCfg.vaultWallet ?? cfg.vaultWallet ?? null,
     },
     win_rate: quality.win_rate ?? null,
+    telegram,
   };
 }

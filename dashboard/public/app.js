@@ -17,6 +17,11 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.classList.add("active");
     document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
     if (btn.dataset.tab === "commands") loadPending();
+    if (btn.dataset.tab === "strategylab") {
+      loadPortfolioBook();
+      loadSkillLoop();
+      loadSkillRegistry();
+    }
     if (btn.dataset.tab === "settings") {
       loadQuickConfig();
       loadTrashWallets();
@@ -913,6 +918,78 @@ async function rejectCopySignal(idx) {
   const res = await post("/api/copy-trade", { action: "reject", signalIndex: idx });
   if (res.ok) { loadCopyTradeConfig(); showToast("Copy trade rejected", true); }
   else showToast(res.error || "Failed", false);
+}
+
+// ─── Strategy Lab (Phase 2/3/4) ──────────────────────
+async function loadPortfolioBook() {
+  const el = document.getElementById("portfolioBookPanel");
+  try {
+    const d = await authFetch("/api/portfolio").then(r => r.json());
+    document.getElementById("portfolioMode").textContent = d.enabled ? `· ${d.mode.toUpperCase()}` : "· OFF";
+    const book = d.book || [];
+    if (!d.enabled) { el.innerHTML = `<div style="color:var(--muted);font-size:13px">Portfolio manager disabled (set <code>portfolioEnabled: true</code>).</div>`; return; }
+    if (book.length === 0) { el.innerHTML = `<div style="color:var(--muted);font-size:13px">No skills in the book yet.</div>`; return; }
+    const attr = d.attribution || {};
+    el.innerHTML = book.map(s => {
+      const a = attr[s.id] || {};
+      const stat = a.trades ? ` · ${a.trades}tr WR ${(a.winRate * 100 || 0).toFixed(0)}% exp ${(a.expectancyPct || 0).toFixed(1)}%` : "";
+      return `<div style="display:flex;justify-content:space-between;font-size:13px;padding:.35rem 0;border-bottom:1px solid var(--border)">
+        <span><code>${escHtml(s.id)}</code> <span style="color:var(--muted)">[${s.status}]</span></span>
+        <span>w=${(s.normWeight || 0).toFixed(3)}<span style="color:var(--muted)">${stat}</span></span>
+      </div>`;
+    }).join("");
+  } catch (e) { el.innerHTML = `<div style="color:var(--muted)">Failed to load.</div>`; }
+}
+
+async function loadSkillLoop() {
+  const el = document.getElementById("skillLoopPanel");
+  try {
+    const d = await authFetch("/api/skill-loop").then(r => r.json());
+    document.getElementById("skillLoopMode").textContent = d.enabled ? "· ON" : "· OFF";
+    const skills = d.shadowSkills || [];
+    if (skills.length === 0) { el.innerHTML = `<div style="color:var(--muted);font-size:13px">No loop-authored shadow skills yet.</div>`; return; }
+    el.innerHTML = skills.map(s => {
+      const paper = s.paper || {};
+      const ready = (paper.trades || 0) >= (d.minShadowSample || 30);
+      return `<div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
+        <div style="font-size:13px"><code>${escHtml(s.id)}</code> 🤖 ${ready ? "✅<i>ready</i>" : `<span style="color:var(--muted)">${paper.trades || 0}/${d.minShadowSample} paper</span>`}</div>
+        <div style="font-size:12px;color:var(--muted)">parent: ${(s.parent_skills || []).join(", ") || "—"} · scorecard n=${s.scorecard_sample || 0}</div>
+        <div style="display:flex;gap:.5rem;margin-top:.35rem">
+          <button class="btn primary" onclick="promoteSkill('${escHtml(s.id)}')" ${ready ? "" : "disabled"}>Promote</button>
+          <button class="btn" onclick="rejectSkill('${escHtml(s.id)}')">Reject</button>
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) { el.innerHTML = `<div style="color:var(--muted)">Failed to load.</div>`; }
+}
+
+async function promoteSkill(id) {
+  const res = await post("/api/skill-loop/action", { action: "promote", skillId: id });
+  if (res.ok) { loadSkillLoop(); loadPortfolioBook(); showToast(`✅ Promoted ${id} → active @ ${res.weight}`, true); }
+  else showToast(res.error || "Promote failed", false);
+}
+
+async function rejectSkill(id) {
+  const res = await post("/api/skill-loop/action", { action: "reject", skillId: id });
+  if (res.ok) { loadSkillLoop(); showToast(`🗑️ Retired ${id}`, true); }
+  else showToast(res.error || "Reject failed", false);
+}
+
+async function loadSkillRegistry() {
+  const el = document.getElementById("skillRegistryPanel");
+  try {
+    const d = await authFetch("/api/skill-registry").then(r => r.json());
+    const imported = d.imported || [];
+    if (imported.length === 0) { el.innerHTML = `<div style="color:var(--muted);font-size:13px">No imported skill packages.</div>`; return; }
+    el.innerHTML = imported.map(s => {
+      const q = s.vetting?.quarantined;
+      const caps = (s.vetting?.executionCapabilities || []).join(", ");
+      return `<div style="font-size:13px;padding:.35rem 0;border-bottom:1px solid var(--border)">
+        <code>${escHtml(s.id)}</code> <span style="color:var(--muted)">[${s.status}]</span>
+        ${q ? `<span style="color:var(--negative)">⛔ QUARANTINED${caps ? ` (${escHtml(caps)})` : ""}</span>` : `<span style="color:var(--positive)">✓ vetted</span>`}
+      </div>`;
+    }).join("");
+  } catch (e) { el.innerHTML = `<div style="color:var(--muted)">Failed to load.</div>`; }
 }
 
 // ─── Toast ───────────────────────────────────────────
