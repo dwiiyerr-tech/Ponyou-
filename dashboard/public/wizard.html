@@ -27,7 +27,7 @@
 <script>
 const STEPS = [
   {
-    title: "1/13 — Wallet & RPC",
+    title: "1/14 — Wallet & RPC",
     required: true,
     fields: [
       { key: "walletAddress", label: "Wallet Address", type: "text", hint: "Your Solana wallet public key", required: true },
@@ -38,7 +38,7 @@ const STEPS = [
     ]
   },
   {
-    title: "2/13 — Telegram",
+    title: "2/14 — Telegram",
     required: true,
     fields: [
       { key: "telegramBotToken", label: "Bot Token", type: "password", hint: "From @BotFather" },
@@ -47,7 +47,7 @@ const STEPS = [
     extra: '<button class="btn" onclick="testTelegram()" style="margin-top:.75rem">📨 Send Test Message</button>'
   },
   {
-    title: "3/13 — LLM / AI Model",
+    title: "3/14 — LLM / AI Model",
     fields: [
       { key: "llmProvider", label: "Provider", type: "select", options: ["openrouter","openai","custom"], hint: "LLM provider" },
       { key: "llmModel", label: "Model", type: "text", hint: "e.g. minimax/minimax-m2.5" },
@@ -55,7 +55,7 @@ const STEPS = [
     ]
   },
   {
-    title: "4/13 — Strategy & Trading Mode",
+    title: "4/14 — Strategy & Trading Mode",
     fields: [
       { key: "strategy", label: "Strategy Preset", type: "select", options: ["scalp","conservative","aggressive","sniper","recovery","day_phase_swing"], hint: "Default entry/exit strategy" },
       { key: "confirmMode", label: "Confirm Mode", type: "checkbox", hint: "Require Telegram /yes before each buy" },
@@ -63,7 +63,7 @@ const STEPS = [
     ]
   },
   {
-    title: "5/13 — Screening Filters",
+    title: "5/14 — Screening Filters",
     fields: [
       { key: "minMcap", label: "Min Market Cap ($)", type: "number", hint: "Default 150000" },
       { key: "maxMcap", label: "Max Market Cap ($)", type: "number", hint: "Default 10000000" },
@@ -79,7 +79,7 @@ const STEPS = [
     ]
   },
   {
-    title: "6/13 — Position Management",
+    title: "6/14 — Position Management",
     fields: [
       { key: "deployAmountSol", label: "Deploy Amount (SOL)", type: "number", hint: "Default 0.5" },
       { key: "gasReserve", label: "Gas Reserve (SOL)", type: "number", hint: "Default 0.2" },
@@ -96,7 +96,7 @@ const STEPS = [
     ]
   },
   {
-    title: "7/13 — Pilot / Daily Plan",
+    title: "7/14 — Pilot / Daily Plan",
     fields: [
       { key: "pilotEnabled", label: "Pilot Mode", type: "checkbox", hint: "Enable compound daily plan" },
       { key: "pilotCapitalUsd", label: "Starting Capital ($)", type: "number", hint: "Default 10" },
@@ -107,7 +107,7 @@ const STEPS = [
     ]
   },
   {
-    title: "8/13 — Daily Trade Guard",
+    title: "8/14 — Daily Trade Guard",
     fields: [
       { key: "dailyTradeGuardEnabled", label: "Enable Daily Trade Guard", type: "checkbox" },
       { key: "dailyTradeGuardMaxWins", label: "Max Wins/Day", type: "number", hint: "Default 3" },
@@ -116,7 +116,7 @@ const STEPS = [
     ]
   },
   {
-    title: "9/13 — Trading Plan 30",
+    title: "9/14 — Trading Plan 30",
     fields: [
       { key: "tradingPlan.enabled", label: "Enable Trading Plan", type: "checkbox" },
       { key: "tradingPlan.targetTrades", label: "Target Trades/Session", type: "number", hint: "Default 30" },
@@ -124,7 +124,7 @@ const STEPS = [
     ]
   },
   {
-    title: "10/13 — Vault / Savings",
+    title: "10/14 — Vault / Savings",
     fields: [
       { key: "vault.sweep.enabled", label: "Enable Vault Sweep", type: "checkbox" },
       { key: "vault.sweep.vaultWallet", label: "Vault Wallet Address", type: "text", hint: "SOL destination wallet" },
@@ -134,7 +134,7 @@ const STEPS = [
     ]
   },
   {
-    title: "11/13 — Kelly & Risk",
+    title: "11/14 — Kelly & Risk",
     fields: [
       { key: "kellyEnabled", label: "Enable Kelly Sizing", type: "checkbox" },
       { key: "kellyFraction", label: "Kelly Fraction", type: "number", hint: "Default 0.5 (half-Kelly)" },
@@ -145,7 +145,7 @@ const STEPS = [
     ]
   },
   {
-    title: "12/13 — Advanced Features",
+    title: "12/14 — Advanced Features",
     fields: [
       { key: "jitoEnabled", label: "Enable Jito Priority Lane", type: "checkbox" },
       { key: "jitoRegion", label: "Jito Region", type: "select", options: ["fra","ny","ams","tyo"] },
@@ -166,7 +166,20 @@ const STEPS = [
     ]
   },
   {
-    title: "13/13 — Review & Save",
+    title: "13/14 — GMGN OpenAPI (opsional)",
+    fields: [
+      { key: "gmgnApiKey", label: "GMGN API Key", type: "password", hint: "Token dari gmgn.ai/ai — paste public key Ed25519 di sana, situs balikkan API Key. Kosongkan untuk SKIP GMGN. (Private key untuk skill eksekusi swap/cooking TIDAK di sini — manual-only di ~/.config/gmgn/.env)" },
+      { key: "gmgnDiscovery", label: "Wallet Discovery (smart-wallet scoring)", type: "checkbox", hint: "Centang = aktif (butuh API Key di atas)" },
+      { key: "gmgnHunter", label: "Hunter — trending / trenches / signals feed", type: "checkbox" },
+      { key: "gmgnCopyTrade", label: "Copy-Trade priority wallets", type: "checkbox" },
+      { key: "gmgnRugSignals", label: "Rug Signals — top-holder + security audit", type: "checkbox", hint: "Mengubah SKORING rug — saat live, aktifkan di balik experiment_id (CLAUDE.md)" },
+      { key: "gmgnHolderEnrich", label: "Holder Enrichment", type: "checkbox" },
+      { key: "gmgnEnrichCap", label: "Enrich Cap (max wallet_stats calls)", type: "number", hint: "Default 25 — lebih kecil = dashboard/discovery lebih cepat" },
+      { key: "hunterPreyCap", label: "Hunter Prey Cap (kandidat pra-skor / siklus)", type: "number", hint: "Default 10" },
+    ]
+  },
+  {
+    title: "14/14 — Review & Save",
     review: true,
   }
 ];

@@ -48,6 +48,22 @@ describe("writeConfig", () => {
     const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, "user-config.json"), "utf8"));
     expect(raw.privateKey).toBeUndefined();
   });
+  it("persists GMGN staged-flag keys (whitelisted)", () => {
+    writeConfig({ walletAddress: "x", gmgnApiKey: "tok_123", gmgnDiscovery: false, gmgnRugSignals: true, gmgnEnrichCap: 40, hunterPreyCap: 5 });
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, "user-config.json"), "utf8"));
+    expect(raw.gmgnApiKey).toBe("tok_123");
+    expect(raw.gmgnDiscovery).toBe(false);
+    expect(raw.gmgnRugSignals).toBe(true);
+    expect(raw.gmgnEnrichCap).toBe(40);
+    expect(raw.hunterPreyCap).toBe(5);
+  });
+  it("drops [REDACTED] sentinels so re-save never clobbers stored secrets", () => {
+    writeConfig({ walletAddress: "x", gmgnApiKey: "real_secret_token" });
+    writeConfig({ walletAddress: "x", gmgnApiKey: "[REDACTED]", telegramBotToken: "[REDACTED]" });
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, "user-config.json"), "utf8"));
+    expect(raw.gmgnApiKey).toBe("real_secret_token"); // unchanged, not clobbered
+    expect(raw.telegramBotToken).toBeUndefined();      // sentinel never persisted
+  });
 });
 
 describe("URL scheme validation (SSRF guard)", () => {

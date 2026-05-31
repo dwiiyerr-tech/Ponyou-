@@ -28,6 +28,9 @@ const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 const ALLOWED_KEYS = new Set([
   "preset", "rpcUrl", "rpcUrls", "rpcMode", "shyftApiKey", "gmgnApiKey",
+  // GMGN staged-activation flags (config.gmgn.*) + hunter prey cap
+  "gmgnDiscovery", "gmgnHunter", "gmgnCopyTrade", "gmgnRugSignals", "gmgnHolderEnrich",
+  "gmgnEnrichCap", "hunterPreyCap",
   "geyserGrpcUrl", "geyserGrpcToken",
   "walletAddress", "privateKey",
   "telegramBotToken", "telegramChatId",
@@ -249,7 +252,14 @@ function sanitizeConfig(data) {
 
 export function writeConfig(data) {
   const safe = sanitizeConfig(data);
-  if (safe.privateKey && typeof safe.privateKey === "string" && /…/.test(safe.privateKey)) delete safe.privateKey;
+  // Never persist a redaction sentinel / masked value back over a real secret.
+  // The wizard receives "[REDACTED]" (stripSensitive) or "xxxx…yyyy" (mask) for
+  // already-set secrets (gmgnApiKey, privateKey, telegramBotToken, llmApiKey, …);
+  // saving those verbatim would clobber the stored value. Dropping them falls
+  // back to the existing merged value (non-destructive).
+  for (const [k, v] of Object.entries(safe)) {
+    if (typeof v === "string" && (v === "[REDACTED]" || /…/.test(v))) delete safe[k];
+  }
   let existing = {};
   try {
     if (fs.existsSync(cfgPath())) existing = JSON.parse(fs.readFileSync(cfgPath(), "utf8"));
