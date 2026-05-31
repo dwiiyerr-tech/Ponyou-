@@ -7,6 +7,12 @@ node_modules/
 # can contain credentials.
 .claude/settings.local.json
 
+# Per-operator config + wallet secrets — track ONLY the template
+# (user-config.example.json). These hold live API keys / private keys and
+# leaked into history before this rule; rotate the Shyft key when convenient.
+user-config.json
+devnet-wallet.json
+
 # Vendored third-party skill packages (installed via the skills CLI, pinned by
 # skills-lock.json, reproducible). Includes execution-class skills (gmgn-swap/
 # cooking) we keep manual-only — not vendored into core per CLAUDE.md.
@@ -79,6 +85,15 @@ dev-blocklist.json
 holder-snapshots.json
 holder-entry-prices.json
 rug-pattern-detections.json
+
+# Runtime state — leaked in before the rule, untracked 2026-05-31. Rewritten by
+# the running bot every cycle; tracking them churned the tree across the
+# supervisor's racing instances.
+narrative-velocity.json
+social-signals.json
+shadow-watchlist.json
+profit-patterns.json
+ponyou-screenshot.json
 
 # Runtime PID / lockfiles
 *.pid
