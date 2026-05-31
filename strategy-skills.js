@@ -15,10 +15,11 @@
  *
  * Persistence:
  *   ./strategy-skills.json          — the registry { version, skills: {id: skill} }
- *   ./skills-lock.json              — gains a sibling `strategySkills` map for
- *                                     hash-pinning local skills (the external
- *                                     `skills` CLI only manages the `skills` key,
- *                                     so this never clobbers it).
+ *   ./strategy-skills-lock.json     — gitignored sidecar holding the
+ *                                     `strategySkills` hash-pin map. Kept OUT of
+ *                                     the tracked skills-lock.json (owned by the
+ *                                     external `skills` CLI) so runtime pins
+ *                                     never churn that reproducible lockfile.
  *
  * Lifecycle: draft → shadow → active → retired.
  *   - shadow→active REQUIRES a passing backtest_scorecard (the promotion gate).
@@ -40,6 +41,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // NEVER touches the live registry / lockfile (see vitest.config.js).
 const REGISTRY_FILE = process.env.PONYOU_STRATEGY_SKILLS_FILE || path.join(__dirname, "strategy-skills.json");
 const LOCK_FILE = process.env.PONYOU_SKILLS_LOCK_FILE || path.join(__dirname, "skills-lock.json");
+// Strategy-skill hash-pins live in their OWN gitignored sidecar so they never
+// dirty the TRACKED skills-lock.json (owned by the external `skills` CLI, which
+// manages the `skills` key — that file must stay reproducible). Older builds
+// wrote the `strategySkills` map INTO skills-lock.json, re-dirtying it on every
+// bootstrap/rebalance; readLock() migrates+strips any such legacy pins once.
+const STRATEGY_LOCK_FILE = process.env.PONYOU_STRATEGY_SKILLS_LOCK_FILE || path.join(__dirname, "strategy-skills-lock.json");
 
 const SCHEMA_VERSION = 1;
 export const SKILL_STATUSES = ["draft", "shadow", "active", "retired"];
@@ -252,17 +259,42 @@ export function setStrategySkillWeight(id, weight) {
 
 // ─── skills-lock.json hash-pinning ────────────────────────────
 
-function readLock() {
+/** One-time migration: pull any legacy `strategySkills` map out of the tracked
+ *  skills-lock.json into the gitignored sidecar, then strip it from the lock
+ *  (preserving the external CLI's `skills` key). Returns the sidecar contents. */
+function migrateLegacyLock() {
+  const sidecar = { version: 1, strategySkills: {} };
   try {
-    if (!fs.existsSync(LOCK_FILE)) return { version: 1, skills: {} };
-    return JSON.parse(fs.readFileSync(LOCK_FILE, "utf8")) || { version: 1, skills: {} };
-  } catch { return { version: 1, skills: {} }; }
+    if (!fs.existsSync(LOCK_FILE)) return sidecar;
+    const legacy = JSON.parse(fs.readFileSync(LOCK_FILE, "utf8")) || {};
+    if (legacy.strategySkills && typeof legacy.strategySkills === "object") {
+      sidecar.strategySkills = legacy.strategySkills;
+      delete legacy.strategySkills;             // never touch the `skills` key
+      atomicWriteJson(LOCK_FILE, legacy);        // clean the tracked file once
+      atomicWriteJson(STRATEGY_LOCK_FILE, sidecar);
+      log("skills", "Migrated strategySkills pins out of skills-lock.json into the strategy-skills-lock.json sidecar");
+    }
+  } catch { /* best-effort migration; fall back to an empty sidecar */ }
+  return sidecar;
 }
 
-/** Pin a skill's hash in skills-lock.json under a sibling key the external
- *  `skills` CLI does not touch. Lets the marketplace/vetting layer detect
- *  tampering. `source` distinguishes native ("local") from "imported"
- *  packages; `lockMeta` carries the vetting verdict (capabilities/quarantine). */
+function readLock() {
+  try {
+    if (fs.existsSync(STRATEGY_LOCK_FILE)) {
+      const lock = JSON.parse(fs.readFileSync(STRATEGY_LOCK_FILE, "utf8"));
+      if (lock && typeof lock === "object") {
+        if (!lock.strategySkills || typeof lock.strategySkills !== "object") lock.strategySkills = {};
+        return lock;
+      }
+    }
+  } catch { /* corrupt/missing sidecar → migrate or start fresh below */ }
+  return migrateLegacyLock();
+}
+
+/** Pin a skill's hash in the strategy-skills-lock.json sidecar. Lets the
+ *  marketplace/vetting layer detect tampering. `source` distinguishes native
+ *  ("local") from "imported" packages; `lockMeta` carries the vetting verdict
+ *  (capabilities/quarantine). Kept out of skills-lock.json to avoid churn. */
 function pinSkillLock(skill, { source = "local", lockMeta = null } = {}) {
   const lock = readLock();
   if (!lock.strategySkills || typeof lock.strategySkills !== "object") lock.strategySkills = {};
@@ -275,7 +307,7 @@ function pinSkillLock(skill, { source = "local", lockMeta = null } = {}) {
     computedHash: skill.hash,
     ...(lockMeta ? { vetting: lockMeta } : {}),
   };
-  atomicWriteJson(LOCK_FILE, lock);
+  atomicWriteJson(STRATEGY_LOCK_FILE, lock);
 }
 
 /** Read the skills-lock.json pin entry for a skill (source/vetting/hash). */

@@ -40,6 +40,7 @@ export default defineConfig({
       // live registry / skills-lock.json during tests)
       PONYOU_STRATEGY_SKILLS_FILE: path.join(STATE_TMP, "strategy-skills.json"),
       PONYOU_SKILLS_LOCK_FILE: path.join(STATE_TMP, "skills-lock.json"),
+      PONYOU_STRATEGY_SKILLS_LOCK_FILE: path.join(STATE_TMP, "strategy-skills-lock.json"),
       // per-skill P&L attribution written by the portfolio manager
       PONYOU_SKILL_ATTRIBUTION_FILE: path.join(STATE_TMP, "skill-attribution.json"),
       // GMGN OpenAPI credential dir — never touch the real ~/.config/gmgn in tests
