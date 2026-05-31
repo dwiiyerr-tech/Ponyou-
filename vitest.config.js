@@ -45,6 +45,13 @@ export default defineConfig({
       PONYOU_SKILL_ATTRIBUTION_FILE: path.join(STATE_TMP, "skill-attribution.json"),
       // GMGN OpenAPI credential dir — never touch the real ~/.config/gmgn in tests
       PONYOU_GMGN_ENV_DIR: path.join(STATE_TMP, "gmgn"),
+      // Pin GMGN OFF by default so the suite is deterministic regardless of the
+      // operator's live key. config.js maps user-config.json's gmgnApiKey into
+      // GMGN_API_KEY via `||=`; a truthy dummy here blocks that overwrite, and
+      // isGmgnEnabled() rejects "dummy-gmgn-key" → baseline (GMGN-off) path.
+      // Tests that exercise the enabled path (tests/gmgn.test.js) set their own
+      // key explicitly and restore it in afterEach.
+      GMGN_API_KEY: "dummy-gmgn-key",
       PONYOU_BACKTEST_DATA_DIR: STATE_TMP,
     },
   },
