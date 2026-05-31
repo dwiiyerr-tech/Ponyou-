@@ -107,3 +107,21 @@ describe("Strategy Lab routes (Phase 2/3/4)", () => {
     expect(res.body.status).toBe("active");
   });
 });
+
+describe("POST /api/portfolio/weight", () => {
+  it("rejects an out-of-range weight", async () => {
+    const res = await request(app).post("/api/portfolio/weight").send({ skillId: "x", weight: 2 });
+    expect(res.status).toBe(400);
+    expect(res.body.ok).toBe(false);
+  });
+
+  it("sets a skill's book weight", async () => {
+    const { _resetRegistryForTests, upsertStrategySkill } = await import("../strategy-skills.js");
+    _resetRegistryForTests();
+    upsertStrategySkill({ id: "wt_skill", type: "composite", params: { filters: {} }, status: "active", weight: 0 });
+    const res = await request(app).post("/api/portfolio/weight").send({ skillId: "wt_skill", weight: 0.4 });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.weight).toBeCloseTo(0.4, 6);
+  });
+});

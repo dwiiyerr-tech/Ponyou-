@@ -29,7 +29,7 @@ import { isGmgnEnabled, gmgnCircuitOpen } from "../../tools/gmgn.js";
 import { getPortfolioDashboard } from "../../agents/portfolio-manager.js";
 import { getSkillLoopDashboard, promoteSkillWithApproval, buildApprovalRequest } from "../../agents/skill-codifier.js";
 import { listImportedSkills } from "../../skill-registry.js";
-import { setStrategySkillStatus } from "../../strategy-skills.js";
+import { setStrategySkillStatus, setStrategySkillWeight } from "../../strategy-skills.js";
 import { getStats } from "../../metrics.js";
 import { config } from "../../config.js";
 
@@ -39,7 +39,7 @@ const ALLOWED_SLASH_CMDS = new Set([
   "/confirm", "/dailyguard", "/continue", "/resetplan", "/plan", "/stoptrade",
   "/pending", "/no", "/yes", "/metrics", "/kill", "/unkill", "/killstate",
   "/wallets", "/pnl", "/status", "/health", "/feature", "/devcheck", "/dayphase",
-  "/skills", "/promoteskill", "/rejectskill",
+  "/skills", "/promoteskill", "/rejectskill", "/skillweight",
 ]);
 
 export function createApiRouter() {
@@ -94,6 +94,21 @@ export function createApiRouter() {
       res.json({ ok: true, ...getSkillLoopDashboard() });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Set a strategy-skill's weight in the portfolio book (live — the bot reads
+  // the registry fresh each cycle, no restart needed). Weight 0 = out of the book.
+  router.post("/portfolio/weight", (req, res) => {
+    const { skillId, weight } = req.body || {};
+    if (typeof skillId !== "string" || !skillId.trim()) return res.status(400).json({ ok: false, error: "skillId required" });
+    const w = Number(weight);
+    if (!Number.isFinite(w) || w < 0 || w > 1) return res.status(400).json({ ok: false, error: "weight must be a number in [0,1]" });
+    try {
+      const skill = setStrategySkillWeight(skillId, w);
+      return res.json({ ok: true, skillId, weight: skill.weight });
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: e.message });
     }
   });
 

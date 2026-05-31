@@ -932,13 +932,22 @@ async function loadPortfolioBook() {
     const attr = d.attribution || {};
     el.innerHTML = book.map(s => {
       const a = attr[s.id] || {};
-      const stat = a.trades ? ` · ${a.trades}tr WR ${(a.winRate * 100 || 0).toFixed(0)}% exp ${(a.expectancyPct || 0).toFixed(1)}%` : "";
-      return `<div style="display:flex;justify-content:space-between;font-size:13px;padding:.35rem 0;border-bottom:1px solid var(--border)">
-        <span><code>${escHtml(s.id)}</code> <span style="color:var(--muted)">[${s.status}]</span></span>
-        <span>w=${(s.normWeight || 0).toFixed(3)}<span style="color:var(--muted)">${stat}</span></span>
+      const stat = a.trades ? `${a.trades}tr WR ${(a.winRate * 100 || 0).toFixed(0)}% exp ${(a.expectancyPct || 0).toFixed(1)}%` : "no trades";
+      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;font-size:13px;padding:.4rem 0;border-bottom:1px solid var(--border)">
+        <span style="flex:1"><code>${escHtml(s.id)}</code> <span style="color:var(--muted)">[${s.status}] · norm ${(s.normWeight || 0).toFixed(2)} · ${stat}</span></span>
+        <input type="number" id="w-${escHtml(s.id)}" value="${(s.weight ?? 0)}" min="0" max="1" step="0.05" style="width:64px;font-size:12px">
+        <button class="btn" onclick="setSkillWeight('${escHtml(s.id)}')">Set</button>
       </div>`;
     }).join("");
   } catch (e) { el.innerHTML = `<div style="color:var(--muted)">Failed to load.</div>`; }
+}
+
+async function setSkillWeight(id) {
+  const input = document.getElementById(`w-${id}`);
+  const weight = Number(input?.value);
+  const res = await post("/api/portfolio/weight", { skillId: id, weight });
+  if (res.ok) { loadPortfolioBook(); showToast(`✅ ${id} weight = ${res.weight}`, true); }
+  else showToast(res.error || "Failed to set weight", false);
 }
 
 async function loadSkillLoop() {

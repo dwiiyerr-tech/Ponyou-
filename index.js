@@ -119,7 +119,7 @@ import {
   getNarrativeConviction, getProfitPatternSummary, getConvictionPromptLine, getRecentProfitMints,
 } from "./conviction-memory.js";
 import { runCodifierCycle, promoteSkillWithApproval, buildApprovalRequest } from "./agents/skill-codifier.js";
-import { listStrategySkills, setStrategySkillStatus, bootstrapFromPresets } from "./strategy-skills.js";
+import { listStrategySkills, setStrategySkillStatus, setStrategySkillWeight, bootstrapFromPresets } from "./strategy-skills.js";
 import { loadTrades } from "./backtest-data/loader.js";
 import {
   buildTokenRegime, getRegimeAssessment, recordRegimeObservation, recordRegimeTradeOutcome,
@@ -1001,6 +1001,19 @@ async function handleStrategyTelegramCommand(text) {
     try {
       setStrategySkillStatus(id, "retired");
       await sendHTML(`🗑️ Retired <code>${id}</code>`);
+    } catch (e) {
+      await sendHTML(`❌ ${e.message}`);
+    }
+    return true;
+  }
+
+  if (cmd === "/skillweight") {
+    const id = parts[1];
+    const w = Number(parts[2]);
+    if (!id || !Number.isFinite(w)) { await sendHTML("Usage: <code>/skillweight &lt;id&gt; &lt;0..1&gt;</code> — set a strategy's weight in the portfolio book (0 = out)"); return true; }
+    try {
+      const skill = setStrategySkillWeight(id, w);
+      await sendHTML(`✅ <code>${id}</code> book weight = ${skill.weight}`);
     } catch (e) {
       await sendHTML(`❌ ${e.message}`);
     }
