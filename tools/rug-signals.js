@@ -12,7 +12,7 @@
 
 import { Connection, PublicKey } from "@solana/web3.js";
 import { log } from "../logger.js";
-import { getTopHolders as gmgnTopHolders, normalizeTopHolder, isGmgnEnabled } from "./gmgn.js";
+import { getTopHolders as gmgnTopHolders, getTokenSecurity as gmgnTokenSecurity, normalizeTopHolder, isGmgnEnabled } from "./gmgn.js";
 import { config } from "../config.js";
 
 const HELIUS_BASE = "https://api.helius.xyz/v0";
@@ -533,6 +533,33 @@ export function detectBundledLaunch({ holders = [], creationWindowMs = 60 * 60 *
  * Pass `holderOwners` (owners of top token accounts), `launchTs` (pool creation),
  * `dsPair` (DexScreener pair object) for full coverage.
  */
+/**
+ * Normalize GMGN /token/security into stable booleans/numbers. GMGN returns a
+ * mix of strings ("0.05"), 0/1 ints, and nulls; only treat EXPLICIT positives as
+ * signals (null = unknown, never a flag). Tax fields are ratios (0.05 = 5%); a
+ * value > 1 is interpreted as a raw percent. VERIFIED live 2026-05-31.
+ */
+export function normalizeGmgnSecurity(sec) {
+  if (!sec || typeof sec !== "object") return null;
+  const numOr = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const frac = (v) => { const n = numOr(v); return n == null ? null : (n > 1 ? n / 100 : n); };
+  return {
+    honeypot:        sec.honeypot === 1 || sec.is_honeypot === true,
+    cannot_sell:     sec.can_not_sell === 1,
+    blacklist:       sec.blacklist === 1 || sec.is_blacklist === true,
+    // Only flag when EXPLICITLY not renounced (false); null/true are not a risk.
+    mint_not_renounced:   sec.renounced_mint === false,
+    freeze_not_renounced: sec.renounced_freeze_account === false,
+    buy_tax:         frac(sec.buy_tax),
+    sell_tax:        frac(sec.sell_tax),
+    top10_rate:      frac(sec.top_10_holder_rate),
+    lp_locked:       sec.lock_summary?.is_locked === true,
+    burn_ratio:      frac(sec.burn_ratio),
+    hide_risk:       sec.hide_risk === true,
+    _source: "gmgn",
+  };
+}
+
 export async function gatherRugSignals({ mint, connection, holderOwners = [], launchTs = null, dsPair = null }) {
   const c = cached(mint);
   if (c) return { ...c, _cached: true };
@@ -554,6 +581,7 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
   let shyftFallbackUsed = false;
   let shyftReason = null;
   let gmgnUsed = false;
+  let gmgnSecurity = null;
 
   // ── Layer 2a: GMGN-powered signals (primary — no rate-limit cost on Helius) ──
   // GMGN top-holder tags encode exactly what Helius txn-parsing was computing:
@@ -582,6 +610,14 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
       }
     } catch (e) {
       log("rug_signal_warn", `GMGN rug signals ${mint.slice(0, 8)}: ${e.message}`);
+    }
+    // GMGN security audit — rich rug fields (honeypot, sellability, renounce
+    // status, trade tax). Additive: feeds scoreRugRisk's gmgn_security block.
+    // Best-effort; never blocks the holder-signal path above.
+    try {
+      gmgnSecurity = normalizeGmgnSecurity(await gmgnTokenSecurity(mint));
+    } catch (e) {
+      log("rug_signal_warn", `GMGN security ${mint.slice(0, 8)}: ${e.message}`);
     }
   }
 
@@ -644,6 +680,7 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
     ...bundle,
     ...lp,
     ...wash,
+    gmgn_security: gmgnSecurity,
     _gmgn_used: gmgnUsed,
     _helius_used: dexscreenerOnly ? false : (!gmgnUsed && heliusOK),
     _helius_expected: dexscreenerOnly ? false : heliusExpected,

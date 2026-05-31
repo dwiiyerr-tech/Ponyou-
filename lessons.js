@@ -592,6 +592,23 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {}, mcap 
     score += 8; reasons.push(rs.holder_context_note || "Holder structure needs caution");
   }
 
+  // ─── Layer 2c: GMGN security audit ───────────────────────
+  // Rich rug fields from GMGN /token/security (honeypot, sellability, renounce
+  // status, trade tax). Additive only — GMGN security is never a sole hard-block
+  // (its booleans can be stale/null), so we score rather than return 100.
+  const gs = rs.gmgn_security;
+  if (gs) {
+    if (gs.honeypot)             { score += 40; reasons.push("GMGN: honeypot flagged"); }
+    if (gs.cannot_sell)          { score += 35; reasons.push("GMGN: token cannot be sold"); }
+    if (gs.blacklist)            { score += 30; reasons.push("GMGN: blacklist function present"); }
+    if (gs.mint_not_renounced)   { score += M("hidden_control", 15); reasons.push(`GMGN: mint authority not renounced${Mnote("hidden_control")}`); }
+    if (gs.freeze_not_renounced) { score += M("hidden_control", 15); reasons.push(`GMGN: freeze authority not renounced${Mnote("hidden_control")}`); }
+    const tax = Math.max(gs.sell_tax ?? 0, gs.buy_tax ?? 0);
+    if (tax >= 0.5)              { score += 40; reasons.push(`GMGN: ${(tax * 100).toFixed(0)}% trade tax — extraction`); }
+    else if (tax >= 0.10)        { score += 20; reasons.push(`GMGN: ${(tax * 100).toFixed(0)}% trade tax`); }
+    if (gs.hide_risk)            { score += 10; reasons.push("GMGN: hidden-risk flag set"); }
+  }
+
   // ─── Layer 3: Pattern fingerprint matches ────────────────
   const patternMatches = matchPatterns(rs);
   const matchedPatternIds = [];

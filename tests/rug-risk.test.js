@@ -2,7 +2,7 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import AgentRouter from "../agent-router.js";
 import { attachExitMonitor } from "../geyser-exit-monitor.js";
 import { scoreRugRisk } from "../lessons.js";
-import { clearSignalCache, gatherRugSignals } from "../tools/rug-signals.js";
+import { clearSignalCache, gatherRugSignals, normalizeGmgnSecurity } from "../tools/rug-signals.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
@@ -14,6 +14,64 @@ afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.HELIUS_API_KEY;
   delete process.env.SHYFT_API_KEY;
+});
+
+describe("GMGN security audit (normalizeGmgnSecurity + scoring)", () => {
+  it("normalizes only EXPLICIT positives (null = unknown, not a flag)", () => {
+    // Live-shape sample: clean token (renounced, no honeypot, 0 tax).
+    const n = normalizeGmgnSecurity({
+      is_honeypot: null, honeypot: 0, can_not_sell: 0, can_sell: 0,
+      renounced_mint: true, renounced_freeze_account: true,
+      buy_tax: "0", sell_tax: "0", top_10_holder_rate: "0.1559",
+      is_blacklist: null, blacklist: 0, lock_summary: { is_locked: false }, hide_risk: false,
+    });
+    expect(n.honeypot).toBe(false);
+    expect(n.cannot_sell).toBe(false);
+    expect(n.mint_not_renounced).toBe(false);   // renounced_mint:true → not a flag
+    expect(n.freeze_not_renounced).toBe(false);
+    expect(n.sell_tax).toBe(0);
+    expect(n.top10_rate).toBeCloseTo(0.1559, 4);
+  });
+
+  it("flags a honeypot / non-sellable / high-tax token", () => {
+    const n = normalizeGmgnSecurity({
+      honeypot: 1, can_not_sell: 1, renounced_mint: false, sell_tax: "0.6", blacklist: 1,
+    });
+    expect(n.honeypot).toBe(true);
+    expect(n.cannot_sell).toBe(true);
+    expect(n.mint_not_renounced).toBe(true);
+    expect(n.sell_tax).toBe(0.6);
+    expect(n.blacklist).toBe(true);
+  });
+
+  it("interprets a >1 tax value as a raw percent", () => {
+    expect(normalizeGmgnSecurity({ sell_tax: "15" }).sell_tax).toBe(0.15);
+  });
+
+  it("scoreRugRisk adds risk from gmgn_security without a sole hard-block", () => {
+    const result = scoreRugRisk({
+      mint: "m", creator: "c",
+      rug_signals: {
+        _helius_expected: false, _helius_degraded: false,
+        gmgn_security: { honeypot: true, cannot_sell: true, sell_tax: 0.6, mint_not_renounced: true },
+      },
+    });
+    expect(result.score).toBeGreaterThanOrEqual(60); // honeypot 40 + can't-sell 35 + tax 40 + mint 15, capped 100
+    expect(result.score).toBeLessThanOrEqual(100);
+    expect(result.reasons.some(r => /honeypot/i.test(r))).toBe(true);
+    expect(result.reasons.some(r => /cannot be sold/i.test(r))).toBe(true);
+  });
+
+  it("clean gmgn_security adds no risk", () => {
+    const result = scoreRugRisk({
+      mint: "m2", creator: "c2",
+      rug_signals: {
+        _helius_expected: false, _helius_degraded: false,
+        gmgn_security: { honeypot: false, cannot_sell: false, blacklist: false, mint_not_renounced: false, freeze_not_renounced: false, sell_tax: 0, buy_tax: 0, hide_risk: false },
+      },
+    });
+    expect(result.score).toBe(0);
+  });
 });
 
 describe("scoreRugRisk fail-safe guards", () => {
