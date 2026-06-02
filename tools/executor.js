@@ -8,6 +8,7 @@ import {
   getTokenKlines,
 } from "./dexscreener.js";
 import { swapToken as executeJupiterSwap } from "./jupiter.js";
+import { executeGmgnSwap } from "./gmgnSwap.js";
 import { getWalletBalances } from "./wallet.js";
 import { demoStrictGates } from "../runtime-mode.js";
 import { scanRefundableTokenAccounts, closeRefundableTokenAccounts } from "../rent-refund.js";
@@ -204,6 +205,15 @@ function normalizeConfigValue(key, value) {
 }
 
 async function adaptiveSwap(args = {}) {
+  // Multi-chain (Phase 3): non-Solana swaps route through GMGN, never Jupiter.
+  // The entire Solana multi-wallet planner below assumes SOL keypairs + sizing,
+  // so EVM takes a separate, simpler single-wallet path. Solana behavior is
+  // 100% unchanged (chain absent or "sol" falls through).
+  const chain = (args.chain || "sol").toLowerCase();
+  if (chain !== "sol") {
+    return executeGmgnSwap(args);
+  }
+
   const tokenIn = args.token_in;
   const tokenOut = args.token_out;
   const amount = Number(args.amount || 0);
@@ -837,6 +847,12 @@ async function runSafetyChecks(name, args) {
   switch (name) {
     case "swap_token":
     case "jupiter_swap": {
+      // EVM swaps route through GMGN (separate wallet/gas model). The SOL balance
+      // safety-check below is Solana-specific; GMGN's own balance/gas handling +
+      // the execEnabled flag + dry-run gate cover EVM. Skip the SOL check for non-sol.
+      if ((args.chain || "sol").toLowerCase() !== "sol") {
+        return { pass: true };
+      }
       // Live always runs the balance safety-check; demo runs it too when strict
       // gates are on (checks the virtual balance covers amount+gas / token held).
       if (process.env.DRY_RUN !== "true" || demoStrictGates()) {

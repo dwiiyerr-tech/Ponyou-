@@ -25,7 +25,7 @@ const AGENT_NAME = "hunters";
 const HUNTER_SCHEDULE = {
   EXTREME: { active: false, sources: [],            minScore: 0,  maxTokens: 0,  reason: "Market extreme" },
   HOT:     { active: true,  sources: ["all"],       minScore: 25, maxTokens: 25, reason: "Cast wide net" },
-  NORMAL:  { active: true,  sources: ["all"],       minScore: 30, maxTokens: 15, reason: "Standard hunting" },
+  NORMAL:  { active: true,  sources: ["all"],       minScore: 25, maxTokens: 20, reason: "Standard hunting" },
   COLD:    { active: true,  sources: ["pumpfun"],   minScore: 45, maxTokens: 8,  reason: "Tight filters — only pump.fun" },
   DEAD:    { active: false, sources: [],            minScore: 0,  maxTokens: 0,  reason: "No opportunities" },
 };

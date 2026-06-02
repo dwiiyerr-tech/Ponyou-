@@ -57,6 +57,26 @@ describe("writeConfig", () => {
     expect(raw.gmgnEnrichCap).toBe(40);
     expect(raw.hunterPreyCap).toBe(5);
   });
+  it("multi-chain: validates gmgnChains against allowlist, drops unknown", () => {
+    writeConfig({ walletAddress: "x", gmgnChains: ["sol", "base", "polygon", "BSC"] });
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, "user-config.json"), "utf8"));
+    expect(raw.gmgnChains).toEqual(["sol", "base", "bsc"]); // polygon dropped, BSC lowercased
+  });
+  it("multi-chain: empty/invalid gmgnChains falls back to [sol]", () => {
+    writeConfig({ walletAddress: "x", gmgnChains: ["polygon", "tron"] });
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, "user-config.json"), "utf8"));
+    expect(raw.gmgnChains).toEqual(["sol"]);
+  });
+  it("multi-chain: gmgnWallets keeps only known chains with string addresses", () => {
+    writeConfig({ walletAddress: "x", gmgnWallets: { base: "0xBase", polygon: "0xNope", bsc: 123 } });
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, "user-config.json"), "utf8"));
+    expect(raw.gmgnWallets).toEqual({ base: "0xBase" }); // polygon unknown, bsc non-string
+  });
+  it("multi-chain: gmgnExecEnabled persists as boolean", () => {
+    writeConfig({ walletAddress: "x", gmgnExecEnabled: true });
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, "user-config.json"), "utf8"));
+    expect(raw.gmgnExecEnabled).toBe(true);
+  });
   it("drops [REDACTED] sentinels so re-save never clobbers stored secrets", () => {
     writeConfig({ walletAddress: "x", gmgnApiKey: "real_secret_token" });
     writeConfig({ walletAddress: "x", gmgnApiKey: "[REDACTED]", telegramBotToken: "[REDACTED]" });

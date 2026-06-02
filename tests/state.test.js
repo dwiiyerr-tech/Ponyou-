@@ -83,6 +83,33 @@ describe("state — trackPosition", () => {
     expect(pos.initial_value_usd).toBe(120);
     expect(pos.closed).toBe(false);
     expect(pos.wallet_address).toBeNull();
+    expect(pos.chain).toBe("sol"); // default chain
+  });
+
+  it("persists chain for EVM positions (exit routing)", async () => {
+    const { trackPosition, getState, _resetStateForTests } = await import("../state.js");
+    _resetStateForTests();
+    const mint = "0xbasetoken";
+    await trackPosition({
+      position: mint,
+      pool: "uniswap",
+      pool_name: "Base Token",
+      amount_sol: 0.01,
+      initial_value_usd: 25,
+      chain: "base",
+    });
+    const pos = getState().positions[mint];
+    expect(pos.chain).toBe("base");
+  });
+
+  it("defaults chain to sol when not provided", async () => {
+    const { trackPosition, getState, _resetStateForTests } = await import("../state.js");
+    _resetStateForTests();
+    await trackPosition({
+      position: "So11111111111111111111111111111111111111114",
+      pool: "p", amount_sol: 1, initial_value_usd: 100,
+    });
+    expect(getState().positions["So11111111111111111111111111111111111111114"].chain).toBe("sol");
   });
 
   it("records multi-wallet positions with composite key", async () => {

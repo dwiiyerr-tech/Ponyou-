@@ -38,6 +38,13 @@ export const PRESETS = {
       minTopHolderSol: 0.2,
       maxEntryPumpMc: 3000,
       maxAllowedFlags: 1,
+      // Micro-cap bounds — without these, scalping matched any mcap. In a
+      // multi-strategy set, a $10M token could fail degen/smart_money yet
+      // slip through scalping (gate skipped when bounds undefined). Mirror
+      // sniper's micro-cap window so scalping stays scoped to fresh pairs.
+      min_mcap_usd: 3000,
+      max_mcap_usd: 200000,
+      min_token_fees_sol: 1,
     },
     minimal_roi: { "0": 0.60, "5": 0.30, "15": 0.15, "30": 0.05, "60": 0.0 },
     stoploss: -0.15,
@@ -64,11 +71,10 @@ export const PRESETS = {
       minHolderAgeHours: 24,
       minTopHolderSol: 0.2,
       maxEntryPumpMc: 3000,
-      maxAllowedFlags: 0,
+      maxAllowedFlags: 1,       // was 0 — allows 1 flag (e.g. young holders)
       min_mcap_usd: 7000,
       max_mcap_usd: 200000,
-      min_token_fees_sol: 10,
-      min_fee_claim_sol: 0.5,
+      min_token_fees_sol: 1,    // was 10 — 10 SOL fees near-impossible; 1 SOL realistic
     },
     minimal_roi: { "0": 0.50, "3": 0.30, "10": 0.15, "20": 0.05 },
     stoploss: -0.25,
@@ -89,7 +95,7 @@ export const PRESETS = {
   dip_buy: {
     id: "dip_buy",
     name: "Dip Buy",
-    description: "Wait for ATH-distance dip on more mature tokens.",
+    description: "Mid-cap DCA entry — 3-stage averaging down on price dips. ATH gate only enforced when data is available.",
     filters: {
       maxGasFeeLevel: "high",
       minHolderAgeHours: 1,
@@ -98,6 +104,8 @@ export const PRESETS = {
       maxAllowedFlags: 2,
       min_mcap_usd: 25000,
       max_mcap_usd: 500000,
+      // max_ath_distance_pct only enforced when dip_from_ath_pct is provided upstream.
+      // When missing (common for fresh tokens), gate is silently skipped.
       max_ath_distance_pct: -40,
     },
     minimal_roi: { "0": 0.30, "10": 0.20, "30": 0.10, "60": 0.03 },
@@ -132,15 +140,15 @@ export const PRESETS = {
       minHolderAgeHours: 24,
       minTopHolderSol: 0.2,
       maxEntryPumpMc: 5000,
-      maxAllowedFlags: 0,
+      maxAllowedFlags: 1,       // was 0 — allows 1 flag so realistic tokens can match
       min_mcap_usd: 10000,
       max_mcap_usd: 1000000,
-      min_holders: 1000,
+      min_holders: 300,         // was 1000 — 1000 holders almost never seen at entry price
       max_top10_pct: 50,
     },
     minimal_roi: { "0": 1.0, "15": 0.50, "45": 0.20 },
     stoploss: -0.25,
-    trailing_stop: { enabled: false, positive_offset: 0, positive_distance: 0 },
+    trailing_stop: { enabled: true, positive_offset: 0.30, positive_distance: 0.12 },  // was disabled — no trailing = +90% can round-trip to -25% SL
     partial_tp: { enabled: true, at_pct: 100, sell_pct: 50 },
     use_llm: true,
     llm_min_confidence: 70,
@@ -201,10 +209,10 @@ export const PRESETS = {
       maxGasFeeLevel: "extreme",       // Hanya blokir saat gas ekstrem
       minHolderAgeHours: 24,           // Holder harus mature (swing butuh stabilitas)
       minTopHolderSol: 0.5,            // Top holder wajib punya ≥0.5 SOL (serius)
-      maxEntryPumpMc: 50000,           // MCap saat entry maks $50K
+      maxEntryPumpMc: 50000,           // Pump-ratio gate (NOT a max-mcap cap — only fires when initial_mcap < 50000)
       maxAllowedFlags: 2,              // Longgar — swing tidak perlu timing sempurna
-      // MCap / FDV gate
-      min_mcap_usd: 1000000,           // FDV > $1M — perlu exit liquidity aman
+      // MCap / FDV gate — lowered from $1M: social signals reach $500K+ so this band is reachable
+      min_mcap_usd: 500000,            // was 1000000 — $1M band has no feed; $500K matches social signal mid-caps
       max_mcap_usd: 50000000,          // Max $50M FDV
       // Holder gate
       min_holders: 500,                // Min 500 holders — distribusi sehat
@@ -287,13 +295,20 @@ function writeJson(file, data) {
 }
 
 let _fallbackWarned = false;
+// Last successfully-read active config. A momentary unreadable file (concurrent
+// atomic write) must NOT collapse the operator's real strategy set to the hard
+// default — that silently swaps a rule-based primary (degen) for an LLM one
+// (scalping) and blocks cold-start deploys behind the workflow.llm_can_buy gate.
+let _lastGoodId = null;
+let _lastGoodIds = null;
 
 export function getActiveStrategyId() {
   const data = readJsonSafe(ACTIVE_FILE);
   const id = data?.id;
-  if (id && PRESETS[id]) return id;
-  // Warn once per process when the active-strategy file is missing or
-  // points at an invalid id — operator may have wiped state by accident.
+  if (id && PRESETS[id]) { _lastGoodId = id; return id; }
+  // Transient read failure: reuse the last id successfully read this process.
+  if (_lastGoodId && PRESETS[_lastGoodId]) return _lastGoodId;
+  // Warn once per process when the active-strategy file is permanently missing.
   if (!_fallbackWarned) {
     _fallbackWarned = true;
     const cause = !data ? "file missing/unreadable" : `unknown id "${id}"`;
@@ -308,9 +323,40 @@ export function getActiveStrategy() {
 
 export function setActiveStrategy(id) {
   if (!PRESETS[id]) throw new Error(`Unknown strategy: ${id}. Valid: ${STRATEGY_IDS.join(", ")}`);
-  writeJson(ACTIVE_FILE, { id, updated_at: new Date().toISOString() });
+  const data = readJsonSafe(ACTIVE_FILE) || {};
+  // Preserve multi-strategy ids if set, update primary id
+  const ids = Array.isArray(data.ids) && data.ids.length > 0
+    ? data.ids.includes(id) ? data.ids : [id]
+    : [id];
+  writeJson(ACTIVE_FILE, { id, ids, updated_at: new Date().toISOString() });
   log("strategy", `Active strategy switched to "${id}"`);
   return id;
+}
+
+// ─── Multi-strategy support ────────────────────────────────────
+// Returns array of all active strategy IDs. Single-strategy mode returns [id].
+
+export function getActiveStrategyIds() {
+  const data = readJsonSafe(ACTIVE_FILE);
+  if (Array.isArray(data?.ids) && data.ids.length > 0) {
+    const valid = data.ids.filter(id => PRESETS[id]);
+    if (valid.length > 0) { _lastGoodIds = valid; return valid; }
+  }
+  // Transient read failure: don't collapse a multi-strategy set to a single
+  // default — reuse the last set read this process (cache is warm from boot).
+  if (Array.isArray(_lastGoodIds) && _lastGoodIds.length > 0) return _lastGoodIds;
+  return [getActiveStrategyId()];
+}
+
+export function setActiveStrategies(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) throw new Error("ids must be a non-empty array");
+  const valid = ids.filter(id => PRESETS[id]);
+  const invalid = ids.filter(id => !PRESETS[id]);
+  if (valid.length === 0) throw new Error(`No valid strategy IDs. Valid: ${STRATEGY_IDS.join(", ")}`);
+  if (invalid.length > 0) throw new Error(`Unknown: ${invalid.join(", ")}. Valid: ${STRATEGY_IDS.join(", ")}`);
+  writeJson(ACTIVE_FILE, { id: valid[0], ids: valid, updated_at: new Date().toISOString() });
+  log("strategy", `Active strategies: [${valid.join(", ")}]`);
+  return valid;
 }
 
 // ─── Overrides (per-strategy user tweaks) ─────────────────────

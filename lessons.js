@@ -526,6 +526,9 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {}, mcap 
   if (rs._collector_error) {
     return { score: 100, risk_level: "HIGH", reasons: [`Security collector failed: ${rs._collector_error}`], matched_patterns: [] };
   }
+  if (rs._critical_rug_telemetry_expected && rs._critical_rug_telemetry_degraded) {
+    return { score: 100, risk_level: "HIGH", no_autoblacklist: true, telemetry_block: true, reasons: ["Critical rug telemetry unavailable: " + (rs._critical_rug_telemetry_reason || "GMGN/Helius holder checks missing")], matched_patterns: [] };
+  }
   if (rs._helius_expected && rs._helius_degraded) {
     return { score: 100, risk_level: "HIGH", reasons: [`Helius enrichment unavailable: ${rs._helius_reason || "critical rug telemetry missing"}`], matched_patterns: [] };
   }
@@ -607,6 +610,35 @@ export function scoreRugRisk({ mint, creator, launchpad, rug_signals = {}, mcap 
     if (tax >= 0.5)              { score += 40; reasons.push(`GMGN: ${(tax * 100).toFixed(0)}% trade tax — extraction`); }
     else if (tax >= 0.10)        { score += 20; reasons.push(`GMGN: ${(tax * 100).toFixed(0)}% trade tax`); }
     if (gs.hide_risk)            { score += 10; reasons.push("GMGN: hidden-risk flag set"); }
+  }
+
+  // ─── Layer 2d: GMGN row risk (rank/trenches pre-computed fields) ─────────
+  // These are computed by GMGN at discovery time from /market/rank or /trenches
+  // rows — NOT from a per-request security call. They complement Layer 2c (token/
+  // security) and Layer 2a (top-holder tags). Additive; degrade gracefully when
+  // the token wasn't discovered via GMGN (gmgn_row_risk=null → block skipped).
+  const grr = rs.gmgn_row_risk;
+  if (grr) {
+    const { rug_ratio, bundler_rate, top70_sniper_hold_rate, fresh_wallet_rate,
+            rat_trader_amount_rate, is_honeypot, renounced_mint, renounced_freeze_account } = grr;
+    // Honeypot signal from rank/trenches row — independent confirmation of Layer 2c
+    if (is_honeypot === true)                                        { score += 40; reasons.push("GMGN row: honeypot flagged"); }
+    // Rug ratio: GMGN's own ML-computed rug probability (0-1)
+    if (rug_ratio != null && rug_ratio >= 0.8)                       { score += 30; reasons.push(`GMGN row: rug_ratio=${(rug_ratio * 100).toFixed(0)}% — high rug confidence`); }
+    else if (rug_ratio != null && rug_ratio >= 0.5)                  { score += 15; reasons.push(`GMGN row: rug_ratio=${(rug_ratio * 100).toFixed(0)}%`); }
+    else if (rug_ratio != null && rug_ratio >= 0.35)                 { score +=  8; reasons.push(`GMGN row: rug_ratio=${(rug_ratio * 100).toFixed(0)}% (caution)`); }
+    // Bundler rate — overlaps with Layer 2a bundle signals but is a GMGN aggregate
+    if (bundler_rate != null && bundler_rate >= 0.5)                 { score += M("bundle_buy", 20); reasons.push(`GMGN row: ${(bundler_rate * 100).toFixed(0)}% bundled${Mnote("bundle_buy")}`); }
+    else if (bundler_rate != null && bundler_rate >= 0.25)           { score += M("bundle_buy", 10); reasons.push(`GMGN row: ${(bundler_rate * 100).toFixed(0)}% bundled${Mnote("bundle_buy")}`); }
+    // Snipers still holding → expect a dump wave
+    if (top70_sniper_hold_rate != null && top70_sniper_hold_rate >= 0.5)  { score += 15; reasons.push(`GMGN row: ${(top70_sniper_hold_rate * 100).toFixed(0)}% sniper supply still held`); }
+    else if (top70_sniper_hold_rate != null && top70_sniper_hold_rate >= 0.3) { score += 8; reasons.push(`GMGN row: ${(top70_sniper_hold_rate * 100).toFixed(0)}% sniper hold (watch)`); }
+    // Fresh wallets / rat traders
+    if (fresh_wallet_rate != null && fresh_wallet_rate >= 0.6)       { score += 10; reasons.push(`GMGN row: ${(fresh_wallet_rate * 100).toFixed(0)}% fresh-wallet holders`); }
+    if (rat_trader_amount_rate != null && rat_trader_amount_rate >= 0.3) { score += 10; reasons.push(`GMGN row: ${(rat_trader_amount_rate * 100).toFixed(0)}% rat-trader volume`); }
+    // Renounce status — weaker signal than Token-2022 extension; GMGN data can be stale
+    if (renounced_mint === false)           { score += M("hidden_control", 8); reasons.push(`GMGN row: mint not renounced${Mnote("hidden_control")}`); }
+    if (renounced_freeze_account === false) { score += M("hidden_control", 8); reasons.push(`GMGN row: freeze authority not renounced${Mnote("hidden_control")}`); }
   }
 
   // ─── Layer 3: Pattern fingerprint matches ────────────────

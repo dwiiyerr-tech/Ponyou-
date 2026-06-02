@@ -28,7 +28,15 @@ import { log } from "../logger.js";
 import { recordCounter } from "../metrics.js";
 
 const BASE = "https://openapi.gmgn.ai";
-const CHAIN = "sol";
+const DEFAULT_CHAIN = "sol";
+// Chains GMGN's OpenAPI supports. Unknown chains fall back to DEFAULT_CHAIN.
+export const GMGN_CHAINS = ["sol", "base", "bsc", "eth"];
+
+/** Normalize/guard a chain code — rejects unknown values to the default. */
+export function normalizeChain(c) {
+  const lc = String(c || "").toLowerCase();
+  return GMGN_CHAINS.includes(lc) ? lc : DEFAULT_CHAIN;
+}
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
@@ -80,7 +88,7 @@ export function gmgnCircuitOpen() {
   return Date.now() < _circuitUntil;
 }
 
-async function gmgnFetch(method, path, query = {}, body = null, retries = 2) {
+async function gmgnFetch(method, path, query = {}, body = null, retries = 2, chain = DEFAULT_CHAIN) {
   if (!isEnabled()) return null;
   if (gmgnCircuitOpen()) {
     recordCounter("gmgn_circuit_skip");
@@ -88,7 +96,7 @@ async function gmgnFetch(method, path, query = {}, body = null, retries = 2) {
   }
 
   const aq = authQuery();
-  const params = new URLSearchParams({ chain: CHAIN, ...query, ...aq });
+  const params = new URLSearchParams({ chain: normalizeChain(chain), ...query, ...aq });
   const url = `${BASE}${path}?${params}`;
   const headers = { "X-APIKEY": getApiKey(), "Content-Type": "application/json" };
 
@@ -158,9 +166,9 @@ async function withCache(key, ttlMs, fn) {
 // ─── Token endpoints ──────────────────────────────────────────────────────────
 
 /** Full token analytics: price, mcap, vol, security, holder breakdown. 5min TTL. */
-export async function getTokenInfo(mint) {
-  return withCache(`token_info:${mint}`, 5 * 60_000, () =>
-    gmgnFetch("GET", "/v1/token/info", { address: mint })
+export async function getTokenInfo(mint, chain = DEFAULT_CHAIN) {
+  return withCache(`${chain}:token_info:${mint}`, 5 * 60_000, () =>
+    gmgnFetch("GET", "/v1/token/info", { address: mint }, null, 2, chain)
   );
 }
 
@@ -169,16 +177,16 @@ export async function getTokenInfo(mint) {
  * Returns null if GMGN unavailable — caller must not hard-block on this.
  * 10min TTL.
  */
-export async function getTokenSecurity(mint) {
-  return withCache(`token_sec:${mint}`, 10 * 60_000, () =>
-    gmgnFetch("GET", "/v1/token/security", { address: mint })
+export async function getTokenSecurity(mint, chain = DEFAULT_CHAIN) {
+  return withCache(`${chain}:token_sec:${mint}`, 10 * 60_000, () =>
+    gmgnFetch("GET", "/v1/token/security", { address: mint }, null, 2, chain)
   );
 }
 
 /** Pool / liquidity details. 5min TTL. */
-export async function getTokenPoolInfo(mint) {
-  return withCache(`pool_info:${mint}`, 5 * 60_000, () =>
-    gmgnFetch("GET", "/v1/token/pool_info", { address: mint })
+export async function getTokenPoolInfo(mint, chain = DEFAULT_CHAIN) {
+  return withCache(`${chain}:pool_info:${mint}`, 5 * 60_000, () =>
+    gmgnFetch("GET", "/v1/token/pool_info", { address: mint }, null, 2, chain)
   );
 }
 
@@ -191,9 +199,9 @@ export async function getTokenPoolInfo(mint) {
  * @param {string} mint
  * @param {number} [limit=20]
  */
-export async function getTopHolders(mint, limit = 20) {
-  return withCache(`top_holders:${mint}`, 8 * 60_000, () =>
-    gmgnFetch("GET", "/v1/market/token_top_holders", { address: mint, limit })
+export async function getTopHolders(mint, limit = 20, chain = DEFAULT_CHAIN) {
+  return withCache(`${chain}:top_holders:${mint}`, 8 * 60_000, () =>
+    gmgnFetch("GET", "/v1/market/token_top_holders", { address: mint, limit }, null, 2, chain)
   );
 }
 
@@ -201,9 +209,9 @@ export async function getTopHolders(mint, limit = 20) {
  * Top traders for a token (profitable wallets that traded it).
  * 10min TTL.
  */
-export async function getTopTraders(mint, limit = 20) {
-  return withCache(`top_traders:${mint}`, 10 * 60_000, () =>
-    gmgnFetch("GET", "/v1/market/token_top_traders", { address: mint, limit })
+export async function getTopTraders(mint, limit = 20, chain = DEFAULT_CHAIN) {
+  return withCache(`${chain}:top_traders:${mint}`, 10 * 60_000, () =>
+    gmgnFetch("GET", "/v1/market/token_top_traders", { address: mint, limit }, null, 2, chain)
   );
 }
 
@@ -212,13 +220,13 @@ export async function getTopTraders(mint, limit = 20) {
  * Falls back to GeckoTerminal if unavailable.
  * 3min TTL for fresh candles.
  */
-export async function getTokenKline(mint, resolution = "5m", from = null, to = null) {
-  const cacheKey = `kline:${mint}:${resolution}:${from}:${to}`;
+export async function getTokenKline(mint, resolution = "5m", from = null, to = null, chain = DEFAULT_CHAIN) {
+  const cacheKey = `${chain}:kline:${mint}:${resolution}:${from}:${to}`;
   return withCache(cacheKey, 3 * 60_000, () => {
     const q = { address: mint, resolution };
     if (from != null) q.from = from;
     if (to != null) q.to = to;
-    return gmgnFetch("GET", "/v1/market/token_kline", q);
+    return gmgnFetch("GET", "/v1/market/token_kline", q, null, 2, chain);
   });
 }
 
@@ -229,9 +237,9 @@ export async function getTokenKline(mint, resolution = "5m", from = null, to = n
  * (`marketcap`, `change1h`, `volume`, `swaps`, `holder_count`) — not snake_case —
  * so we normalize here for a stable caller shape. 2min TTL.
  */
-export async function getTrendingTokens(interval = "1h", limit = 50) {
-  return withCache(`trending:${interval}:${limit}`, 2 * 60_000, async () => {
-    const raw = await gmgnFetch("GET", "/v1/market/rank", { interval, limit });
+export async function getTrendingTokens(interval = "1h", limit = 50, chain = DEFAULT_CHAIN) {
+  return withCache(`${chain}:trending:${interval}:${limit}`, 2 * 60_000, async () => {
+    const raw = await gmgnFetch("GET", "/v1/market/rank", { interval, limit }, null, 2, chain);
     // VERIFIED 2026-05-31: /v1/market/rank double-wraps its envelope, so after
     // gmgnFetch peels one `data` layer the list still sits at `raw.data.rank`
     // (not `raw.rank`). Check both depths.
@@ -245,37 +253,51 @@ export async function getTrendingTokens(interval = "1h", limit = 50) {
   });
 }
 
-// SOL launchpad platforms + quote address types required by the trenches body
-// (mirrors gmgn-cli's buildTrenchesBody — the endpoint rejects a body that
-// doesn't carry these per-category sections).
-const TRENCHES_PLATFORMS_SOL = [
-  "Pump.fun", "pump_mayhem", "pump_agent", "letsbonk", "bonkers", "bags",
-  "memoo", "liquid", "moonshot_app", "heaven", "believe", "boop",
-  "ray_launchpad", "meteora_virtual_curve",
-];
-const TRENCHES_QUOTE_ADDRESS_TYPES_SOL = [4, 5, 3, 1, 13, 0];
+// Per-chain launchpad platforms + quote address types required by the trenches
+// body (mirrors gmgn-cli's buildTrenchesBody — the endpoint rejects a body that
+// doesn't carry these per-category sections). The SOL values are VERIFIED; the
+// EVM launchpad strings/quote-type ints are NOT yet confirmed, so those chains
+// are left out of the map and getTrenches skips them gracefully (returns []).
+// Trending (/v1/market/rank) is chain-generic and is the primary EVM discovery
+// surface until the EVM trenches platform values are researched.
+const TRENCHES_PLATFORMS = {
+  sol: [
+    "Pump.fun", "pump_mayhem", "pump_agent", "letsbonk", "bonkers", "bags",
+    "memoo", "liquid", "moonshot_app", "heaven", "believe", "boop",
+    "ray_launchpad", "meteora_virtual_curve",
+  ],
+};
+const TRENCHES_QUOTE_ADDRESS_TYPES = {
+  sol: [4, 5, 3, 1, 13, 0],
+};
 
 /**
  * New token discovery ("trenches") — POST /v1/trenches.
  * types: "new_creation" | "near_completion" | "completed"
  * Request body is keyed per-category, response likewise — both mirror the
  * official client. Returns a flat array, each item tagged with `_trench_type`.
+ * Chains without a known launchpad map (EVM, pending research) return [] rather
+ * than sending a guessed body that the API would reject with HTTP 400.
  * 2min TTL.
  */
-export async function getTrenches(types = ["new_creation", "near_completion", "completed"], limit = 50) {
-  const cacheKey = `trenches:${types.join(",")}:${limit}`;
+export async function getTrenches(types = ["new_creation", "near_completion", "completed"], limit = 50, chain = DEFAULT_CHAIN) {
+  const c = normalizeChain(chain);
+  const platforms = TRENCHES_PLATFORMS[c];
+  const quoteTypes = TRENCHES_QUOTE_ADDRESS_TYPES[c];
+  if (!platforms || !quoteTypes) return []; // no known launchpad map for this chain
+  const cacheKey = `${c}:trenches:${types.join(",")}:${limit}`;
   return withCache(cacheKey, 2 * 60_000, async () => {
     const section = {
       filters: ["offchain", "onchain"],
-      launchpad_platform: TRENCHES_PLATFORMS_SOL,
-      quote_address_type: TRENCHES_QUOTE_ADDRESS_TYPES_SOL,
+      launchpad_platform: platforms,
+      quote_address_type: quoteTypes,
       launchpad_platform_v2: true,
       limit: Math.min(limit, 80),
     };
     const body = { version: "v2" };
     for (const t of types) body[t] = { ...section };
 
-    const raw = await gmgnFetch("POST", "/v1/trenches", {}, body);
+    const raw = await gmgnFetch("POST", "/v1/trenches", {}, body, 2, c);
     if (!raw) return null;
     if (Array.isArray(raw)) {
       return raw.map((it) => ({ ...it, _trench_type: it.type || "unknown" }));
@@ -314,14 +336,15 @@ const SIGNAL_TYPES_SUPPORTED = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 17, 1
  * @param {number[]} [signalTypes] subset of 1–13,17,18 (14/15/16 unsupported)
  * @param {object}   [filters]     optional group filters (mc_min, mc_max, …)
  */
-export async function getTokenSignals(signalTypes = SIGNAL_TYPES_SUPPORTED, filters = {}) {
+export async function getTokenSignals(signalTypes = SIGNAL_TYPES_SUPPORTED, filters = {}, chain = DEFAULT_CHAIN) {
+  const c = normalizeChain(chain);
   const types = (Array.isArray(signalTypes) ? signalTypes : [signalTypes])
     .map(Number)
     .filter((t) => Number.isFinite(t) && ![14, 15, 16].includes(t));
   const group = { signal_type: types.length ? types : SIGNAL_TYPES_SUPPORTED, ...filters };
-  const cacheKey = `signals:${group.signal_type.join(",")}:${JSON.stringify(filters)}`;
+  const cacheKey = `${c}:signals:${group.signal_type.join(",")}:${JSON.stringify(filters)}`;
   return withCache(cacheKey, 3 * 60_000, async () => {
-    const raw = await gmgnFetch("POST", "/v1/market/token_signal", {}, { chain: CHAIN, groups: [group] });
+    const raw = await gmgnFetch("POST", "/v1/market/token_signal", {}, { chain: c, groups: [group] }, 2, c);
     return asFeed(raw);
   });
 }
@@ -485,15 +508,24 @@ function normalizeWalletStats(r) {
  */
 export function extractGmgnRowRisk(t) {
   const n = (v) => (v != null && v !== "") ? Number(v) : null;
+  const b = (v) => (v === true || v === 1 || v === "true" || v === "1") ? true
+    : (v === false || v === 0 || v === "false" || v === "0") ? false : null;
   return {
+    // Rates / counts (0-1 fractions or integers; null = not provided by GMGN)
     rug_ratio: n(t.rug_ratio),
     sniper_count: n(t.sniper_count),
     bundler_rate: n(t.bundler_rate),
+    top_10_holder_rate: n(t.top_10_holder_rate),
     top70_sniper_hold_rate: n(t.top70_sniper_hold_rate),
     rat_trader_amount_rate: n(t.rat_trader_amount_rate),
     dev_team_hold_rate: n(t.dev_team_hold_rate),
     suspected_insider_hold_rate: n(t.suspected_insider_hold_rate),
     fresh_wallet_rate: n(t.fresh_wallet_rate),
+    bluechip_owner_percentage: n(t.bluechip_owner_percentage),
+    // Booleans (null = not provided / unknown)
+    is_honeypot: b(t.is_honeypot),
+    renounced_mint: b(t.renounced_mint),
+    renounced_freeze_account: b(t.renounced_freeze_account),
   };
 }
 

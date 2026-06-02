@@ -31,6 +31,8 @@ const ALLOWED_KEYS = new Set([
   // GMGN staged-activation flags (config.gmgn.*) + hunter prey cap
   "gmgnDiscovery", "gmgnHunter", "gmgnCopyTrade", "gmgnRugSignals", "gmgnHolderEnrich",
   "gmgnEnrichCap", "hunterPreyCap",
+  // Multi-chain — discovery chains + EVM execution gate + per-chain wallets
+  "gmgnChains", "gmgnExecEnabled", "gmgnWallets",
   "geyserGrpcUrl", "geyserGrpcToken",
   "walletAddress", "privateKey",
   "telegramBotToken", "telegramChatId",
@@ -227,6 +229,28 @@ function sanitizePositionLimits(obj) {
   return out;
 }
 
+// Multi-chain: discovery chains validated against GMGN's allowlist. Empty/invalid
+// falls back to ["sol"] (single-chain — current behavior).
+const GMGN_CHAIN_ALLOWLIST = ["sol", "base", "bsc", "eth"];
+function sanitizeGmgnChains(v) {
+  if (!Array.isArray(v)) return ["sol"];
+  const valid = [...new Set(v.map(c => String(c).toLowerCase()).filter(c => GMGN_CHAIN_ALLOWLIST.includes(c)))];
+  return valid.length ? valid : ["sol"];
+}
+// Per-chain EVM wallet addresses { base:"0x..", bsc:"0x.." }. Only known chains,
+// only string addresses. Empty object by default.
+function sanitizeGmgnWallets(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  const out = {};
+  for (const [chain, addr] of Object.entries(v)) {
+    const c = String(chain).toLowerCase();
+    if (!GMGN_CHAIN_ALLOWLIST.includes(c)) continue;
+    if (typeof addr !== "string" || !addr.trim()) continue;
+    out[c] = addr.trim();
+  }
+  return out;
+}
+
 function sanitizeConfig(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return {};
   const out = {};
@@ -241,6 +265,8 @@ function sanitizeConfig(data) {
     if (k === "rpcUrls") { out[k] = sanitizeRpcUrls(v); continue; }
     if (k === "customProviders") { out[k] = sanitizeCustomProviders(v); continue; }
     if (k === "wallets") { out[k] = sanitizeWallets(v); continue; }
+    if (k === "gmgnChains") { out[k] = sanitizeGmgnChains(v); continue; }
+    if (k === "gmgnWallets") { out[k] = sanitizeGmgnWallets(v); continue; }
     if (k === "trashWallets") { out[k] = sanitizeTrashWallets(v); continue; }
     if (k === "hunter") { out[k] = sanitizeHunter(v); continue; }
     if (k === "copyTrade") { out[k] = sanitizeCopyTrade(v); continue; }

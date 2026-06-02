@@ -33,6 +33,8 @@ if (u.paperTrading != null)  process.env.PAPER_TRADING   ||= String(u.paperTradi
 if (u.paperStartSol != null) process.env.PAPER_START_SOL ||= String(u.paperStartSol);
 // Demo strict gates: run confirmMode + safety-check in demo too (opt-in fidelity).
 if (u.demoStrictGates != null) process.env.DEMO_STRICT_GATES ||= String(u.demoStrictGates);
+if (u.proValidationMode != null) process.env.PRO_VALIDATION_MODE ||= String(u.proValidationMode);
+if (u.heliusApiEnabled != null) process.env.HELIUS_API_ENABLED ||= String(u.heliusApiEnabled);
 if (u.publicApiKey) process.env.PUBLIC_API_KEY ||= u.publicApiKey;
 if (u.agentMeridianApiUrl) process.env.AGENT_MERIDIAN_API_URL ||= u.agentMeridianApiUrl;
 applyExecutionMode({ userConfig: u });
@@ -186,6 +188,10 @@ export const config = {
 
   automation: {
     enabled: u.automationEnabled ?? true,
+  },
+
+  pro: {
+    validationMode: u.proValidationMode === true || process.env.PRO_VALIDATION_MODE === "true",
   },
 
   // ─── Daily Trade Guard ──────────────────────
@@ -345,9 +351,26 @@ export const config = {
     copyTrade:    u.gmgnCopyTrade    !== false, // live priority-wallet list
     rugSignals:   u.gmgnRugSignals   !== false, // GMGN top-holder tags in rug scoring
     holderEnrich: u.gmgnHolderEnrich !== false, // holder-data-enricher GMGN path
+    heliusFallback: u.heliusFallback !== false,  // allow Helius API fallback when GMGN has no holder tags
     // Cap on per-wallet wallet_stats enrichment calls (each is rate-gated ~300ms;
     // results cache 15min). Lower = faster dashboard/discovery, fewer fresh stats.
     enrichCap:    finiteNumber(u.gmgnEnrichCap, 25),
+    // Active discovery/execution chains. Default ["sol"] = single-chain (current
+    // behavior). GMGN's OpenAPI supports sol/base/bsc/eth; unknown values dropped.
+    // Validated here (config.js can't import gmgn.js — circular).
+    chains:       (() => {
+      const KNOWN = ["sol", "base", "bsc", "eth"];
+      const raw = Array.isArray(u.gmgnChains) ? u.gmgnChains : null;
+      const valid = (raw || ["sol"]).map(c => String(c).toLowerCase()).filter(c => KNOWN.includes(c));
+      return valid.length > 0 ? [...new Set(valid)] : ["sol"];
+    })(),
+    // Phase 3 — EVM execution via GMGN swap. HARD OFF by default; even when true,
+    // DRY_RUN still simulates. Solana always routes through Jupiter regardless.
+    execEnabled:  u.gmgnExecEnabled === true,
+    // Per-chain EVM wallet addresses for GMGN swaps, e.g. { base: "0x..", bsc: "0x.." }.
+    // GMGN_PRIVATE_KEY (in ~/.config/gmgn/.env) must correspond to these. Empty by default.
+    wallets:      (u.gmgnWallets && typeof u.gmgnWallets === "object" && !Array.isArray(u.gmgnWallets))
+      ? u.gmgnWallets : {},
   },
 
   // ─── Portfolio Manager (Phase 2 — OpenClaw multi-strategy) ──
@@ -399,7 +422,7 @@ export const config = {
     // Max pre-scored hunter "prey" injected into a single screening cycle.
     // GMGN trending/trenches/signals now feed the hunter, so this bounds how
     // much extra load lands on the (timeout-sensitive) screening pipeline.
-    preyCap: finiteNumber(u.hunterPreyCap, 10),
+    preyCap: finiteNumber(u.hunterPreyCap, 20),
   },
 
   // ─── LLM Settings ──────────────────────

@@ -22,7 +22,11 @@ import {
   getWalletStats,
   getTokenSignals,
   getTrenches,
+  getTokenSecurity,
   extractGmgnRowRisk,
+  normalizeChain,
+  GMGN_CHAINS,
+  _resetGmgnCache,
   _resetGmgnState,
 } from "../tools/gmgn.js";
 
@@ -315,5 +319,71 @@ describe("gmgn: HTTP path (fetch stubbed)", () => {
     await getTrendingTokens("5m", 10);
     // exactly one network attempt — 429 must NOT be retried (it escalates bans).
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("gmgn: multi-chain (Phase 1)", () => {
+  beforeEach(() => {
+    process.env.GMGN_API_KEY = "gmgn_live_abcdef1234567890";
+    _resetGmgnState();
+    _resetGmgnCache();
+  });
+
+  function okJson(data) {
+    return { ok: true, status: 200, json: async () => ({ code: 0, data }) };
+  }
+
+  it("normalizeChain accepts known chains, rejects unknown to sol", () => {
+    expect(normalizeChain("base")).toBe("base");
+    expect(normalizeChain("BSC")).toBe("bsc");
+    expect(normalizeChain("eth")).toBe("eth");
+    expect(normalizeChain("polygon")).toBe("sol"); // unknown → default
+    expect(normalizeChain(null)).toBe("sol");
+    expect(GMGN_CHAINS).toContain("base");
+  });
+
+  it("default chain is sol — URL carries chain=sol when no chain passed", async () => {
+    let sentUrl = null;
+    vi.stubGlobal("fetch", vi.fn(async (url) => { sentUrl = url; return okJson({ rank: [] }); }));
+    await getTrendingTokens("1h", 10);
+    expect(sentUrl).toContain("chain=sol");
+  });
+
+  it("explicit chain threads into the request URL", async () => {
+    let sentUrl = null;
+    vi.stubGlobal("fetch", vi.fn(async (url) => { sentUrl = url; return okJson({ rank: [] }); }));
+    await getTrendingTokens("1h", 10, "base");
+    expect(sentUrl).toContain("chain=base");
+  });
+
+  it("cache is chain-namespaced — base and sol do not collide on the same mint", async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(okJson({ is_honeypot: false, _chain_marker: "sol" }))
+      .mockResolvedValueOnce(okJson({ is_honeypot: true, _chain_marker: "base" }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const solSec = await getTokenSecurity("MintShared", "sol");
+    const baseSec = await getTokenSecurity("MintShared", "base");
+    // Two distinct network calls (no cache bleed), distinct results.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(solSec._chain_marker).toBe("sol");
+    expect(baseSec._chain_marker).toBe("base");
+  });
+
+  it("getTrenches returns [] for EVM chains (no launchpad map yet) without hitting the API", async () => {
+    const fetchSpy = vi.fn(async () => okJson({ new_creation: [] }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const out = await getTrenches(["new_creation"], 20, "base");
+    expect(out).toEqual([]);
+    expect(fetchSpy).not.toHaveBeenCalled(); // skipped before any request
+  });
+
+  it("getTrenches still works for sol (regression)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okJson({
+      version: "v2", new_creation: [{ address: "A", symbol: "AA" }],
+    })));
+    const out = await getTrenches(["new_creation"], 20, "sol");
+    expect(out).toHaveLength(1);
+    expect(out[0]._trench_type).toBe("new_creation");
   });
 });

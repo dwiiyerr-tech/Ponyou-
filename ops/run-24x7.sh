@@ -92,7 +92,7 @@ start_agent() {
     old_pid=$(cat "${AGENT_PID_FILE}" 2>/dev/null || true)
     if [ -n "${old_pid}" ] && kill -0 "${old_pid}" 2>/dev/null; then
       log "Killing stale agent from previous session pid=${old_pid}"
-      kill -TERM "${old_pid}" 2>/dev/null || true
+      kill -TERM -- "-${old_pid}" 2>/dev/null || kill -TERM "${old_pid}" 2>/dev/null || true
       sleep 1
     fi
     rm -f "${AGENT_PID_FILE}"
@@ -100,7 +100,7 @@ start_agent() {
 
   (
     cd "${ROOT_DIR}"
-    exec "${START_CMD[@]}"
+    exec setsid "${START_CMD[@]}"
   ) >>"${AGENT_LOG}" 2>&1 &
   AGENT_PID=$!
   printf '%s' "${AGENT_PID}" > "${AGENT_PID_FILE}"
@@ -112,7 +112,7 @@ start_agent() {
 stop_agent() {
   if [ -n "${AGENT_PID}" ] && kill -0 "${AGENT_PID}" 2>/dev/null; then
     log "Stopping agent pid=${AGENT_PID}"
-    kill -TERM "${AGENT_PID}" 2>/dev/null || true
+    kill -TERM -- "-${AGENT_PID}" 2>/dev/null || kill -TERM "${AGENT_PID}" 2>/dev/null || true
     wait "${AGENT_PID}" 2>/dev/null || true
   fi
   AGENT_PID=""
@@ -125,6 +125,10 @@ start_dashboard() {
   # loop alongside the agent (handled by ensure_dashboard).
   if [ "${DASHBOARD_ENABLED}" != "1" ]; then return; fi
   if [ -n "${DASH_PID}" ] && kill -0 "${DASH_PID}" 2>/dev/null; then return; fi
+  if port_in_use "${DASHBOARD_PORT}"; then
+    log "Dashboard already listening on ${DASHBOARD_PORT} — adopting existing instance"
+    return
+  fi
   log "Starting dashboard on port ${DASHBOARD_PORT}"
   (
     cd "${ROOT_DIR}"
@@ -146,9 +150,9 @@ stop_dashboard() {
 ensure_dashboard() {
   # Cheap idempotent check — called inside the main loop.
   if [ "${DASHBOARD_ENABLED}" != "1" ]; then return; fi
-  if [ -z "${DASH_PID}" ] || ! kill -0 "${DASH_PID}" 2>/dev/null; then
-    start_dashboard
-  fi
+  if [ -n "${DASH_PID}" ] && kill -0 "${DASH_PID}" 2>/dev/null; then return; fi
+  if port_in_use "${DASHBOARD_PORT}"; then return; fi
+  start_dashboard
 }
 
 port_in_use() {
@@ -197,7 +201,15 @@ cleanup_children() {
   stop_dashboard
   stop_proxy
 }
-trap cleanup_children EXIT INT TERM
+
+handle_shutdown_signal() {
+  trap - EXIT
+  cleanup_children
+  exit 0
+}
+
+trap cleanup_children EXIT
+trap handle_shutdown_signal INT TERM
 
 process_supervisor_command() {
   if [ ! -f "${SUPERVISOR_COMMAND_FILE}" ]; then
@@ -231,6 +243,12 @@ wait_for_agent_or_command() {
   local since_commit_check=0
   while true; do
     process_supervisor_command
+    # Re-assert sidecars every poll. Without this, a proxy killed by a prior
+    # supervisor's EXIT trap stays dead for the entire agent run — every LLM
+    # call fails, the circuit breaker trips, and scalping/smart_money screening
+    # is blocked for 30 minutes.
+    ensure_dashboard
+    ensure_proxy
 
     if [ -z "${AGENT_PID}" ]; then
       return 0

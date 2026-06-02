@@ -131,3 +131,9 @@ ruvector.db
 # paper-trade (demo) learning stores — isolated from live so simulated trades
 # never pollute the live decision corpus. Pure scratch data.
 demo/
+
+# Runtime learning state — written by the running bot, not source-controlled.
+# Slipped the gitignore net before this rule was added.
+dev-reputation.json
+hunter-performance.json
+name-patterns-learned.json

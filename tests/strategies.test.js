@@ -40,10 +40,42 @@ describe("strategies — PRESETS", () => {
     expect(s.trailing_stop.enabled).toBe(true);
   });
 
+  // BUG 1 regression: scalping ran as part of the live multi-strategy set
+  // ["degen","scalping","smart_money"] WITHOUT mcap bounds. applyStrategyFilters
+  // skips the mcap gate when min/max are not finite, so scalping matched tokens
+  // of any size — a $10M token could fail degen/smart_money yet slip through
+  // scalping. Bounds must be finite micro-cap values so the gate actually fires.
+  it("scalping preset has finite micro-cap bounds (BUG 1)", async () => {
+    const { PRESETS } = await import("../strategies.js");
+    const s = PRESETS.scalping;
+    expect(Number.isFinite(s.filters.min_mcap_usd)).toBe(true);
+    expect(Number.isFinite(s.filters.max_mcap_usd)).toBe(true);
+    expect(s.filters.min_mcap_usd).toBeGreaterThan(0);
+    expect(s.filters.max_mcap_usd).toBeGreaterThan(s.filters.min_mcap_usd);
+    // micro-cap scoped: must reject a $10M token via the max gate
+    expect(s.filters.max_mcap_usd).toBeLessThan(10_000_000);
+    expect(Number.isFinite(s.filters.min_token_fees_sol)).toBe(true);
+  });
+
+  // A $10M token must actually be flagged by the real entry-gate evaluator
+  // when scalping is the active strategy — proves the max-mcap gate fires
+  // instead of being silently skipped on an undefined bound.
+  it("scalping flags a $10M token via run4FilterProtocol (BUG 1)", async () => {
+    const { setActiveStrategy } = await import("../strategies.js");
+    const { run4FilterProtocol } = await import("../strategy.js");
+    setActiveStrategy("scalping");
+    // mcap above scalping.max_mcap_usd (200k); all other gates kept clean.
+    const tokenData = { mint: "BugOneMint", symbol: "BIG", mcap: 10_000_000, volume: 0, global_fees_sol: 5 };
+    const result = await run4FilterProtocol(tokenData, { holders: [] }, { level: "low" });
+    const flagStr = JSON.stringify(result.flags);
+    expect(flagStr).toMatch(/MCap above/i);
+  });
+
   it("sniper preset has strict gate filters", async () => {
     const { PRESETS } = await import("../strategies.js");
     const s = PRESETS.sniper;
-    expect(s.filters.maxAllowedFlags).toBe(0);
+    expect(s.filters.maxAllowedFlags).toBeLessThanOrEqual(1); // was 0; relaxed to 1 to allow realistic tokens
+    expect(s.filters.min_token_fees_sol).toBeLessThanOrEqual(2); // was 10; 1 SOL is realistic
     expect(s.filters.min_mcap_usd).toBeGreaterThan(0);
     expect(s.filters.max_mcap_usd).toBeGreaterThan(s.filters.min_mcap_usd);
   });
@@ -74,7 +106,7 @@ describe("strategies — PRESETS", () => {
   it("day_phase_trading has long ROI timeline", async () => {
     const { PRESETS } = await import("../strategies.js");
     const s = PRESETS.day_phase_trading;
-    expect(s.filters.min_mcap_usd).toBeGreaterThanOrEqual(1_000_000);
+    expect(s.filters.min_mcap_usd).toBeGreaterThanOrEqual(500_000); // was 1M; lowered to match social signal mid-cap band
     expect(s.filters.max_ath_distance_pct).toBeLessThanOrEqual(-50);
     expect(s.minimal_roi["4320"]).toBeDefined(); // day 3
   });

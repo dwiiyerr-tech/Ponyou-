@@ -17,8 +17,8 @@ const EXPLICIT_SENSITIVE = new Set([
 // Pattern: any field name containing one of these substrings is redacted
 // unless explicitly excepted. Lowercased before match.
 const SENSITIVE_SUBSTRINGS = [
-  "apikey", "secretkey", "privatekey", "bottoken", "bot_token",
-  "seedphrase", "mnemonic", "passphrase", "password",
+  "apikey", "api_key", "secretkey", "secret_key", "privatekey", "private_key",
+  "bottoken", "bot_token", "seedphrase", "seed_phrase", "mnemonic", "passphrase", "password",
 ];
 
 // Keys that look sensitive by pattern but are not. Add sparingly.

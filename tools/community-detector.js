@@ -216,7 +216,7 @@ export function markDevCoinOutcome({ creatorWallet, mint, outcome, longevityHour
   dev.last_updated_at = nowIso();
 
   // Recalculate score and tier
-  const totalLaunches = Math.max(1, dev.coins_launched || dev.launches.length);
+  const totalLaunches = Math.max(1, dev.coins_launched || dev.launches?.length || 1);
   const badCount = (dev.coins_rugged || 0) + (dev.coins_abandoned || 0);
   const successRate = Math.max(0, (totalLaunches - badCount) / totalLaunches);
   let score = Math.round(successRate * 60 + Math.min(15, totalLaunches * 0.75) + Math.min(15, dev.total_longevity_hours / totalLaunches / 24));
@@ -715,6 +715,7 @@ export function runCommunityAssessment(tokenData = {}) {
     contract_upgraded, bridge_deployed, dev_new_coin,
     age_hours, new_holder_count_24h,
   } = tokenData;
+  const cexListings = Array.isArray(cex_listings) ? cex_listings : [];
 
   // Dev reputation
   const devRep = scoreDevReputation({

@@ -28,6 +28,16 @@ import { getWalletBalances } from "./tools/wallet.js";
 import { applyFeeEntryGuard, getSolanaGasFee, shouldSkipEntriesForGasFee } from "./tools/solana-rpc.js";
 import { discoverTokens, getTokenSecurityDetails, getTokenKlines } from "./tools/dexscreener.js";
 import { preSwapGuard, swapToken } from "./tools/jupiter.js";
+import { executeGmgnSwap } from "./tools/gmgnSwap.js";
+import { GMGN_CHAINS } from "./tools/gmgn.js";
+
+// Chain-aware sell for deterministic exits (SL/TP/trailing). These bypass the
+// executeTool dispatcher and call the DEX directly, so they must route EVM
+// positions to GMGN themselves. Solana (chain absent/"sol") stays on Jupiter.
+function sellByChain(args) {
+  const chain = (args?.chain || "sol").toLowerCase();
+  return chain === "sol" ? swapToken(args) : executeGmgnSwap(args);
+}
 import { config, computeDeployAmount, computeVolatilityAdjustedSize } from "./config.js";
 import { computeRegimeSizeMultiplier } from "./market-safety.js";
 import {
@@ -50,7 +60,7 @@ import {
 import { buildRiskPolicy, evaluateExitPolicy } from "./risk-policy.js";
 import {
   getStrategy, listStrategies, setActiveStrategy, setStrategyOverride,
-  getActiveStrategyId, STRATEGY_IDS,
+  getActiveStrategyId, getActiveStrategyIds, setActiveStrategies, STRATEGY_IDS,
 } from "./strategies.js";
 import { matchStrategyForCoin } from "./tools/strategy-matcher.js";
 import { detectInsiderPatterns } from "./tools/insider-detector.js";
@@ -372,8 +382,12 @@ if (config.portfolio?.enabled) {
 
 initProOrchestrator(); // Pro mode — activates after automation approved
 registerAgent("pro-orchestrator", { role: "screening", healthCheck: () => getProDashboard() });
+const proDashboard = getProDashboard();
+const proValidationMode = proDashboard?.agent?.validationMode === true;
 setAgentStatus("pro-orchestrator", isProModeActive() ? "running" : "stopped",
-  isProModeActive() ? "PRO MODE — elite decision engine online" : "Pro mode locked — awaiting automation approval");
+  isProModeActive()
+    ? (proValidationMode ? "PRO VALIDATION MODE — demo/paper only" : "PRO MODE — elite decision engine online")
+    : "Pro mode locked — awaiting automation approval");
 setAgentStatus("trash-layer", "running", "Trash layer active — gatekeeper between Hunters and Screening");
 setAgentStatus("hunters", "running", "Hunters active — searching for prey");
 setAgentStatus("screening", "running", "Screening active — pipeline ready");
@@ -908,14 +922,74 @@ async function handleStrategyTelegramCommand(text) {
   }
 
   if (cmd === "/strategies") {
-    const list = listStrategies();
-    const lines = [`🎯 <b>Strategies</b>`, fmt.divider()];
-    for (const s of list) {
-      const mark = s.active ? "●" : "○";
-      lines.push(`${mark} <b>${htmlEscape(s.id)}</b> — ${htmlEscape(s.name)}`);
-      lines.push(`   SL ${s.stoploss_pct.toFixed(1)}% · trail ${s.trailing ? "on" : "off"} · partTP ${htmlEscape(String(s.partial_tp))} · LLM ${s.use_llm ? "on" : "off"}`);
+    const subCmd = parts[1];
+    const activeIds = getActiveStrategyIds();
+
+    // /strategies add <id> [id2 ...]
+    if (subCmd === "add") {
+      const toAdd = parts.slice(2);
+      if (toAdd.length === 0) { await sendHTML("Usage: /strategies add <id> [id2...]"); return true; }
+      const invalid = toAdd.filter(id => !STRATEGY_IDS.includes(id));
+      if (invalid.length > 0) { await sendHTML(`❌ Unknown: ${invalid.join(", ")}. Valid: ${STRATEGY_IDS.join(", ")}`); return true; }
+      const newIds = [...new Set([...activeIds, ...toAdd])];
+      setActiveStrategies(newIds);
+      await sendHTML(`✅ Active strategies: <code>${newIds.join(", ")}</code>`);
+      return true;
     }
-    lines.push(``, fmt.it("Switch: /strategy <id>"));
+
+    // /strategies remove <id>
+    if (subCmd === "remove") {
+      const toRemove = parts[2];
+      if (!toRemove) { await sendHTML("Usage: /strategies remove <id>"); return true; }
+      const newIds = activeIds.filter(id => id !== toRemove);
+      if (newIds.length === 0) { await sendHTML("❌ Cannot remove all strategies. Keep at least one."); return true; }
+      setActiveStrategies(newIds);
+      await sendHTML(`✅ Removed <code>${toRemove}</code>. Active: <code>${newIds.join(", ")}</code>`);
+      return true;
+    }
+
+    // /strategies set <id1> [id2 id3 ...]
+    if (subCmd === "set") {
+      const ids = parts.slice(2);
+      if (ids.length === 0) { await sendHTML("Usage: /strategies set <id1> [id2 id3...]"); return true; }
+      const invalid = ids.filter(id => !STRATEGY_IDS.includes(id));
+      if (invalid.length > 0) { await sendHTML(`❌ Unknown: ${invalid.join(", ")}. Valid: ${STRATEGY_IDS.join(", ")}`); return true; }
+      setActiveStrategies(ids);
+      await sendHTML(`✅ Active strategies: <code>${ids.join(", ")}</code>`);
+      return true;
+    }
+
+    // /strategies all
+    if (subCmd === "all") {
+      setActiveStrategies(STRATEGY_IDS);
+      await sendHTML(`✅ All strategies active: <code>${STRATEGY_IDS.join(", ")}</code>`);
+      return true;
+    }
+
+    // /strategies reset — back to single primary
+    if (subCmd === "reset") {
+      const primary = getActiveStrategyId();
+      setActiveStrategies([primary]);
+      await sendHTML(`✅ Reset to single strategy: <code>${primary}</code>`);
+      return true;
+    }
+
+    // /strategies — list
+    const list = listStrategies();
+    const lines = [`🎯 <b>Strategies</b> (active: ${activeIds.join(", ")})`, fmt.divider()];
+    for (const s of list) {
+      const isActive = activeIds.includes(s.id);
+      const mark = isActive ? "●" : "○";
+      const llmTag = s.use_llm ? "LLM" : "rule";
+      lines.push(`${mark} <b>${htmlEscape(s.id)}</b> — ${htmlEscape(s.name)} [${llmTag}]`);
+      lines.push(`   SL ${s.stoploss_pct.toFixed(1)}% · trail ${s.trailing ? "on" : "off"} · partTP ${htmlEscape(String(s.partial_tp))}`);
+    }
+    lines.push(``, fmt.it("Commands:"));
+    lines.push(fmt.it("/strategies set degen scalping — activate 2 strategies"));
+    lines.push(fmt.it("/strategies add scalping — add to active set"));
+    lines.push(fmt.it("/strategies remove degen — remove from active set"));
+    lines.push(fmt.it("/strategies all — activate all strategies"));
+    lines.push(fmt.it("/strategies reset — back to single strategy"));
     await sendHTML(lines.join("\n"));
     return true;
   }
@@ -923,17 +997,78 @@ async function handleStrategyTelegramCommand(text) {
   if (cmd === "/strategy") {
     const id = parts[1];
     if (!id) {
+      const activeIds = getActiveStrategyIds();
       const active = getStrategy();
-      await sendHTML(`🎯 Active: <b>${active.name}</b> (<code>${active.id}</code>)\nSwitch: /strategy &lt;id&gt;\nList: /strategies`);
+      const modeLabel = activeIds.length > 1 ? `Multi [${activeIds.join(", ")}]` : `Single [${active.id}]`;
+      await sendHTML(`🎯 Mode: <b>${modeLabel}</b>\nPrimary: <b>${active.name}</b> (<code>${active.id}</code>)\nSwitch: /strategy &lt;id&gt;\nMulti: /strategies set degen scalping`);
       return true;
     }
     if (!STRATEGY_IDS.includes(id)) {
       await sendHTML(`❌ Unknown strategy <code>${id}</code>. Valid: ${STRATEGY_IDS.join(", ")}`);
       return true;
     }
-    setActiveStrategy(id);
+    setActiveStrategy(id); // single-strategy mode: resets to [id]
+    setActiveStrategies([id]);
     const active = getStrategy();
-    await sendHTML(`✅ Switched to <b>${active.name}</b> (<code>${id}</code>)\n${active.description}`);
+    await sendHTML(`✅ Switched to single strategy: <b>${active.name}</b> (<code>${id}</code>)\n${active.description}`);
+    return true;
+  }
+
+  if (cmd === "/chains") {
+    // Persist gmgnChains to user-config.json AND mutate the live config so the
+    // next hunter expedition picks it up without a restart (hunter reads
+    // config.gmgn.chains each cycle). Execution flags (execEnabled/wallets) stay
+    // in user-config.json for safety — chain selection here is discovery-facing.
+    const sub = parts[1];
+    const cur = Array.isArray(config.gmgn?.chains) && config.gmgn.chains.length ? config.gmgn.chains : ["sol"];
+    const persistChains = async (next) => {
+      const valid = [...new Set(next.map(c => String(c).toLowerCase()).filter(c => GMGN_CHAINS.includes(c)))];
+      if (valid.length === 0) return null;
+      config.gmgn.chains = valid; // live effect on next hunt
+      const { default: fs } = await import("fs");
+      const { default: path } = await import("path");
+      const { fileURLToPath } = await import("url");
+      const ucPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "user-config.json");
+      let uc = {};
+      try { if (fs.existsSync(ucPath)) uc = JSON.parse(fs.readFileSync(ucPath, "utf8")); } catch {}
+      uc.gmgnChains = valid;
+      atomicWriteJson(ucPath, uc);
+      return valid;
+    };
+
+    if (sub === "set" || sub === "add" || sub === "remove") {
+      const args = parts.slice(2).map(c => c.toLowerCase());
+      if (args.length === 0) { await sendHTML(`Usage: /chains ${sub} sol base`); return true; }
+      const invalid = args.filter(c => !GMGN_CHAINS.includes(c));
+      if (invalid.length && sub !== "remove") { await sendHTML(`❌ Unknown: ${invalid.join(", ")}. Valid: ${GMGN_CHAINS.join(", ")}`); return true; }
+      let next;
+      if (sub === "set") next = args;
+      else if (sub === "add") next = [...cur, ...args];
+      else next = cur.filter(c => !args.includes(c));
+      if (next.length === 0) { await sendHTML("❌ At least one chain must stay active (sol is the safe default)."); return true; }
+      const saved = await persistChains(next);
+      if (!saved) { await sendHTML(`❌ No valid chains. Valid: ${GMGN_CHAINS.join(", ")}`); return true; }
+      const evmOn = saved.some(c => c !== "sol");
+      await sendHTML([
+        `✅ Active chains: <code>${saved.join(", ")}</code>`,
+        `Discovery takes effect next hunt (no restart needed).`,
+        evmOn ? `\n⚠️ EVM execution stays OFF until you set <code>gmgnExecEnabled:true</code> + <code>gmgnWallets</code> in user-config.json and RESTART. Discovery is read-only.` : ``,
+      ].filter(Boolean).join("\n"));
+      return true;
+    }
+
+    // /chains — show status
+    const execOn = config.gmgn?.execEnabled === true;
+    const lines = [`⛓️ <b>Chains</b>`, fmt.divider()];
+    for (const c of GMGN_CHAINS) {
+      const active = cur.includes(c);
+      lines.push(`${active ? "●" : "○"} <code>${c}</code>${c === "sol" ? " (native — Jupiter exec)" : " (GMGN exec)"}`);
+    }
+    lines.push(``, `Discovery: <b>${cur.join(", ")}</b>`);
+    lines.push(`EVM execution: <b>${execOn ? "ON" : "OFF (dry-run/discovery only)"}</b>`);
+    lines.push(``, fmt.it("/chains set sol base — activate sol + base discovery"));
+    lines.push(fmt.it("/chains add base · /chains remove base"));
+    await sendHTML(lines.join("\n"));
     return true;
   }
 
@@ -1414,6 +1549,7 @@ async function executePendingIntent(id) {
         },
       },
       wallet_address: walletAddress,
+      chain: (args.chain || "sol").toLowerCase(),
     });
     if (_rugMonitor) {
       const positionKey = walletAddress ? `${args.token_out}::${walletAddress}` : args.token_out;
@@ -1929,6 +2065,7 @@ async function checkDeterministicExits(tokens) {
           position_key: token.position_key || token.mint,
           cast_net_group_id: tracked.cast_net_group_id || null,
           strategy_used: tracked.strategy_used || null,
+          chain: token.chain || tracked.chain || "sol",
         });
         log(
           "holder_exit",
@@ -1954,6 +2091,7 @@ async function checkDeterministicExits(tokens) {
           position_key: token.position_key || token.mint,
           cast_net_group_id: tracked.cast_net_group_id || null,
           strategy_used: tracked.strategy_used || null,
+          chain: token.chain || tracked.chain || "sol",
         });
         log(
           "holder_exit",
@@ -1990,6 +2128,7 @@ async function checkDeterministicExits(tokens) {
         position_key: token.position_key || token.mint,
         cast_net_group_id: tracked.cast_net_group_id || null,
         strategy_used: tracked.strategy_used || null,
+        chain: token.chain || tracked.chain || "sol",
       });
       continue;
     }
@@ -2007,6 +2146,7 @@ async function checkDeterministicExits(tokens) {
         position_key: token.position_key || token.mint,
         cast_net_group_id: tracked.cast_net_group_id || null,
         strategy_used: tracked.strategy_used || null,
+        chain: token.chain || tracked.chain || "sol",
       });
       continue;
     }
@@ -2024,6 +2164,7 @@ async function checkDeterministicExits(tokens) {
         position_key: token.position_key || token.mint,
         cast_net_group_id: tracked.cast_net_group_id || null,
         strategy_used: tracked.strategy_used || null,
+        chain: token.chain || tracked.chain || "sol",
       });
       continue;
     } else if (volDiv.detected && volDiv.severity === "watch") {
@@ -2043,6 +2184,7 @@ async function checkDeterministicExits(tokens) {
         position_key: token.position_key || token.mint,
         cast_net_group_id: tracked.cast_net_group_id || null,
         strategy_used: tracked.strategy_used || null,
+        chain: token.chain || tracked.chain || "sol",
       });
       continue;
     }
@@ -2087,6 +2229,7 @@ async function checkDeterministicExits(tokens) {
           is_loss: currentPnlPct < 0,
           wallet_address: token.wallet_address ?? null,
           position_key: token.position_key ?? token.mint,
+          chain: token.chain || tracked.chain || "sol",
         });
         log("pro_orchestrator",
           `SELL ${token.symbol}: ${proSell.exitSignals} signals, urgency=${proSell.urgency} — ${proSell.reasons.join("; ")}`
@@ -2112,6 +2255,7 @@ async function checkDeterministicExits(tokens) {
           is_loss: true,
           wallet_address: token.wallet_address ?? null,
           position_key: token.position_key ?? token.mint,
+          chain: token.chain || tracked.chain || "sol",
         });
         log("pro_orchestrator",
           `CUTLOSS ${token.symbol}: ${proCut.type} — ${proCut.reason}`
@@ -2127,16 +2271,16 @@ async function checkDeterministicExits(tokens) {
     });
 
     if (exitPolicy.hardCutLoss) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.hardCutLossReason, pnl_pct: currentPnlPct, is_loss: true, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.hardCutLossReason, pnl_pct: currentPnlPct, is_loss: true, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint, chain: token.chain || tracked.chain || "sol" });
       continue;
     }
     if (exitPolicy.hardStopLoss) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.hardStopLossReason, pnl_pct: currentPnlPct, is_loss: true, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.hardStopLossReason, pnl_pct: currentPnlPct, is_loss: true, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint, chain: token.chain || tracked.chain || "sol" });
       continue;
     }
     // Immediate take-profit override (hybrid mode): policy takeProfitPct triggers any time
     if (exitPolicy.takeProfit) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.takeProfitReason, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.takeProfitReason, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint, chain: token.chain || tracked.chain || "sol" });
       continue;
     }
 
@@ -2152,9 +2296,10 @@ async function checkDeterministicExits(tokens) {
       log("strategy", `PARTIAL TP: ${token.symbol} — ${partial.reason}`);
       const partialStartAt = Date.now();
       const { result: partialRes, attempt: partialAttempt, stuck: partialStuck } = await withProgressiveSlippage(
-        (slippage) => swapToken({
+        (slippage) => sellByChain({
           token_in: token.mint, token_out: "SOL",
           amount: sellAmount, slippage,
+          chain: token.chain || "sol",
           wallet: token.wallet_address ? getWalletByAddress(token.wallet_address)?.keypair || null : null,
         })
       );
@@ -2194,25 +2339,27 @@ async function checkDeterministicExits(tokens) {
 
     const roiCheck = checkROI(ageMinutes, currentPnlPct, condition);
     if (roiCheck.exit) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: roiCheck.reason, pnl_pct: currentPnlPct, is_loss: currentPnlPct < 0, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: roiCheck.reason, pnl_pct: currentPnlPct, is_loss: currentPnlPct < 0, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint, chain: token.chain || tracked.chain || "sol" });
       continue;
     }
     if (exitPolicy.trailingStop) {
-      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.trailingStopReason, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint });
+      exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.trailingStopReason, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint, chain: token.chain || tracked.chain || "sol" });
     }
   }
 
-  // G2/G3: annotate every exit with the cast-net group id and the strategy
-  // the position was opened under. Done in one pass post-loop so we don't
-  // have to plumb these fields through all 7 exits.push() sites scattered
-  // through the policy branches above.
+  // G2/G3: annotate every exit with the cast-net group id, strategy, and chain
+  // from the tracked position. Done in one pass post-loop so we don't have to
+  // plumb these fields through all exits.push() sites above (most already set
+  // chain directly, but this acts as a safety-net for any missed or future paths).
   for (const exit of exits) {
-    if (exit.cast_net_group_id != null && exit.strategy_used != null) continue;
+    if (exit.cast_net_group_id != null && exit.strategy_used != null && exit.chain != null) continue;
     const t = getTrackedPosition(exit.position_key || exit.mint, exit.wallet_address || null);
     if (t) {
       if (exit.cast_net_group_id == null) exit.cast_net_group_id = t.cast_net_group_id || null;
       if (exit.strategy_used == null) exit.strategy_used = t.strategy_used || null;
+      if (exit.chain == null) exit.chain = t.chain || "sol";
     }
+    if (exit.chain == null) exit.chain = "sol";
   }
 
   return exits;
@@ -2265,11 +2412,12 @@ async function checkStagedEntries(tokens, balance) {
     log("staged_entry", `${buy.symbol}: Stage ${buy.staged.next_stage}/${buy.staged.stages} triggered — ${buy.reason}. Buying ${buy.amount_sol.toFixed(4)} SOL`);
     try {
       const { result: res } = await withProgressiveSlippage(
-        (slippage) => swapToken({
+        (slippage) => sellByChain({
           token_in: "SOL",
           token_out: buy.mint,
           amount: buy.amount_sol,
           slippage,
+          chain: buy.chain || "sol",
           wallet: buy.wallet_address ? getWalletByAddress(buy.wallet_address)?.keypair || null : null,
         })
       );
@@ -2296,6 +2444,7 @@ async function checkStagedEntries(tokens, balance) {
           initial_value_usd: newValue,
           signal_snapshot: buy.tracked.signal_snapshot,
           wallet_address: buy.wallet_address,
+          chain: buy.chain || buy.tracked?.chain || "sol",
         });
 
         recordCounter("swaps_executed");
@@ -2452,10 +2601,11 @@ export async function runManagementCycle({ silent = false } = {}) {
             await new Promise((r) => setTimeout(r, _exitPlan.splitDelayMs + jitter));
           }
           const { result: cR, attempt: cA, stuck: cS } = await withProgressiveSlippage(
-            (slippage) => swapToken({
+            (slippage) => sellByChain({
               token_in: exit.mint, token_out: "SOL",
               amount: chunkAmt,
               slippage: Math.max(slippage, _minSlippage),
+              chain: exit.chain || "sol",
               wallet: exit.wallet_address ? getWalletByAddress(exit.wallet_address)?.keypair || null : null,
             })
           );
@@ -2467,10 +2617,11 @@ export async function runManagementCycle({ silent = false } = {}) {
         res = _lastRes; exitAttempt = _lastAttempt; exitStuck = _allFailed;
       } else {
         const _r = await withProgressiveSlippage(
-          (slippage) => swapToken({
+          (slippage) => sellByChain({
             token_in: exit.mint, token_out: "SOL",
             amount: _balance,
             slippage: Math.max(slippage, _minSlippage),
+            chain: exit.chain || "sol",
             wallet: exit.wallet_address ? getWalletByAddress(exit.wallet_address)?.keypair || null : null,
           })
         );
@@ -2781,7 +2932,8 @@ export async function runManagementCycle({ silent = false } = {}) {
     const remainingBalance = await getPortfolioSnapshot();
     const remainingTokens = (remainingBalance.tokens || []).filter(t => t.usd >= 0.1 && t.symbol !== "SOL");
 
-    if (remainingTokens.length > 0 && isLLMReviewEnabled()) {
+    const _allActiveUseLlm = getActiveStrategyIds().every(id => getStrategy(id)?.use_llm !== false);
+    if (remainingTokens.length > 0 && isLLMReviewEnabled() && _allActiveUseLlm) {
       const planSummary = getPlanSummary();
       const marketIntel = getMarketIntelligence();
 
@@ -2939,10 +3091,12 @@ TUGAS:
         reportLength: content?.length || 0,
         timestamp: Date.now(),
       });
-    } else if (remainingTokens.length > 0 && !isLLMReviewEnabled()) {
-      // MA-2: LLM review toggle gate. When disabled, run deterministic
-      // exits only and surface that explicitly in the report.
-      mgmtReport = `LLM review disabled — ${deterministicExits.length} deterministic exit(s) + ${remainingTokens.length} position(s) held without qualitative review.`;
+    } else if (remainingTokens.length > 0 && (!isLLMReviewEnabled() || !_allActiveUseLlm)) {
+      // MA-2: LLM review toggle gate. When disabled (global or use_llm:false in active set),
+      // run deterministic exits only — SL/trail/ROI handle everything.
+      const ruleIds = getActiveStrategyIds().filter(id => getStrategy(id)?.use_llm === false);
+      const stratLabel = ruleIds.length > 0 ? ` (rule-based: ${ruleIds.join(", ")})` : "";
+      mgmtReport = `Rule-based${stratLabel}: ${deterministicExits.length} deterministic exit(s) + ${remainingTokens.length} position(s) managed by SL/trail/ROI.`;
     } else {
       mgmtReport = deterministicExits.length > 0 ? `Closed ${deterministicExits.length} via Strategy.` : "All positions managed.";
     }
@@ -3222,10 +3376,12 @@ export async function runScreeningCycle({ silent = false } = {}) {
     // ─── Parallel API fetch phase ──────────────────
     const apiResults = await Promise.all(
       batchTokens.map(async (token) => {
+        const tokenChain = token.chain || "sol";
         const [security, tokenInfo, rugCheck] = await Promise.allSettled([
-          getTokenSecurityDetails({ mint: token.mint }),
+          getTokenSecurityDetails({ mint: token.mint, chain: tokenChain }),
           getTokenInfo({ query: token.mint }).catch(e => ({ error: e.message })),
-          getRugCheckReport(token.mint), // FREE — RugCheck API
+          // RugCheck.xyz is Solana-only — skip for EVM chains.
+          tokenChain === "sol" ? getRugCheckReport(token.mint) : Promise.resolve(null),
         ]);
         return {
           token,
@@ -3267,6 +3423,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
           _trash_flags: token._trash_flags || [],
           ...rugCheckSignals,                               // RugCheck enrichment
           _dev_blacklist_tier: devBl.tier,                  // dev blacklist context
+          gmgn_row_risk: token._gmgn_risk || null,          // pre-fetched rank/trenches risk fields
         },
       });
 
@@ -3274,6 +3431,25 @@ export async function runScreeningCycle({ silent = false } = {}) {
       if (devBlBonus > 0) {
         rugRisk.score = Math.min(100, rugRisk.score + devBlBonus);
         rugRisk.reasons.push(`Dev ${devBl.tier} blacklisted (${devBl.entry?.rug_count || 1} rugs, +${devBlBonus})`);
+      }
+
+      // ─── Experiment #1 telemetry: GMGN row-risk (Layer 2d) ────────────────
+      // Observability for the candidate variant. Only fires for GMGN-discovered
+      // tokens (token._gmgn_risk present). Records whether Layer 2d contributed
+      // to the score and whether it pushed the token into the >=60 block band,
+      // so the operator can aggregate candidate samples for experiment #1 without
+      // re-deriving from logs. Pure measurement — no effect on the trade decision.
+      if (token._gmgn_risk) {
+        const layer2dFired = rugRisk.reasons.some(r => r.startsWith("GMGN row:"));
+        recordCounter("gmgn_row_risk_evaluated");
+        if (layer2dFired) {
+          recordCounter("gmgn_row_risk_contributed");
+          if (rugRisk.score >= 60) recordCounter("gmgn_row_risk_blocked");
+          log("experiment_gmgn_row",
+            `exp#1 ${token.symbol || token.mint.slice(0, 8)} score=${rugRisk.score} blocked=${rugRisk.score >= 60} ` +
+            `rug_ratio=${token._gmgn_risk.rug_ratio ?? "?"} honeypot=${token._gmgn_risk.is_honeypot ?? "?"} ` +
+            `reasons="${rugRisk.reasons.filter(r => r.startsWith("GMGN row:")).join(" | ")}"`);
+        }
       }
 
       // ─── Anomaly Detection (embedding similarity) ────
@@ -3323,7 +3499,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       if (rugRisk.score >= 60) {
         log("filter", `${token.symbol}: SKIP rug score ${rugRisk.score}`);
         // Auto-blacklist confirmed honeypots so they never waste another cycle
-        if (rugRisk.score >= 100) {
+        if (rugRisk.score >= 100 && !rugRisk.no_autoblacklist) {
           const honeypotReasons = rugRisk.reasons.join("; ");
           if (!isTokenBlacklisted(token.mint)) {
             recordRug({
@@ -3398,7 +3574,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         log("filter", `${token.symbol}: SKIP sell-only tier ${tierExec.tier}`);
         continue;
       }
-      const enhancedToken = { ...token, global_fees_sol: globalFees, tier: tierInfo, _trash_flags: token._trash_flags || [] };
+      const enhancedToken = { ...token, chain: token.chain || "sol", global_fees_sol: globalFees, tier: tierInfo, _trash_flags: token._trash_flags || [] };
 
       const filterResult = await run4FilterProtocol(enhancedToken, security, gasFee);
 
@@ -3537,6 +3713,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
           coingeckoData = await enrichCoin({ symbol });
           if (coingeckoData) {
             socialVelocityFromCG = coinGeckoToSocialVelocity(coingeckoData);
+            // Populate ATH distance for dip_buy/day_phase strategy matching and workflow.
+            // CoinGecko's ath_change_percentage is already "% below ATH" as a negative
+            // number — map it directly. Note: this runs AFTER the filter pass so it
+            // doesn't affect the filter gate, but it does reach the strategy-matcher
+            // and the workflow evaluator, letting them correctly identify dip candidates.
+            // Fresh memecoins (not listed on CoinGecko) will still have null — that's fine;
+            // dip_buy is a mid-cap strategy, not a fresh-launch one.
+            if (coingeckoData.ath_change_pct != null) {
+              enhancedToken.dip_from_ath_pct = coingeckoData.ath_change_pct;
+              enhancedToken.ath_distance_pct = coingeckoData.ath_change_pct;
+            }
           }
         }
       } catch (e) { /* CoinGecko is supplementary — fail silently */ }
@@ -3608,7 +3795,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
             portfolioContext: {
               open_positions: openTokens.length,
               max_positions: positionLimit,
-              session_pnl_pct: _lastSessionPnl ?? undefined,
+              session_pnl_pct: getPlanSummary()?.today_pnl_pct ?? undefined,
               kill_switch_threshold: -15,
               consecutive_losses: config.pilot.enabled ? getConsecutiveLosses() : 0,
               pro_skip_threshold: 3,
@@ -3649,7 +3836,29 @@ export async function runScreeningCycle({ silent = false } = {}) {
             stance: "unknown",
             size_multiplier: 1,
           };
-      const passed = filterResult.passed && !kelly.should_skip && workflow.llm_can_buy;
+      // Multi-strategy: score this token against all active strategies, pick best fit.
+      // Falls back to single active strategy in single-strategy mode.
+      const activeStratIds = getActiveStrategyIds();
+      let matchedStrategyId = getActiveStrategyId();
+      if (activeStratIds.length > 1) {
+        const { all: allScores } = matchStrategyForCoin({
+          token: enhancedToken,
+          activeStrategyId: matchedStrategyId,
+          marketCondition: marketIntel.condition,
+        });
+        const bestFromActive = allScores
+          .filter(s => activeStratIds.includes(s.id))
+          .sort((a, b) => b.score - a.score)[0];
+        if (bestFromActive) matchedStrategyId = bestFromActive.id;
+      }
+      const matchedStrategy = getStrategy(matchedStrategyId);
+
+      // For use_llm:false strategies (e.g. degen): bypass both the LLM workflow gate
+      // and the momentum gate — hunter score is the primary momentum signal, and many
+      // fresh/micro-cap targets lack enough klines for RSI/ST calculation anyway.
+      const stratUsesLlm = matchedStrategy?.use_llm !== false;
+      const passed = filterResult.passed && !kelly.should_skip &&
+        (stratUsesLlm ? workflow.llm_can_buy : true);
       const flags = [...(filterResult.flags || [])];
       if (kelly.should_skip) {
         const skipReason = kelly.tier === "MICRO"
@@ -3698,8 +3907,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
 
       // ─── Pro Orchestrator BUY Gate ─────────────────────────────
+      // Bypassed for use_llm:false strategies — degen/rule-based deploys on
+      // hunter score + rug filter alone; pro gate's conviction/kelly/workflow
+      // requirements are designed for LLM-conservative mode.
       let proBuySkipped = false;
-      if (passed && isProModeActive()) {
+      if (passed && isProModeActive() && stratUsesLlm) {
         const proBuyResult = proBuyDecision({
           conviction: boostedConviction,
           signal,
@@ -3898,7 +4110,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         conviction_summary: getConvictionPromptLine(token.mint, token),
         cast_net: castNetEval,
         strategy_match: strategyMatch,
-        selected_strategy: strategyMatch?.selected_strategy || getActiveStrategyId(),
+        selected_strategy: matchedStrategyId || strategyMatch?.selected_strategy || getActiveStrategyId(),
         intel,
         portfolio_skill_votes: portfolioSkillVotes,
       });
@@ -4057,7 +4269,87 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
     }
 
-    if (passingCandidates.length > 0) {
+    // Rule-based path triggers when ANY active strategy has use_llm:false.
+    let anyRuleBased = getActiveStrategyIds().some(id => getStrategy(id)?.use_llm === false);
+    if (passingCandidates.length > 0 && anyRuleBased) {
+      // Pick best from rule-based eligible candidates first (use_llm:false matched strategy).
+      // Fall through to LLM for candidates whose matched strategy uses LLM.
+      const rbCandidates = passingCandidates.filter(c => getStrategy(c.selected_strategy)?.use_llm === false);
+      const llmCandidates = passingCandidates.filter(c => getStrategy(c.selected_strategy)?.use_llm !== false);
+      if (rbCandidates.length > 0) {
+      const best = rbCandidates[0];
+      const bestStratLabel = best.selected_strategy !== getActiveStrategyId()
+        ? ` [${best.selected_strategy}]` : "";
+      log("cron", `[RULE-BASED${bestStratLabel}] ${best.symbol}: feature=${best.feature_aggregate} rug=${best.rug_score} hunter=${best._hunter_score ?? "?"} → direct deploy`);
+      const swapAmount = best.recommended_deploy_amount_sol || deployAmount;
+      try {
+        const result = await executeTool("swap_token", {
+          token_in: "SOL",
+          token_out: best.mint,
+          amount: swapAmount,
+          slippage: 0.1,
+          chain: best.chain || "sol",   // executor routes non-sol via GMGN swap
+        });
+        recordSwapOutcome({ success: !!(result?.success || result?.dry_run) });
+        const executions = selectFilledExecutions(result, {
+          wallet_address: result?.wallet_address || getActiveWallet()?.address || null,
+          amount: swapAmount,
+        });
+        if (executions.length > 0) {
+          const activeStrat = getStrategy(best.selected_strategy) || getStrategy(null, { regime: marketIntel.condition });
+          const stagedCfg = activeStrat?.staged_entry;
+          for (const exec of executions) {
+            const stage1Amount = getStage1Amount(stagedCfg, exec.amount || swapAmount);
+            const entryUsd = (stage1Amount * (balance.sol_price || 0)) || 0;
+            let stagedTracking = null;
+            if (stagedCfg?.enabled && stagedCfg.stages > 1) {
+              stagedTracking = initStagedEntry(null, activeStrat, stage1Amount, balance.sol_price || 0);
+            }
+            await trackPosition({
+              position: best.mint,
+              pool: "jupiter",
+              pool_name: best.symbol,
+              amount_sol: stage1Amount,
+              initial_value_usd: entryUsd,
+              chain: best.chain || "sol",
+              signal_snapshot: {
+                mint: best.mint,
+                symbol: best.symbol,
+                entry_price: best.price || 0,
+                token_amount: best.price > 0 ? entryUsd / best.price : 0,
+                market_condition: best.market_condition || marketIntel.condition,
+                rug_score: best.rug_score || 0,
+                conviction: best.conviction || null,
+                regime: best.regime || null,
+                workflow: best.workflow || null,
+                kelly: best.kelly || null,
+                staged_entry: stagedTracking,
+                portfolio_skill_votes: best.portfolio_skill_votes || [],
+                execution_context: {
+                  wallet_address: exec.wallet_address || null,
+                  provider: result?.execution_provider || "auto",
+                  slippage: Number(result?.slippage || 0),
+                },
+              },
+              wallet_address: exec.wallet_address || null,
+            });
+          }
+          recordTrade(null);
+        }
+        screenReport = result?.success || result?.dry_run
+          ? `[RULE-BASED] Deployed ${best.symbol}${bestStratLabel} — feature=${best.feature_aggregate} size=${swapAmount}SOL`
+          : `[RULE-BASED] Deploy failed ${best.symbol}: ${result?.error || "unknown"}`;
+      } catch (e) {
+        screenReport = `[RULE-BASED] Error ${best.symbol}: ${e.message}`;
+        log("cron_error", `rule-based deploy: ${e.message}`);
+      }
+      } else if (llmCandidates.length > 0) {
+        // rbCandidates empty but llmCandidates exist → fall through to LLM
+        passingCandidates = llmCandidates;
+        anyRuleBased = false; // allow LLM branch below
+      }
+    }
+    if (!screenReport && passingCandidates.length > 0 && !anyRuleBased) {
       log("cron", `${passingCandidates.length} passed — invoking LLM`);
       const { content } = await agentLoop(`
 SCREENING CYCLE
@@ -4140,6 +4432,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                   pool_name: token.symbol,
                   amount_sol: stage1Amount,
                   initial_value_usd: entryUsd,
+                  chain: token.chain || "sol",
                   signal_snapshot: {
                     mint: token.mint,
                     symbol: token.symbol,
@@ -4173,7 +4466,8 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
         },
       });
       screenReport = content;
-    } else {
+    }
+    if (!screenReport) {
       screenReport = `No candidates passed (market: ${marketIntel.condition}).`;
     }
   } catch (e) {

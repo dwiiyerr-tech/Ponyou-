@@ -406,7 +406,30 @@ async function discoverPumpFunTokens() {
 
 // ─── Security & Holders ───────────────────────────────────────
 
-async function _getTokenSecurityDetailsUncached({ mint }) {
+async function _getTokenSecurityDetailsUncached({ mint, chain = "sol" }) {
+  // EVM chains: skip the entire Solana-RPC holder/mint analysis (PublicKey,
+  // getParsedAccountInfo, getTokenLargestAccounts all assume a Solana mint).
+  // GMGN security + holder tags become the primary rug signal for EVM.
+  if (chain !== "sol") {
+    try {
+      const enrichedSignals = await gatherRugSignals({ mint, connection: null, holderOwners: [], launchTs: null, dsPair: null, chain });
+      return {
+        mint,
+        chain,
+        security: { renounced: null, freeze_authority: null, mint_authority: null },
+        holders: [],
+        holder_analysis: null,
+        rug_signals: {
+          is_honeypot: null,
+          ...enrichedSignals, // GMGN security + holder tags (chain-aware)
+        },
+        dex_info: null,
+      };
+    } catch (error) {
+      log("security_error", `getTokenSecurityDetails ${mint} (${chain}): ${error.message}`);
+      return { mint, chain, error: error.message, security: {}, holders: [], rug_signals: { _collector_error: error.message } };
+    }
+  }
   try {
     const connection = getSolanaConnection();
     const mintPubkey = new PublicKey(mint);
@@ -524,6 +547,7 @@ async function _getTokenSecurityDetailsUncached({ mint }) {
       holderOwners,
       launchTs,
       dsPair,
+      chain: "sol",
     });
     const holderAnalysis = analyzeHolderStructure({
       rugSignals: {
@@ -596,7 +620,7 @@ async function _getTokenSecurityDetailsUncached({ mint }) {
 const SECURITY_TTL_MS = 3 * 60_000;
 export const getTokenSecurityDetails = createCachedFetcher(
   _getTokenSecurityDetailsUncached,
-  { ttlMs: SECURITY_TTL_MS, key: ({ mint } = {}) => mint || "" }
+  { ttlMs: SECURITY_TTL_MS, key: ({ mint, chain = "sol" } = {}) => `${chain}:${mint || ""}` }
 );
 
 // ─── OHLCV Candles (GeckoTerminal, no API key) ────────────────

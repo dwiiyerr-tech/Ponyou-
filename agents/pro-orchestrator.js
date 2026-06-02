@@ -49,10 +49,17 @@ const AGENT_NAME = "pro-orchestrator";
 
 let _initialized = false;
 let _proModeActive = false;
+let _validationMode = false;
 let _tradesSinceLastAnalysis = 0;
 let _analysisCache = null;
 let _analysisCacheTime = 0;
 const ANALYSIS_CACHE_TTL_MS = 120_000; // 2 min — matches orchestrator cycle
+
+function proValidationModeEnabled() {
+  const requested = process.env.PRO_VALIDATION_MODE === "true" || _runtimeConfig.pro?.validationMode === true;
+  const demoSafe = process.env.EXECUTION_MODE === "demo" && process.env.DRY_RUN === "true";
+  return requested && demoSafe;
+}
 
 // ─── Pro Decision Thresholds ──────────────────────────────────
 
@@ -1073,12 +1080,18 @@ export function initProOrchestrator() {
   if (_initialized) return;
   _initialized = true;
 
-  // Pro mode only activates when automation is fully approved
-  _proModeActive = isAutomationActive();
+  // Pro mode activates for approved automation, or for demo-only validation.
+  _validationMode = proValidationModeEnabled();
+  _proModeActive = isAutomationActive() || _validationMode;
 
   if (_proModeActive) {
-    setAgentStatus(AGENT_NAME, "running", "PRO MODE active — elite decision engine online");
-    log("pro_orchestrator", "PRO MODE ENGAGED — full data-driven decision engine active");
+    if (_validationMode) {
+      setAgentStatus(AGENT_NAME, "running", "PRO VALIDATION MODE — demo/paper only");
+      log("pro_orchestrator", "PRO VALIDATION MODE — demo/paper only, live automation remains locked");
+    } else {
+      setAgentStatus(AGENT_NAME, "running", "PRO MODE active — elite decision engine online");
+      log("pro_orchestrator", "PRO MODE ENGAGED — full data-driven decision engine active");
+    }
 
     // Run initial deep analysis
     const intel = runProAnalysis();
@@ -1105,7 +1118,13 @@ export function initProOrchestrator() {
 
   // Listen for automation revocation — downgrade from pro mode
   agentBus.subscribe("automation:revoked", () => {
-    _proModeActive = false;
+    _validationMode = proValidationModeEnabled();
+    _proModeActive = _validationMode;
+    if (_proModeActive) {
+      setAgentStatus(AGENT_NAME, "running", "PRO VALIDATION MODE — demo/paper only");
+      log("pro_orchestrator", "Automation revoked; staying in demo-only pro validation mode");
+      return;
+    }
     setAgentStatus(AGENT_NAME, "stopped", "Pro mode revoked — back to manual");
     log("pro_orchestrator", "Pro mode disengaged — automation revoked");
   });
@@ -1143,6 +1162,7 @@ export function getProDashboard() {
       name: AGENT_NAME,
       role: "pro-orchestrator",
       active: _proModeActive,
+      validationMode: _validationMode,
     },
     thresholds: PRO_THRESHOLDS,
     intelligence: intel ? {

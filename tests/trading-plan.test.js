@@ -100,3 +100,56 @@ describe("trading-plan — plan lifecycle", () => {
     }
   });
 });
+
+// BUG 2 regression: the date-mismatch recalibration (trading-plan.js:~178)
+// forces session.calibrated=false when session.date !== today. If the
+// recalibration path did NOT stamp session.date = today, every subsequent
+// updateSessionCapital() call would see the same stale date, recalibrate
+// again, and reset the daily P&L baseline forever — an infinite recalibration
+// loop. These tests pin session.date = today after recalibration.
+describe("trading-plan — recalibration date stamp (BUG 2)", () => {
+  const today = new Date().toISOString().slice(0, 10);
+
+  it("first calibration stamps session.date = today", async () => {
+    const { initTradingPlan, updateSessionCapital, getTradingPlan } = await import("../trading-plan.js");
+    await initTradingPlan({ initialCapitalUsd: 100, dailyTargetPct: 1, days: 3 });
+
+    const res = updateSessionCapital(100);
+    expect(res.action).toBe("calibrated");
+
+    const plan = getTradingPlan();
+    expect(plan.session.date).toBe(today);
+    expect(plan.session.calibrated).toBe(true);
+    expect(plan.session.startCapitalUsd).toBe(100);
+  });
+
+  it("a stale session date recalibrates ONCE then stamps today (no loop)", async () => {
+    const { initTradingPlan, updateSessionCapital, getTradingPlan } = await import("../trading-plan.js");
+    await initTradingPlan({ initialCapitalUsd: 100, dailyTargetPct: 1, days: 3 });
+
+    // Seed a calibrated session dated yesterday — the crash-restart scenario.
+    const plan = getTradingPlan();
+    plan.session.calibrated = true;
+    plan.session.startCapitalUsd = 50;
+    plan.session.currentCapitalUsd = 50;
+    plan.session.date = "2000-01-01"; // far in the past
+    fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2));
+
+    // First call: detects date mismatch, recalibrates to live wallet value,
+    // and MUST stamp today's date.
+    const first = updateSessionCapital(120);
+    expect(first.action).toBe("calibrated");
+    const afterFirst = getTradingPlan();
+    expect(afterFirst.session.date).toBe(today);
+    expect(afterFirst.session.startCapitalUsd).toBe(120);
+
+    // Second call: same day, no mismatch → must NOT recalibrate again.
+    // If the loop fix were missing, this would re-calibrate and reset the
+    // baseline, reporting action "calibrated" + pnl 0 instead of a real P&L.
+    const second = updateSessionCapital(150);
+    expect(second.action).not.toBe("calibrated");
+    const afterSecond = getTradingPlan();
+    expect(afterSecond.session.startCapitalUsd).toBe(120); // baseline preserved
+    expect(afterSecond.session.profitUsd).toBeCloseTo(30, 4); // 150 - 120
+  });
+});

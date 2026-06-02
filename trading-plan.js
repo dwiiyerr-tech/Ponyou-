@@ -188,6 +188,7 @@ export function updateSessionCapital(currentCapitalUsd) {
     session.currentCapitalUsd = currentCapitalUsd;
     session.calibrated = true;
     session.calibratedAt = new Date().toISOString();
+    session.date = today; // prevent infinite date-mismatch loop on next cycle
     session.profitUsd = 0;
     session.profitPct = 0;
     savePlan(plan);

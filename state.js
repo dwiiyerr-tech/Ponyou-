@@ -166,6 +166,7 @@ export function trackPosition({
   cast_net_group_id = null,
   cast_net_slot = null,
   strategy_used = null,
+  chain = "sol",
 }) {
   const state = load();
   const position_key = buildPositionKey(position, wallet_address);
@@ -215,6 +216,10 @@ export function trackPosition({
     // this position. Management reads this so exit params follow the same
     // strategy preset the entry used, not the globally-active strategy.
     strategy_used: strategy_used || null,
+    // Chain the position was opened on (sol/base/bsc/eth). Needed by exit
+    // routing (sellByChain) to pick Jupiter vs GMGN. Defaults to "sol" for
+    // all pre-EVM positions loaded from state without this field.
+    chain: chain || "sol",
   };
   pushEvent(state, { action: "deploy", position, position_key, pool_name: pool_name || pool, wallet_address });
   const saved = save(state);

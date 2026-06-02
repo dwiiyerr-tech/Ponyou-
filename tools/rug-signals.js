@@ -313,7 +313,11 @@ export async function getFreshFundedCount(holderOwners, apiKey, launchTs, maxAge
         const inflows = (tx.nativeTransfers || []).filter(t => t.toUserAccount === owner);
         if (inflows.length > 0 && tx.timestamp < earliestFunding) earliestFunding = tx.timestamp;
       }
-      if (earliestFunding !== Infinity && earliestFunding >= cutoff) fresh++;
+      // "Fresh funded" = wallet first funded around launch (insider/sybil prep),
+      // not a normal buyer whose first-ever funding came well after launch.
+      // Bound the window to [launch-maxAgeHours, launch+maxAgeHours].
+      const upper = launchTs + (maxAgeHours * 3600);
+      if (earliestFunding !== Infinity && earliestFunding >= cutoff && earliestFunding <= upper) fresh++;
     } catch (e) {
       errorCount++;
       lastError = e.message;
@@ -560,17 +564,34 @@ export function normalizeGmgnSecurity(sec) {
   };
 }
 
-export async function gatherRugSignals({ mint, connection, holderOwners = [], launchTs = null, dsPair = null }) {
-  const c = cached(mint);
+export async function gatherRugSignals({ mint, connection, holderOwners = [], launchTs = null, dsPair = null, chain = "sol" }) {
+  const c = cached(`${chain}:${mint}`);
   if (c) return { ...c, _cached: true };
 
+  // Solana-only data paths (Token-2022 mint extensions, Helius/Shyft holder
+  // analysis, RugCheck) don't apply to EVM chains. For non-sol, GMGN security +
+  // holder tags become the PRIMARY rug signal; the Solana-RPC layers are skipped.
+  const isSol = chain === "sol";
+
   const apiKey = process.env.HELIUS_API_KEY;
-  const heliusOK = apiKey && apiKey !== "dummy-helius-key";
+  const heliusApiFlag = process.env.HELIUS_API_ENABLED;
+  const heliusApiEnabled = heliusApiFlag === "true" ? true : heliusApiFlag !== "false";
+  const heliusFallbackFlag = process.env.HELIUS_FALLBACK;
+  const heliusFallbackAllowed = heliusFallbackFlag === "true"
+    ? true
+    : heliusFallbackFlag === "false"
+      ? false
+      : config.gmgn?.heliusFallback !== false;
+  // Helius is Solana-only — never available for EVM chains.
+  const heliusFallbackEnabled = isSol && heliusApiEnabled && heliusFallbackAllowed;
+  const heliusOK = heliusFallbackEnabled && apiKey && apiKey !== "dummy-helius-key";
   const heliusExpected = !!(heliusOK && (holderOwners.length > 0 || launchTs));
 
-  const extensions = await getMintExtensions(connection, mint);
+  // Token-2022 extension parsing is a Solana mint concept — skip for EVM.
+  const extensions = isSol ? await getMintExtensions(connection, mint) : {};
 
   const dexscreenerOnly = process.env.SCREENING_MODE === "dexscreener";
+  const gmgnRugSignalsEnabled = !dexscreenerOnly && isGmgnEnabled() && config.gmgn?.rugSignals !== false;
 
   let fresh = { fresh_funded_holders: 0 };
   let sybil = { same_funder_holders: 0, common_funder: null };
@@ -581,16 +602,24 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
   let shyftFallbackUsed = false;
   let shyftReason = null;
   let gmgnUsed = false;
+  let gmgnError = false; // true only when GMGN threw — empty response = token not indexed, not an error
   let gmgnSecurity = null;
+  let criticalRugTelemetryDegraded = false;
+  let criticalRugTelemetryReason = null;
 
   // ── Layer 2a: GMGN-powered signals (primary — no rate-limit cost on Helius) ──
   // GMGN top-holder tags encode exactly what Helius txn-parsing was computing:
   //   bundler → wallet funded by same parent in short window (fresh + sybil)
   //   sniper  → wallet bought in first seconds after pool creation (bundle buyer)
   //   rat     → known pump-and-dump wallet (extra fresh-funded signal)
-  if (!dexscreenerOnly && isGmgnEnabled() && config.gmgn?.rugSignals !== false) {
+  //
+  // Empty response (gmgnHolders.length === 0) means the token is not yet indexed
+  // by GMGN — common for fresh/micro-cap mints. This is NOT a failure; fall through
+  // to dexscreener-only scoring. criticalRugTelemetryDegraded is only raised when
+  // GMGN actually throws (auth failure, network error, etc.).
+  if (gmgnRugSignalsEnabled) {
     try {
-      const gmgnHolders = await gmgnTopHolders(mint, 20);
+      const gmgnHolders = await gmgnTopHolders(mint, 20, chain);
       if (Array.isArray(gmgnHolders) && gmgnHolders.length > 0) {
         const norm = gmgnHolders.map(normalizeTopHolder);
         const bundlers = norm.filter(h => h.tags.bundler);
@@ -607,22 +636,28 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
 
         gmgnUsed = true;
         heliusReason = "gmgn_primary";
+      } else if (gmgnHolders === null) {
+        // gmgnFetch returns null for network/auth/rate-limit failures (it never throws).
+        // null = actual failure; empty array = token not yet indexed by GMGN (not an error).
+        gmgnError = true;
       }
+      // empty array: token not in GMGN index yet — fall through to dexscreener-only
     } catch (e) {
+      gmgnError = true;
       log("rug_signal_warn", `GMGN rug signals ${mint.slice(0, 8)}: ${e.message}`);
     }
     // GMGN security audit — rich rug fields (honeypot, sellability, renounce
     // status, trade tax). Additive: feeds scoreRugRisk's gmgn_security block.
     // Best-effort; never blocks the holder-signal path above.
     try {
-      gmgnSecurity = normalizeGmgnSecurity(await gmgnTokenSecurity(mint));
+      gmgnSecurity = normalizeGmgnSecurity(await gmgnTokenSecurity(mint, chain));
     } catch (e) {
       log("rug_signal_warn", `GMGN security ${mint.slice(0, 8)}: ${e.message}`);
     }
   }
 
   // ── Layer 2b: Helius fallback (only when GMGN unavailable or returned empty) ──
-  if (!dexscreenerOnly && !gmgnUsed) {
+  if (!dexscreenerOnly && !gmgnUsed && heliusFallbackEnabled) {
     if (heliusExpected && heliusCircuitOpen()) {
       // Helius circuit open — try Shyft fallback for fresh-funded check only
       const shyftKey = process.env.SHYFT_API_KEY;
@@ -670,6 +705,32 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
     }
   }
 
+  if (!dexscreenerOnly && !gmgnUsed && !heliusFallbackEnabled) {
+    heliusDegraded = true;
+    heliusReason = "Helius API fallback disabled";
+  }
+
+  // Only raise criticalRugTelemetryDegraded when GMGN actually failed (threw an error).
+  // An empty response means the token is not yet in GMGN's index — normal for fresh/micro-cap
+  // mints — and should fall through to dexscreener-only scoring, not block the token.
+  if (gmgnRugSignalsEnabled && gmgnError) {
+    if (!heliusFallbackEnabled) {
+      criticalRugTelemetryDegraded = true;
+      criticalRugTelemetryReason = "GMGN rug signals failed and Helius fallback disabled";
+    } else if (!heliusOK) {
+      criticalRugTelemetryDegraded = true;
+      criticalRugTelemetryReason = "GMGN rug signals failed and Helius fallback not configured";
+    } else if (heliusDegraded) {
+      criticalRugTelemetryDegraded = true;
+      criticalRugTelemetryReason = "GMGN rug signals failed; " + (heliusReason || "fallback degraded");
+    }
+    if (criticalRugTelemetryDegraded) {
+      heliusDegraded = true;
+      heliusReason = criticalRugTelemetryReason;
+      log("rug_telemetry_block", `${mint.slice(0, 8)} telemetry_block=true reason="${criticalRugTelemetryReason}"`);
+    }
+  }
+
   const lp = getLpLockStatus(dsPair);
   const wash = getWashTradeScore(dsPair);
 
@@ -680,11 +741,15 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
     ...bundle,
     ...lp,
     ...wash,
+    chain,
     gmgn_security: gmgnSecurity,
     _gmgn_used: gmgnUsed,
     _helius_used: dexscreenerOnly ? false : (!gmgnUsed && heliusOK),
     _helius_expected: dexscreenerOnly ? false : heliusExpected,
     _helius_degraded: heliusDegraded,
+    _critical_rug_telemetry_expected: gmgnRugSignalsEnabled || heliusExpected,
+    _critical_rug_telemetry_degraded: criticalRugTelemetryDegraded,
+    _critical_rug_telemetry_reason: criticalRugTelemetryReason,
     _data_quality: dexscreenerOnly ? "dexscreener" : gmgnUsed ? "gmgn" : (heliusDegraded ? "degraded" : "full"),
     _helius_reason: heliusReason,
     _shyft_reason: shyftReason,
@@ -693,9 +758,9 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
   };
 
   if (heliusDegraded) {
-    putDegradedCache(mint, signals);
+    putDegradedCache(`${chain}:${mint}`, signals);
   } else {
-    putCache(mint, signals);
+    putCache(`${chain}:${mint}`, signals);
   }
   return signals;
 }

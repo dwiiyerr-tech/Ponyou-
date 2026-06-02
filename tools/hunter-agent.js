@@ -61,6 +61,8 @@ const HUNT_QUERIES = [
 const PUMPFUN_DEXES = ["pumpswap", "pump.fun", "pumpfun", "pump", "pump swap"];
 // Raydium — where tokens migrate after pump.fun graduation
 const RAYDIUM_DEXES = ["raydium", "raydium clmm", "raydium cpmm"];
+// LetsBonk.fun launchpad DEX identifiers on DexScreener
+const LETSBONK_DEXES = ["launchlab", "letsbonk", "bonkfun", "raydium launchlab"];
 // All Solana DEXes we care about
 const SOLANA_DEXES = [...PUMPFUN_DEXES, ...RAYDIUM_DEXES, "orca", "meteora", "whirlpool"];
 
@@ -207,40 +209,54 @@ function computeHunterScore(token, strategy) {
  * Cycles through different narrative keywords to find varied tokens.
  */
 let _queryIdx = 0;
+const SEARCH_WINDOW = 4; // queries fired in parallel per expedition
 async function huntDexScreenerSearch(strategy) {
-  const query = HUNT_QUERIES[_queryIdx % HUNT_QUERIES.length];
-  _queryIdx++;
+  // Take a rotating window of SEARCH_WINDOW queries instead of just one, so a
+  // single expedition samples multiple narratives. _queryIdx advances by the
+  // window each call so coverage walks the full HUNT_QUERIES list over time.
+  const queries = [];
+  for (let i = 0; i < SEARCH_WINDOW; i++) {
+    queries.push(HUNT_QUERIES[(_queryIdx + i) % HUNT_QUERIES.length]);
+  }
+  _queryIdx += SEARCH_WINDOW;
 
   try {
-    const data = await fetchDS(`${DS_BASE}/latest/dex/search?q=${encodeURIComponent(query)}`);
-    if (!data?.pairs) return [];
+    const results = await Promise.allSettled(
+      queries.map(q => fetchDS(`${DS_BASE}/latest/dex/search?q=${encodeURIComponent(q)}`))
+    );
 
-    const solPairs = data.pairs.filter(p => p.chainId === "solana");
     const tokens = [];
     const seen = new Set();
 
-    for (const pair of solPairs) {
-      const mint = pair.baseToken.address;
-      if (mint === SOL_MINT || seen.has(mint)) continue;
-      seen.add(mint);
+    for (let qi = 0; qi < results.length; qi++) {
+      const r = results[qi];
+      const query = queries[qi];
+      if (r.status !== "fulfilled" || !r.value?.pairs) continue;
+      const solPairs = r.value.pairs.filter(p => p.chainId === "solana");
 
-      const token = mapPair(pair, `search:${query}`);
-      if (token.liquidity < MIN_LIQUIDITY) continue;
-      if (token.swaps < MIN_SWAPS) continue;
-      if (token.mcap > 0 && token.mcap < MIN_MCAP) continue;
+      for (const pair of solPairs) {
+        const mint = pair.baseToken.address;
+        if (mint === SOL_MINT || seen.has(mint)) continue;
+        seen.add(mint);
 
-      // Age filter
-      if (token.created_at) {
-        const ageMin = (Date.now() / 1000 - token.created_at) / 60;
-        if (ageMin < MIN_TOKEN_AGE_MINUTES) continue;
-        if (ageMin > MAX_TOKEN_AGE_HOURS * 60) continue;
+        const token = mapPair(pair, `search:${query}`);
+        if (token.liquidity < MIN_LIQUIDITY) continue;
+        if (token.swaps < MIN_SWAPS) continue;
+        if (token.mcap > 0 && token.mcap < MIN_MCAP) continue;
+
+        // Age filter
+        if (token.created_at) {
+          const ageMin = (Date.now() / 1000 - token.created_at) / 60;
+          if (ageMin < MIN_TOKEN_AGE_MINUTES) continue;
+          if (ageMin > MAX_TOKEN_AGE_HOURS * 60) continue;
+        }
+
+        const hunterScore = computeHunterScore(token, strategy);
+        token._hunter_score = hunterScore.score;
+        token._hunter_tier = hunterScore.tier;
+        token._hunter_reasons = hunterScore.reasons;
+        tokens.push(token);
       }
-
-      const hunterScore = computeHunterScore(token, strategy);
-      token._hunter_score = hunterScore.score;
-      token._hunter_tier = hunterScore.tier;
-      token._hunter_reasons = hunterScore.reasons;
-      tokens.push(token);
     }
 
     return tokens;
@@ -296,14 +312,65 @@ async function huntPumpFun(strategy) {
 }
 
 /**
+ * Hunt LetsBonk.fun launchpad — a pump.fun alternative on Solana.
+ * Complements GMGN trenches (mostly pump.fun) with a distinct launch source.
+ */
+async function huntLetsBonk(strategy) {
+  try {
+    const results = await Promise.allSettled([
+      fetchDS(`${DS_BASE}/latest/dex/search?q=bonk`),
+      fetchDS(`${DS_BASE}/latest/dex/search?q=letsbonk`),
+    ]);
+
+    const tokens = [];
+    const seen = new Set();
+
+    for (const result of results) {
+      if (result.status !== "fulfilled" || !result.value?.pairs) continue;
+      const solPairs = result.value.pairs.filter(p => p.chainId === "solana");
+
+      for (const pair of solPairs) {
+        const dexId = (pair.dexId || "").toLowerCase();
+        const labels = (pair.labels || []).map(l => String(l).toLowerCase());
+        const isBonk = LETSBONK_DEXES.some(d => dexId.includes(d) || labels.some(l => l.includes(d)));
+        if (!isBonk) continue;
+
+        const mint = pair.baseToken.address;
+        if (mint === SOL_MINT || seen.has(mint)) continue;
+        seen.add(mint);
+
+        const token = mapPair(pair, "letsbonk");
+        if (token.liquidity < MIN_LIQUIDITY) continue;
+        if (token.swaps < MIN_SWAPS) continue;
+        if (token.mcap > 0 && token.mcap < MIN_MCAP) continue;
+
+        const hunterScore = computeHunterScore(token, strategy);
+        token._hunter_score = hunterScore.score;
+        token._hunter_tier = hunterScore.tier;
+        token._hunter_reasons = [...hunterScore.reasons, "letsbonk_launchpad"];
+        tokens.push(token);
+      }
+    }
+
+    return tokens;
+  } catch (e) {
+    log("hunter_error", `LetsBonk hunt failed: ${e.message}`);
+    return [];
+  }
+}
+
+/**
  * Hunt DexScreener gainers — tokens with highest price increases.
  * Timeframes: 1h, 6h, 24h. These are tokens with real momentum.
  */
 async function huntGainers(strategy) {
   try {
+    // Distinct queries from huntPumpFun (q=sol/q=meme) so the global dedup
+    // doesn't starve this eye. These terms surface tokens with live momentum.
     const results = await Promise.allSettled([
-      fetchDS(`${DS_BASE}/latest/dex/search?q=sol`),     // broad search
-      fetchDS(`${DS_BASE}/latest/dex/search?q=meme`),    // meme search
+      fetchDS(`${DS_BASE}/latest/dex/search?q=trending`),
+      fetchDS(`${DS_BASE}/latest/dex/search?q=gainers`),
+      fetchDS(`${DS_BASE}/latest/dex/search?q=new`),
     ]);
 
     const tokens = [];
@@ -329,7 +396,7 @@ async function huntGainers(strategy) {
         seen.add(mint);
         const token = mapPair(pair, "gainers");
         if (token.liquidity < MIN_LIQUIDITY) continue;
-        if (token.swaps < MIN_SWAPS * 3) continue; // gainers need real volume
+        if (token.swaps < MIN_SWAPS * 2) continue; // gainers need real volume (was 3×, too tight)
 
         const hunterScore = computeHunterScore(token, strategy);
         token._hunter_score = Math.min(100, hunterScore.score + Math.min(10, maxChange / 10));
@@ -620,7 +687,7 @@ let _hunterStats = {
  * Returns [penalizedScore, reasons[]] so the caller can append them.
  * null fields = GMGN didn't report them; treated as no penalty (unknown ≠ risky).
  */
-function applyGmgnRiskPenalty(score, risk) {
+export function applyGmgnRiskPenalty(score, risk) {
   if (!risk) return [score, []];
   const reasons = [];
   const { rug_ratio, sniper_count, bundler_rate, rat_trader_amount_rate, suspected_insider_hold_rate } = risk;
@@ -638,78 +705,86 @@ function applyGmgnRiskPenalty(score, risk) {
  */
 async function huntGmgnTrending(strategy) {
   if (!isGmgnEnabled() || config.gmgn?.hunter === false) return [];
-  try {
-    const [rank1h, rank5m] = await Promise.all([
-      getTrendingTokens("1h", 40),
-      getTrendingTokens("5m", 20),
-    ]);
+  // Run discovery per active chain. Default ["sol"] = single-chain (current
+  // behavior). Chains are processed sequentially because the GMGN rate-gate is
+  // global/per-key — parallel fan-out just queues on the same 300ms gate.
+  const chains = Array.isArray(config.gmgn?.chains) && config.gmgn.chains.length > 0
+    ? config.gmgn.chains : ["sol"];
+  const seen = new Set();
+  const tokens = [];
 
-    const seen = new Set();
-    const tokens = [];
+  for (const chain of chains) {
+    try {
+      const [rank1h, rank5m] = await Promise.all([
+        getTrendingTokens("1h", 40, chain),
+        getTrendingTokens("5m", 20, chain),
+      ]);
 
-    const process = (items, interval) => {
-      if (!Array.isArray(items)) return;
-      for (const t of items) {
-        // getTrendingTokens() already returns the normalized shape.
-        const mint = t.address;
-        if (!mint || seen.has(mint)) continue;
-        seen.add(mint);
+      const process = (items, interval) => {
+        if (!Array.isArray(items)) return;
+        for (const t of items) {
+          // getTrendingTokens() already returns the normalized shape.
+          const mint = t.address;
+          if (!mint || seen.has(mint)) continue;
+          seen.add(mint);
 
-        const mcap = Number(t.marketcap ?? 0);
-        const liq = Number(t.liquidity ?? 0);
-        const vol = Number(t.volume ?? 0);
-        const swaps = Number(t.swaps ?? 0);
+          const mcap = Number(t.marketcap ?? 0);
+          const liq = Number(t.liquidity ?? 0);
+          const vol = Number(t.volume ?? 0);
+          const swaps = Number(t.swaps ?? 0);
 
-        let score = 35;
-        if (interval === "5m") score += 20; // faster signal = higher urgency
-        if (mcap >= 100_000 && mcap <= 10_000_000) score += 15;
-        if (liq >= 10_000) score += 10;
-        if (swaps >= 50) score += 10;
-        if (vol >= 50_000) score += 10;
-        if (Number(t.smart_buy_count ?? 0) >= 3) score += 10; // smart money piling in
+          let score = 35;
+          if (interval === "5m") score += 20; // faster signal = higher urgency
+          if (mcap >= 100_000 && mcap <= 10_000_000) score += 15;
+          if (liq >= 10_000) score += 10;
+          if (swaps >= 50) score += 10;
+          if (vol >= 50_000) score += 10;
+          if (Number(t.smart_buy_count ?? 0) >= 3) score += 10; // smart money piling in
 
-        const [penalizedScore, riskReasons] = applyGmgnRiskPenalty(score, t._gmgn_risk);
-        const reasons = [`gmgn_trending_${interval}`, mcap ? `mcap:${Math.round(mcap / 1000)}k` : null, ...riskReasons].filter(Boolean);
+          const [penalizedScore, riskReasons] = applyGmgnRiskPenalty(score, t._gmgn_risk);
+          const chainTag = chain !== "sol" ? [chain] : [];
+          const reasons = [`gmgn_trending_${interval}`, ...chainTag, mcap ? `mcap:${Math.round(mcap / 1000)}k` : null, ...riskReasons].filter(Boolean);
 
-        tokens.push({
-          mint,
-          symbol: t.symbol || "?",
-          name: t.name || t.symbol || "?",
-          price: Number(t.price ?? 0),
-          mcap,
-          liquidity: liq,
-          volume: vol,
-          swaps,
-          buys: 0,
-          sells: 0,
-          price_change_1h: Number(t.change1h ?? 0),
-          price_change_6h: 0,
-          price_change_24h: Number(t.change24h ?? 0),
-          buy_vol: 0,
-          sell_vol: 0,
-          created_at: t.created_timestamp || null,
-          pair_address: null,
-          dex: "unknown",
-          launchpad: t.launchpad || "unknown",
-          _hunter_source: `gmgn_trending_${interval}`,
-          _hunter_score: Math.min(100, penalizedScore),
-          _hunter_tier: penalizedScore >= 70 ? "PRIORITY" : penalizedScore >= 50 ? "GOOD" : "WATCH",
-          _hunter_reasons: reasons,
-          _gmgn_risk: t._gmgn_risk || null,
-          narrative_tags: [],
-          hot_level: interval === "5m" ? 3 : 2,
-          creator: null,
-        });
-      }
-    };
+          tokens.push({
+            mint,
+            chain,
+            symbol: t.symbol || "?",
+            name: t.name || t.symbol || "?",
+            price: Number(t.price ?? 0),
+            mcap,
+            liquidity: liq,
+            volume: vol,
+            swaps,
+            buys: 0,
+            sells: 0,
+            price_change_1h: Number(t.change1h ?? 0),
+            price_change_6h: 0,
+            price_change_24h: Number(t.change24h ?? 0),
+            buy_vol: 0,
+            sell_vol: 0,
+            created_at: t.created_timestamp || null,
+            pair_address: null,
+            dex: "unknown",
+            launchpad: t.launchpad || "unknown",
+            _hunter_source: `gmgn_trending_${interval}`,
+            _hunter_score: Math.min(100, penalizedScore),
+            _hunter_tier: penalizedScore >= 70 ? "PRIORITY" : penalizedScore >= 50 ? "GOOD" : "WATCH",
+            _hunter_reasons: reasons,
+            _gmgn_risk: t._gmgn_risk || null,
+            narrative_tags: [],
+            hot_level: interval === "5m" ? 3 : 2,
+            creator: null,
+          });
+        }
+      };
 
-    process(rank1h, "1h");
-    process(rank5m, "5m");
-    return tokens;
-  } catch (e) {
-    log("hunter_error", `GMGN trending hunt failed: ${e.message}`);
-    return [];
+      process(rank1h, "1h");
+      process(rank5m, "5m");
+    } catch (e) {
+      log("hunter_error", `GMGN trending hunt failed (${chain}): ${e.message}`);
+    }
   }
+  return tokens;
 }
 
 /**
@@ -718,104 +793,112 @@ async function huntGmgnTrending(strategy) {
  */
 async function huntGmgnTrenches(strategy) {
   if (!isGmgnEnabled() || config.gmgn?.hunter === false) return [];
-  try {
-    const [signals, trenches] = await Promise.all([
-      getTokenSignals(),                   // all supported signal types (1–13,17,18)
-      getTrenches(["new_creation", "near_completion"], 30),
-    ]);
+  // Per active chain. getTrenches() returns [] for EVM (no launchpad map yet),
+  // so EVM contributes via signals only; sol contributes trenches + signals.
+  const chains = Array.isArray(config.gmgn?.chains) && config.gmgn.chains.length > 0
+    ? config.gmgn.chains : ["sol"];
+  const seen = new Set();
+  const tokens = [];
 
-    const seen = new Set();
-    const tokens = [];
+  for (const chain of chains) {
+    try {
+      const [signals, trenches] = await Promise.all([
+        getTokenSignals(undefined, {}, chain),       // all supported signal types (1–13,17,18)
+        getTrenches(["new_creation", "near_completion"], 30, chain),
+      ]);
 
-    // getTrenches() returns a flat array, each item tagged with _trench_type.
-    const trenchList = Array.isArray(trenches) ? trenches : [];
+      const chainTag = chain !== "sol" ? [chain] : [];
 
-    for (const t of trenchList) {
-      const mint = t.address || t.token_address || t.mint;
-      if (!mint || seen.has(mint)) continue;
-      seen.add(mint);
+      // getTrenches() returns a flat array, each item tagged with _trench_type.
+      const trenchList = Array.isArray(trenches) ? trenches : [];
 
-      // Real trenches buckets: new_creation / pump (early, bonding curve) vs
-      // completed (graduated to DEX) / near_completion (about to). Graduated/
-      // near-graduated = more validated, lower rug risk → higher base score.
-      const isNearGrad = t._trench_type === "completed" || t._trench_type === "near_completion";
-      let score = isNearGrad ? 45 : 25;
-      if (Number(t.holder_count ?? 0) >= 100) score += 15;
-      if (Number(t.volume_24h ?? 0) >= 10_000) score += 10;
-      if (Number(t.smart_degen_count ?? 0) >= 2) score += 15; // smart money in early
-
-      const rowRisk = extractGmgnRowRisk(t);
-      const [penalizedScore, riskReasons] = applyGmgnRiskPenalty(score, rowRisk);
-      const reasons = [`trenches:${t._trench_type || "new"}`, isNearGrad ? "near_graduation" : null, ...riskReasons].filter(Boolean);
-
-      tokens.push({
-        mint,
-        symbol: t.symbol || "?",
-        name: t.name || t.symbol || "?",
-        price: Number(t.price ?? 0),
-        // trenches numeric fields arrive as strings — Number() coerces them.
-        mcap: Number(t.usd_market_cap ?? t.market_cap ?? 0),
-        liquidity: Number(t.liquidity ?? 0),
-        volume: Number(t.volume_24h ?? t.volume_1h ?? 0),
-        swaps: Number(t.swaps_24h ?? t.swaps_1h ?? 0),
-        buys: 0, sells: 0,
-        price_change_1h: 0, price_change_6h: 0, price_change_24h: 0,
-        buy_vol: 0, sell_vol: 0,
-        created_at: t.created_timestamp || null,
-        pair_address: null,
-        dex: "pump.fun",
-        launchpad: t.launchpad || t.launchpad_platform || "pump.fun",
-        _hunter_source: `gmgn_trenches_${t._trench_type || "new"}`,
-        _hunter_score: Math.min(100, penalizedScore),
-        _hunter_tier: penalizedScore >= 50 ? "GOOD" : "WATCH",
-        _hunter_reasons: reasons,
-        _gmgn_risk: rowRisk,
-        narrative_tags: [],
-        hot_level: isNearGrad ? 2 : 1,
-        creator: t.creator || null,
-      });
-    }
-
-    // Overlay smart money signals — bump scores for tokens that signal wallets are buying
-    const signalList = Array.isArray(signals) ? signals
-      : Array.isArray(signals?.tokens) ? signals.tokens : [];
-    for (const s of signalList) {
-      const mint = s.address || s.token_address || s.mint;
-      if (!mint) continue;
-      const existing = tokens.find(t => t.mint === mint);
-      if (existing) {
-        existing._hunter_score = Math.min(100, existing._hunter_score + 20);
-        existing._hunter_reasons.push("gmgn_signal");
-        existing.hot_level = Math.min(3, existing.hot_level + 1);
-      } else if (!seen.has(mint)) {
+      for (const t of trenchList) {
+        const mint = t.address || t.token_address || t.mint;
+        if (!mint || seen.has(mint)) continue;
         seen.add(mint);
+
+        // Real trenches buckets: new_creation / pump (early, bonding curve) vs
+        // completed (graduated to DEX) / near_completion (about to). Graduated/
+        // near-graduated = more validated, lower rug risk → higher base score.
+        const isNearGrad = t._trench_type === "completed" || t._trench_type === "near_completion";
+        let score = isNearGrad ? 45 : 25;
+        if (Number(t.holder_count ?? 0) >= 100) score += 15;
+        if (Number(t.volume_24h ?? 0) >= 10_000) score += 10;
+        if (Number(t.smart_degen_count ?? 0) >= 2) score += 15; // smart money in early
+
+        const rowRisk = extractGmgnRowRisk(t);
+        const [penalizedScore, riskReasons] = applyGmgnRiskPenalty(score, rowRisk);
+        const reasons = [`trenches:${t._trench_type || "new"}`, ...chainTag, isNearGrad ? "near_graduation" : null, ...riskReasons].filter(Boolean);
+
         tokens.push({
           mint,
-          symbol: s.symbol || "?",
-          name: s.name || s.symbol || "?",
-          price: Number(s.price ?? 0),
-          mcap: Number(s.market_cap ?? 0),
-          liquidity: Number(s.liquidity ?? 0),
-          volume: Number(s.volume ?? 0),
-          swaps: 0, buys: 0, sells: 0,
+          chain,
+          symbol: t.symbol || "?",
+          name: t.name || t.symbol || "?",
+          price: Number(t.price ?? 0),
+          // trenches numeric fields arrive as strings — Number() coerces them.
+          mcap: Number(t.usd_market_cap ?? t.market_cap ?? 0),
+          liquidity: Number(t.liquidity ?? 0),
+          volume: Number(t.volume_24h ?? t.volume_1h ?? 0),
+          swaps: Number(t.swaps_24h ?? t.swaps_1h ?? 0),
+          buys: 0, sells: 0,
           price_change_1h: 0, price_change_6h: 0, price_change_24h: 0,
           buy_vol: 0, sell_vol: 0,
-          created_at: null, pair_address: null,
-          dex: "unknown", launchpad: "unknown",
-          _hunter_source: "gmgn_signal",
-          _hunter_score: 55,
-          _hunter_tier: "GOOD",
-          _hunter_reasons: ["gmgn_smart_money_signal"],
-          narrative_tags: [], hot_level: 3, creator: null,
+          created_at: t.created_timestamp || null,
+          pair_address: null,
+          dex: "pump.fun",
+          launchpad: t.launchpad || t.launchpad_platform || "pump.fun",
+          _hunter_source: `gmgn_trenches_${t._trench_type || "new"}`,
+          _hunter_score: Math.min(100, penalizedScore),
+          _hunter_tier: (isNearGrad || penalizedScore >= 50) ? "GOOD" : "WATCH",
+          _hunter_reasons: reasons,
+          _gmgn_risk: rowRisk,
+          narrative_tags: [],
+          hot_level: isNearGrad ? 2 : 1,
+          creator: t.creator || null,
         });
       }
-    }
 
-    return tokens;
-  } catch (e) {
-    log("hunter_error", `GMGN trenches hunt failed: ${e.message}`);
-    return [];
+      // Overlay smart money signals — bump scores for tokens that signal wallets are buying
+      const signalList = Array.isArray(signals) ? signals
+        : Array.isArray(signals?.tokens) ? signals.tokens : [];
+      for (const s of signalList) {
+        const mint = s.address || s.token_address || s.mint;
+        if (!mint) continue;
+        const existing = tokens.find(t => t.mint === mint);
+        if (existing) {
+          existing._hunter_score = Math.min(100, existing._hunter_score + 20);
+          existing._hunter_reasons.push("gmgn_signal");
+          existing.hot_level = Math.min(3, existing.hot_level + 1);
+        } else if (!seen.has(mint)) {
+          seen.add(mint);
+          tokens.push({
+            mint,
+            chain,
+            symbol: s.symbol || "?",
+            name: s.name || s.symbol || "?",
+            price: Number(s.price ?? 0),
+            mcap: Number(s.market_cap ?? 0),
+            liquidity: Number(s.liquidity ?? 0),
+            volume: Number(s.volume ?? 0),
+            swaps: 0, buys: 0, sells: 0,
+            price_change_1h: 0, price_change_6h: 0, price_change_24h: 0,
+            buy_vol: 0, sell_vol: 0,
+            created_at: null, pair_address: null,
+            dex: "unknown", launchpad: "unknown",
+            _hunter_source: "gmgn_signal",
+            _hunter_score: 55,
+            _hunter_tier: "GOOD",
+            _hunter_reasons: ["gmgn_smart_money_signal", ...chainTag],
+            narrative_tags: [], hot_level: 3, creator: null,
+          });
+        }
+      }
+    } catch (e) {
+      log("hunter_error", `GMGN trenches hunt failed (${chain}): ${e.message}`);
+    }
   }
+  return tokens;
 }
 
 // Prey cache — stores latest hunt results for injection into screening
@@ -857,17 +940,18 @@ export async function runHunterExpedition({ strategy = null } = {}) {
     const [
       searchResults, pumpFunResults, gainerResults,
       newestResults, geckoResults, smartMoneyResults, jupiterResults,
-      gmgnTrendingResults, gmgnTrenchesResults,
+      gmgnTrendingResults, gmgnTrenchesResults, letsBonkResults,
     ] = await Promise.allSettled([
-      huntDexScreenerSearch(strategyParams),   // Eye 1: Multi-query search (45 keywords)
+      huntDexScreenerSearch(strategyParams),   // Eye 1: Multi-query search (45 keywords, 4/call)
       huntPumpFun(strategyParams),              // Eye 2: pump.fun ecosystem
-      huntGainers(strategyParams),              // Eye 3: Top gainers (momentum)
+      huntGainers(strategyParams),              // Eye 3: Top gainers (momentum, distinct queries)
       huntNewest(strategyParams),              // Eye 4: Newest launches
       huntGeckoTerminal(strategyParams),       // Eye 5: GeckoTerminal trending
       huntSmartMoney(strategyParams),          // Eye 6: Smart Money inflow (wallet ping)
       huntJupiter(strategyParams),             // Eye 7: Jupiter active pairs
       huntGmgnTrending(strategyParams),        // Eye 8: GMGN trending rank (1h + 5m)
       huntGmgnTrenches(strategyParams),        // Eye 9: GMGN trenches + smart money signals
+      huntLetsBonk(strategyParams),            // Eye 10: LetsBonk.fun launchpad
     ]);
 
     const allTokens = [];
@@ -897,6 +981,7 @@ export async function runHunterExpedition({ strategy = null } = {}) {
     const jupiterAdded = collectResults(jupiterResults, "jupiter");
     const gmgnTrendAdded = collectResults(gmgnTrendingResults, "gmgn_trending");
     const gmgnTrenchAdded = collectResults(gmgnTrenchesResults, "gmgn_trenches");
+    const letsBonkAdded = collectResults(letsBonkResults, "letsbonk");
 
     // Sort by hunter score descending, then by liquidity
     allTokens.sort((a, b) => {
@@ -919,7 +1004,7 @@ export async function runHunterExpedition({ strategy = null } = {}) {
 
     log("hunter", [
       `Expedition #${_hunterStats.cycles}: ${allTokens.length} tokens`,
-      `(src: ${searchAdded}s, ${pumpFunAdded}pf, ${gainerAdded}g, ${newestAdded}n, ${geckoAdded}gk, ${smAdded}sm, ${jupiterAdded}jp, ${gmgnTrendAdded}gt, ${gmgnTrenchAdded}gtr)`,
+      `(src: ${searchAdded}s, ${pumpFunAdded}pf, ${gainerAdded}g, ${newestAdded}n, ${geckoAdded}gk, ${smAdded}sm, ${jupiterAdded}jp, ${gmgnTrendAdded}gt, ${gmgnTrenchAdded}gtr, ${letsBonkAdded}lb)`,
       `${priorityTokens.length} priority`,
       `${durationMs}ms`,
     ].join(" | "));
