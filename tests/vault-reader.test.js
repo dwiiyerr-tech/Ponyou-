@@ -11,6 +11,8 @@ function writeNotes(frontmatter) {
 
 let getVaultOverrides;
 let _resetVaultCache;
+let getVaultContext;
+let _resetVaultContextCache;
 
 beforeEach(async () => {
   process.env.PONYOU_VAULT_NOTES_FILE = TMP_FILE;
@@ -18,11 +20,15 @@ beforeEach(async () => {
   const mod = await import("../tools/vault-reader.js");
   getVaultOverrides = mod.getVaultOverrides;
   _resetVaultCache = mod._resetVaultCache;
+  getVaultContext = mod.getVaultContext;
+  _resetVaultContextCache = mod._resetVaultContextCache;
   _resetVaultCache();
+  _resetVaultContextCache();
 });
 
 afterEach(() => {
   _resetVaultCache();
+  _resetVaultContextCache?.();
   try { fs.unlinkSync(TMP_FILE); } catch { /* ignore */ }
 });
 
@@ -80,5 +86,78 @@ describe("vault-reader", () => {
     writeNotes("pause_trading: false");
     _resetVaultCache();
     expect(getVaultOverrides().pause_trading).toBe(false);
+  });
+});
+
+describe("getVaultContext", () => {
+  // Use an isolated vault dir so the Decisions/Experiments scans are deterministic.
+  const CTX_DIR = path.join(os.tmpdir(), `ponyou-vaultctx-${process.pid}`);
+  const CTX_NOTES = path.join(CTX_DIR, "operator-notes.md");
+
+  function writeCtxNotes(frontmatter) {
+    fs.mkdirSync(CTX_DIR, { recursive: true });
+    fs.writeFileSync(CTX_NOTES, `---\n${frontmatter}\n---\n\n# Operator Notes\n`, "utf8");
+  }
+  function writeDecision(name, h1) {
+    const dir = path.join(CTX_DIR, "05-Decisions");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, name), `---\ntype: decision\n---\n\n# ${h1}\n`, "utf8");
+  }
+  function writeExperiment(name, status) {
+    const dir = path.join(CTX_DIR, "02-Experiments");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, name), `---\ntype: experiment\nstatus: ${status}\n---\n\n# ${name}\n`, "utf8");
+  }
+
+  beforeEach(() => {
+    fs.rmSync(CTX_DIR, { recursive: true, force: true });
+    // getVaultContext resolves PONYOU_VAULT_NOTES_FILE at call time.
+    process.env.PONYOU_VAULT_NOTES_FILE = CTX_NOTES;
+    _resetVaultContextCache();
+  });
+  afterEach(() => {
+    fs.rmSync(CTX_DIR, { recursive: true, force: true });
+  });
+
+  it("returns null when the vault dir is empty/missing", () => {
+    // No notes file, no Decisions/Experiments dirs at all
+    expect(getVaultContext()).toBeNull();
+  });
+
+  it("returns an Operator line when the notes field is set", () => {
+    writeCtxNotes('notes: "watching AI narrative"\nblacklist_tokens: ["BONK"]\nfocus_narrative: "ai"');
+    _resetVaultContextCache();
+    const ctx = getVaultContext();
+    expect(ctx).toContain("[VAULT CONTEXT]");
+    expect(ctx).toContain("Operator: watching AI narrative");
+    expect(ctx).toContain("focus=ai");
+    expect(ctx).toContain("blacklist=BONK");
+  });
+
+  it("returns an Experiments line with status tags", () => {
+    writeCtxNotes('notes: ""');
+    writeExperiment("exp-1-foo.md", "validated");
+    writeExperiment("exp-2-bar.md", "active");
+    writeExperiment("exp-3-empty.md", ""); // empty status → excluded
+    _resetVaultContextCache();
+    const ctx = getVaultContext();
+    expect(ctx).toContain("Experiments:");
+    expect(ctx).toContain("exp-1-foo (VALIDATED)");
+    expect(ctx).toContain("exp-2-bar (ACTIVE)");
+    expect(ctx).not.toContain("exp-3-empty");
+  });
+
+  it("returns a Decisions line with date + title", () => {
+    writeCtxNotes('notes: ""');
+    writeDecision("2026-06-03-audit.md", "Decision: Audit and Fixes");
+    _resetVaultContextCache();
+    const ctx = getVaultContext();
+    expect(ctx).toContain("Decisions: 2026-06-03: Audit and Fixes");
+  });
+
+  it("returns null when operator notes are empty and there are no decisions/experiments", () => {
+    writeCtxNotes('notes: ""\nblacklist_tokens: []\nfocus_narrative: null');
+    _resetVaultContextCache();
+    expect(getVaultContext()).toBeNull();
   });
 });
