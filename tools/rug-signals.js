@@ -12,7 +12,7 @@
 
 import { Connection, PublicKey } from "@solana/web3.js";
 import { log } from "../logger.js";
-import { getTopHolders as gmgnTopHolders, getTokenSecurity as gmgnTokenSecurity, normalizeTopHolder, isGmgnEnabled } from "./gmgn.js";
+import { getTopHolders as gmgnTopHolders, getTokenSecurity as gmgnTokenSecurity, normalizeTopHolder, isGmgnEnabled, gmgnCircuitOpen } from "./gmgn.js";
 import { config } from "../config.js";
 
 const HELIUS_BASE = "https://api.helius.xyz/v0";
@@ -591,7 +591,8 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
   const extensions = isSol ? await getMintExtensions(connection, mint) : {};
 
   const dexscreenerOnly = process.env.SCREENING_MODE === "dexscreener";
-  const gmgnRugSignalsEnabled = !dexscreenerOnly && isGmgnEnabled() && config.gmgn?.rugSignals !== false;
+  const gmgnCircuitIsOpen = gmgnCircuitOpen();
+  const gmgnRugSignalsEnabled = !dexscreenerOnly && isGmgnEnabled() && !gmgnCircuitIsOpen && config.gmgn?.rugSignals !== false;
 
   let fresh = { fresh_funded_holders: 0 };
   let sybil = { same_funder_holders: 0, common_funder: null };

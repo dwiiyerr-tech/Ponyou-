@@ -635,7 +635,7 @@ const POOL_TTL_MS = 5 * 60_000;
 // the gap check simultaneously.
 let _gtLastCall = 0;
 let _gtQueue = Promise.resolve();
-const GT_MIN_GAP_MS = 2100; // ~28 req/min, leaves headroom
+const GT_MIN_GAP_MS = 3100;  // ~19 req/min — safe headroom below GeckoTerminal's 30/min free limit
 
 async function gtAcquireSlot() {
   // Atomic reservation: only one caller at a time runs the gap-await + stamp.

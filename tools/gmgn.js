@@ -119,6 +119,13 @@ async function gmgnFetch(method, path, query = {}, body = null, retries = 2, cha
         log("gmgn_warn", `429 rate-limited — circuit open ${CIRCUIT_COOLDOWN_MS / 1000}s`);
         return null;
       }
+      if (res.status === 401) {
+        // Auth failure — retrying won't help. Open circuit briefly (10 min)
+        // so callers don't keep hammering with a bad key.
+        _circuitUntil = Date.now() + 10 * 60_000;
+        log("gmgn_warn", `401 auth failure on ${path} — circuit open 10min`);
+        return null;
+      }
       if (!res.ok) {
         if (i < retries) continue;
         return null;

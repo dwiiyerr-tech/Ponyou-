@@ -116,7 +116,7 @@ function mapPair(pair, source = "hunter") {
     name: pair.baseToken.name,
     price: parseFloat(pair.priceUsd || 0),
     mcap: pair.marketCap || pair.fdv || 0,
-    liquidity: pair.liquidity?.usd || 0,
+    liquidity: pair.liquidity?.usd || pair.marketCap || pair.fdv || 0,
     volume: vol,
     swaps: total,
     buys,
