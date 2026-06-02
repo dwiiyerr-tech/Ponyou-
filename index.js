@@ -3971,6 +3971,20 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const passed = filterResult.passed && !kelly.should_skip &&
         (stratUsesLlm ? workflow.llm_can_buy : true);
       const flags = [...(filterResult.flags || [])];
+
+      // Diagnostic visibility: log WHY a token fails at strategy/kelly/workflow gate.
+      // Previously these failures were silent — only rug and sell-only had explicit logs.
+      // Needed for monitoring to understand the 0-deploy problem.
+      if (!passed) {
+        const topReason = !filterResult.passed
+          ? (filterResult.flags?.[0] || "strategy_filter")
+          : kelly.should_skip
+            ? (kelly.tier === "MICRO" ? "kelly_micro_tier" : "kelly_edge")
+            : (workflow.verdict === "shadow" ? "workflow_shadow" : `workflow_${workflow.verdict}`);
+        const mcapK = Math.round((enhancedToken.mcap || token.mcap || 0) / 1000);
+        log("filter", `${token.symbol}: SKIP ${topReason} [strat=${matchedStrategyId} mcap=${mcapK}k rug=${rugRisk.score}]`);
+      }
+
       if (kelly.should_skip) {
         const skipReason = kelly.tier === "MICRO"
           ? `MICRO tier skip — regime ${marketIntel.condition} tidak kondusif untuk modal kecil`
