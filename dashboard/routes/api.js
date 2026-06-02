@@ -503,6 +503,38 @@ export function createApiRouter() {
     }
   });
 
+  // ─── Evolved Strategy Registry ────────────────────────────
+  // Reads data/strategy-registry.json directly — no circular import from index.js.
+  router.get("/strategies/evolved", (req, res) => {
+    try {
+      const { existsSync, readFileSync } = require("fs");
+      const { join } = require("path");
+      const p = join(process.cwd(), "data", "strategy-registry.json");
+      if (!existsSync(p)) return res.json({ ok: true, evolved: [], total: 0 });
+      const all = JSON.parse(readFileSync(p, "utf8"));
+      const evolved = Array.isArray(all) ? all : [];
+      res.json({
+        ok: true,
+        evolved: evolved.map(s => ({
+          id:           s.id,
+          name:         s.name,
+          status:       s.status,
+          regime:       s.regime || null,
+          source:       s.source || "unknown",
+          scores:       s.scores || {},
+          activatedAt:  s.activatedAt || null,
+          rejectedAt:   s.rejectedAt || null,
+          rejectReason: s.rejectReason || null,
+        })),
+        total:   evolved.length,
+        active:  evolved.filter(s => s.status === "active").length,
+        pending: evolved.filter(s => s.status === "candidate").length,
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   router.post("/strategy-overrides", (req, res) => {
     try {
       const { action, strategyId, key, value } = req.body || {};

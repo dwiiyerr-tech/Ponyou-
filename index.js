@@ -409,11 +409,13 @@ agentBus.emit("market:update", { condition: getMarketIntelligence().condition })
 //   strategy.fundamentalProducer.enabled  → producer also runs (defaults to dryRun)
 let _fundamentalProducer = null;
 let _evolutionEngine = null; // module-level for degradation cron access
+let _strategyRegistry = null; // module-level so Telegram + dashboard can read evolved list
+let _strategyProposal = null; // module-level for /approve_UUID /reject_UUID Telegram handlers
 if (config.strategy?.evolution?.enabled) {
-  const _strategyRegistry = new StrategyRegistry({ persistPath: "./data/strategy-registry.json" });
+  _strategyRegistry = new StrategyRegistry({ persistPath: "./data/strategy-registry.json" });
   const _strategyBus = new StrategyEvolutionBus({ maxQueue: config.strategy.evolution.maxCandidateQueue ?? 5 });
   const _strategyGate = new StrategyGate({});
-  const _strategyProposal = new StrategyProposal({
+  _strategyProposal = new StrategyProposal({
     sendTelegram: sendMessage,
     autoApproveConvictionMin:   config.strategy.evolution.autoApproveConvictionMin ?? 0.95,
     autoApproveMinMaturityDays: config.strategy.fundamentalProducer?.minDataAgeDays ?? 30,
@@ -550,6 +552,10 @@ export function getFundamentalProducer() {
 
 export function getEvolutionEngine() {
   return _evolutionEngine;
+}
+
+export function getStrategyRegistry() {
+  return _strategyRegistry;
 }
 
 export function getAgentRouter() {
@@ -974,8 +980,40 @@ async function handleStrategyTelegramCommand(text) {
       return true;
     }
 
-    // /strategies — list
+    // /strategies evolved — list evolved registry
+    if (subCmd === "evolved") {
+      const evolved = (_strategyRegistry?.getAll?.() || []).filter(s => s.status === "active");
+      if (evolved.length === 0) {
+        await sendHTML("🧬 <b>Evolved Strategies</b>\n\nNo evolved strategies active yet.\nRun the bot in demo mode to collect data; the producer auto-generates candidates.");
+        return true;
+      }
+      const lines = [`🧬 <b>Evolved Strategies</b> (${evolved.length} active)`, fmt.divider()];
+      for (const s of evolved) {
+        const wr = s.scores?.live ?? s.scores?.paper ?? s.scores?.backtest ?? null;
+        const wrStr = wr != null ? ` WR ${(wr * 100).toFixed(0)}%` : "";
+        lines.push(`● <b>${htmlEscape(s.name)}</b> [${s.id.slice(0, 8)}]${wrStr}`);
+        lines.push(`   regime: ${s.regime || "any"} · activated: ${s.activatedAt?.slice(0, 10) || "?"}`);
+      }
+      lines.push(``, fmt.it("/strategies deactivate <id8> — deactivate an evolved strategy"));
+      await sendHTML(lines.join("\n"));
+      return true;
+    }
+
+    // /strategies deactivate <id> — deactivate an evolved strategy
+    if (subCmd === "deactivate") {
+      const shortId = parts[2];
+      if (!shortId) { await sendHTML("Usage: /strategies deactivate <id8> (first 8 chars of evolved ID)"); return true; }
+      const all = _strategyRegistry?.getAll?.() || [];
+      const match = all.find(s => s.id === shortId || s.id.startsWith(shortId));
+      if (!match) { await sendHTML(`❌ Evolved strategy <code>${shortId}</code> not found.`); return true; }
+      _strategyRegistry.deactivate(match.id, "operator deactivated via Telegram");
+      await sendHTML(`✅ Evolved strategy <b>${htmlEscape(match.name)}</b> deactivated.`);
+      return true;
+    }
+
+    // /strategies — list (presets + evolved summary)
     const list = listStrategies();
+    const evolvedActive = (_strategyRegistry?.getAll?.() || []).filter(s => s.status === "active");
     const lines = [`🎯 <b>Strategies</b> (active: ${activeIds.join(", ")})`, fmt.divider()];
     for (const s of list) {
       const isActive = activeIds.includes(s.id);
@@ -983,6 +1021,16 @@ async function handleStrategyTelegramCommand(text) {
       const llmTag = s.use_llm ? "LLM" : "rule";
       lines.push(`${mark} <b>${htmlEscape(s.id)}</b> — ${htmlEscape(s.name)} [${llmTag}]`);
       lines.push(`   SL ${s.stoploss_pct.toFixed(1)}% · trail ${s.trailing ? "on" : "off"} · partTP ${htmlEscape(String(s.partial_tp))}`);
+    }
+    if (evolvedActive.length > 0) {
+      lines.push(``, `🧬 <b>Evolved</b> (${evolvedActive.length} active — auto-applied by runtime selector):`);
+      for (const s of evolvedActive) {
+        const wr = s.scores?.live ?? s.scores?.paper ?? s.scores?.backtest ?? null;
+        lines.push(`  ● <b>${htmlEscape(s.name)}</b> [${s.id.slice(0, 8)}] regime=${s.regime || "any"}${wr != null ? ` WR ${(wr * 100).toFixed(0)}%` : ""}`);
+      }
+      lines.push(fmt.it("/strategies evolved — full evolved list"));
+    } else {
+      lines.push(``, fmt.it("🧬 No evolved strategies yet — /strategies evolved for details"));
     }
     lines.push(``, fmt.it("Commands:"));
     lines.push(fmt.it("/strategies set degen scalping — activate 2 strategies"));
@@ -5567,6 +5615,35 @@ export async function handleIncomingTelegramMessage(msg) {
       `Signal Source · ${tgSignalLine}`,
     ].join("\n");
     await sendHTML(message);
+    return;
+  }
+
+  // ── Evolved Strategy Approval (sent by StrategyProposal) ──
+  // Format: /approve_<uuid> or /reject_<uuid>
+  if (text.startsWith("/approve_") && text.length > 9 && !text.startsWith("/approve_automation")) {
+    const id = text.slice(9);
+    const proposal = _strategyProposal; // module-level via initStrategyEvolution
+    if (proposal && typeof proposal.handleOperatorResponse === "function") {
+      const handled = proposal.handleOperatorResponse(id, true);
+      await sendHTML(handled
+        ? `✅ Strategy proposal <code>${id.slice(0, 8)}</code> approved.`
+        : `⚠️ Proposal <code>${id.slice(0, 8)}</code> not found or already resolved.`);
+    } else {
+      await sendHTML("Strategy evolution not enabled — cannot approve.");
+    }
+    return;
+  }
+  if (text.startsWith("/reject_") && text.length > 8 && !text.startsWith("/reject_automation")) {
+    const id = text.slice(8);
+    const proposal = _strategyProposal;
+    if (proposal && typeof proposal.handleOperatorResponse === "function") {
+      const handled = proposal.handleOperatorResponse(id, false);
+      await sendHTML(handled
+        ? `❌ Strategy proposal <code>${id.slice(0, 8)}</code> rejected.`
+        : `⚠️ Proposal <code>${id.slice(0, 8)}</code> not found or already resolved.`);
+    } else {
+      await sendHTML("Strategy evolution not enabled — cannot reject.");
+    }
     return;
   }
 
