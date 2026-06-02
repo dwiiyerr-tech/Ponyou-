@@ -317,9 +317,13 @@ async function huntPumpFun(strategy) {
  */
 async function huntLetsBonk(strategy) {
   try {
+    // VERIFIED 2026-06-02: DexScreener search "launchlab" directly returns pairs
+    // with dexId="launchlab". The previous queries "bonk"/"letsbonk" returned
+    // BONK token and LetsBONK token pairs (orca/meteora/raydium) — not launchpad
+    // pairs — so the isBonk filter never matched and 0lb appeared in every expedition.
     const results = await Promise.allSettled([
-      fetchDS(`${DS_BASE}/latest/dex/search?q=bonk`),
-      fetchDS(`${DS_BASE}/latest/dex/search?q=letsbonk`),
+      fetchDS(`${DS_BASE}/latest/dex/search?q=launchlab`),
+      fetchDS(`${DS_BASE}/latest/dex/search?q=letsbonk+launch`),
     ]);
 
     const tokens = [];

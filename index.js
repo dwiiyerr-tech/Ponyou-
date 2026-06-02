@@ -734,11 +734,11 @@ function withTimeout(promise, ms, label = "op") {
 
 const CYCLE_RPC_TIMEOUT_MS = 45_000; // 45s timeout for RPC calls in cron cycles (mgmt)
 // Screening scores up to 8 candidates, each with a sequential getTokenKlines
-// network call; under Helius free-tier rate limiting (429 + backoff) a full
-// cycle legitimately runs past 45s. Give it its own longer budget so a slow-but-
-// healthy cycle isn't flagged as a timeout error. The busy-guard (_screeningBusy)
-// still prevents overlap, and the 5-min cron interval >> this budget.
-const SCREENING_CYCLE_TIMEOUT_MS = 90_000; // 90s timeout for the screening cycle
+// network call (GeckoTerminal ~15s/token when Helius is OFF, Helius backoff can
+// add more). 8 tokens × 20s = 160s worst-case; budget set to 180s so a slow-but-
+// healthy cycle isn't killed mid-analysis. The busy-guard (_screeningBusy) still
+// prevents overlap, and the 5-min cron interval >> this budget.
+const SCREENING_CYCLE_TIMEOUT_MS = 180_000; // 180s — covers 8 tokens × ~20s klines
 
 function stripThink(t) {
   return t ? t.replace(/<think>[\s\S]*?<\/think>/gi, "").trim() : t;
@@ -3392,6 +3392,33 @@ export async function runScreeningCycle({ silent = false } = {}) {
       })
     );
 
+    // ─── Pre-fetch klines in parallel (before sequential analysis) ─────────
+    // klines were sequential (one await per token) because of Helius rate-limits.
+    // When Helius is OFF (GeckoTerminal path), there is no per-call rate-limit, so
+    // parallelizing saves ~(N-1)×15s per cycle and prevents the 90s timeout from
+    // killing the cycle mid-analysis. We fire all klines now, cache results in a
+    // Map, then consume them in the per-token loop below without re-awaiting.
+    const klineCache = new Map();
+    if (config.indicators?.enabled) {
+      const klineResolution = config.indicators.intervals?.[0] === "5_MINUTE" ? "5m" : "1m";
+      const klineLimit = config.indicators.candles || 100;
+      await Promise.all(
+        apiResults.map(async ({ token }) => {
+          try {
+            const klineData = await getTokenKlines({
+              mint: token.mint,
+              pair_address: token.pair_address,
+              resolution: klineResolution,
+              limit: klineLimit,
+            });
+            klineCache.set(token.mint, klineData);
+          } catch (_) {
+            klineCache.set(token.mint, { candles: [] });
+          }
+        })
+      );
+    }
+
     for (const { token, security, tokenInfo, rugCheck } of apiResults) {
       if (security?.error) {
         log("filter", `${token.symbol}: SKIP — security fetch failed: ${security.error}`);
@@ -3587,13 +3614,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       let volatilityAdjustedSize = deployAmount;
 
       if (config.indicators.enabled && tierExec.use_technicals) {
-        log("screening", `${token.symbol}: Fetching klines for momentum analysis...`);
-        const klineData = await getTokenKlines({
-          mint: token.mint,
-          pair_address: token.pair_address,
-          resolution: config.indicators.intervals[0] === "5_MINUTE" ? "5m" : "1m",
-          limit: config.indicators.candles || 100
-        });
+        // klines pre-fetched in parallel above — read from cache (avoids sequential await)
+        const klineData = klineCache.get(token.mint) || { candles: [] };
+        log("screening", klineData.candles?.length
+          ? `${token.symbol}: Klines ready (${klineData.candles.length} candles, pre-fetched)`
+          : `${token.symbol}: No klines available — skipping momentum analysis`);
 
         if (klineData.candles && klineData.candles.length > 5) {
           const momentum = analyzeMomentum(klineData.candles);
