@@ -3410,6 +3410,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
               pair_address: token.pair_address,
               resolution: klineResolution,
               limit: klineLimit,
+              chain: token.chain || "sol",
             });
             klineCache.set(token.mint, klineData);
           } catch (_) {

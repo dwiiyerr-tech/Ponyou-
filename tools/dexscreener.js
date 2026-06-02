@@ -698,7 +698,20 @@ function mapResolution(resolution) {
   return m[resolution] || ["minute", 5];
 }
 
-export async function getTokenKlines({ mint, pair_address = null, resolution = "5m", limit = 100 }) {
+export async function getTokenKlines({ mint, pair_address = null, resolution = "5m", limit = 100, chain = "sol" }) {
+  // EVM tokens: GeckoTerminal only has Solana pools. Route EVM klines to GMGN's
+  // kline endpoint (same resolution, same shape). Falls back to empty candles on
+  // any error so downstream momentum analysis is gracefully skipped.
+  if (chain && chain !== "sol") {
+    try {
+      const { getTokenKline } = await import("./gmgn.js");
+      return await getTokenKline(mint, resolution, null, null, chain);
+    } catch (e) {
+      log("kline_warn", `GMGN kline failed for ${mint} (${chain}): ${e.message}`);
+      return { mint, resolution, candles: [], error: e.message };
+    }
+  }
+
   try {
     const pool = pair_address || await getTopPool(mint);
     if (!pool) {
