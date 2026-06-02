@@ -164,6 +164,7 @@ import { runAllMaintenance } from "./data-maintenance.js";
 import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
+import { getVaultOverrides } from "./tools/vault-reader.js";
 import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
   isVaultDue, computeVaultAmount, executeVaultTransfer,
@@ -3204,6 +3205,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
     return `Trading plan selesai (${s.trades_completed}/${s.target}). /resetplan untuk mulai sesi baru.`;
   }
 
+  // Vault operator override: pause_trading
+  const _vaultPause = getVaultOverrides();
+  if (_vaultPause.pause_trading) {
+    _screeningBusy = false;
+    log("vault_override", "pause_trading=true in operator-notes — screening paused");
+    return "Operator pause active (vault: operator-notes.md)";
+  }
+
   // GUARD: checkAllGates runs BEFORE the main try/finally below. If it throws,
   // the finally never runs and _screeningBusy stays true forever — the cron
   // cycle wedges permanently until process restart. Reset on throw here.
@@ -3402,6 +3411,30 @@ export async function runScreeningCycle({ silent = false } = {}) {
       log("screening", `Narrative contagion: removed ${cappedCandidates.length - narrativeFiltered.length}/${cappedCandidates.length} candidates`);
     }
 
+    // ─── Vault operator overrides (operator-notes.md) ────────────────────────
+    const vaultOpts = getVaultOverrides();
+    const afterVault = vaultOpts.blacklist_tokens.length > 0 || vaultOpts.blacklist_narratives.length > 0 || vaultOpts.skip_mcap_above != null
+      ? narrativeFiltered.filter(token => {
+          const sym = (token.symbol || "").toUpperCase();
+          const narr = (token.narrative || token._narrative || "").toLowerCase();
+          const mcap = token.mcap || 0;
+
+          if (vaultOpts.blacklist_tokens.includes(sym)) {
+            log("vault_override", `${sym}: operator blacklist (token)`);
+            return false;
+          }
+          if (vaultOpts.blacklist_narratives.some(n => narr.includes(n))) {
+            log("vault_override", `${sym}: operator blacklist (narrative: ${narr})`);
+            return false;
+          }
+          if (vaultOpts.skip_mcap_above != null && mcap > vaultOpts.skip_mcap_above) {
+            log("vault_override", `${sym}: operator mcap cap ${(mcap/1000).toFixed(0)}k > ${(vaultOpts.skip_mcap_above/1000).toFixed(0)}k`);
+            return false;
+          }
+          return true;
+        })
+      : narrativeFiltered;
+
     // ─── Layer 0: Trash Gate — Pintu Utama Sebelum Screening ─────
     // outerShieldScreen: RugCheck.xyz (L0) → Token-2022 extension check
     // → 7-dimension scoring. Semua kandidat diblokir di sini sebelum
@@ -3410,14 +3443,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const recentRugs = getPerformanceHistory({ limit: 20 }).filter(t => t.rug_detected);
     let trashGateResult;
     if (config.pipelineTestMode) {
-      narrativeFiltered.forEach(t => { t._trash_test_mode = true; });
+      afterVault.forEach(t => { t._trash_test_mode = true; });
       trashGateResult = {
-        passed: narrativeFiltered, flagged: [], warned: [], blocked: [],
-        stats: { total: narrativeFiltered.length, passed: narrativeFiltered.length, blocked: 0, rugBlocked: 0 },
+        passed: afterVault, flagged: [], warned: [], blocked: [],
+        stats: { total: afterVault.length, passed: afterVault.length, blocked: 0, rugBlocked: 0 },
       };
       log("screening", "Pipeline test mode — trash gate bypassed, semua kandidat lolos");
     } else {
-      trashGateResult = await outerShieldScreen(narrativeFiltered, {
+      trashGateResult = await outerShieldScreen(afterVault, {
         marketCondition: marketIntel.condition,
         rugMemory,
         recentRugs,
@@ -3434,7 +3467,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const rugInfo = trashGateResult.stats.rugBlocked > 0
         ? ` (${trashGateResult.stats.rugBlocked} via RugCheck)`
         : "";
-      log("screening", `Trash gate: ${trashGateResult.stats.blocked}/${narrativeFiltered.length} BLOCKED${rugInfo} — ${preScreened.length} lanjut ke screening`);
+      log("screening", `Trash gate: ${trashGateResult.stats.blocked}/${afterVault.length} BLOCKED${rugInfo} — ${preScreened.length} lanjut ke screening`);
     }
 
     // ─── Feature Health Maintenance ──────────────

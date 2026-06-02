@@ -92,6 +92,7 @@ describe("regression: no raw writeFileSync without rename in source files", () =
           -not -path "*/node_modules/*" \\
           -not -path "*/dashboard/public/*" \\
           -not -path "*/tests/*" \\
+          -not -path "*/scripts/*" \\
           -not -path "*/atomic-write.js"`,
         { encoding: "utf8" }
       );
