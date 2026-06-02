@@ -314,7 +314,7 @@ export const config = {
     repeatDeployCooldownMinFeeEarnedPct: u.repeatDeployCooldownMinFeeEarnedPct ?? u.repeatDeployCooldownMinFeeYieldPct ?? 0,
     // Hybrid override: null = pakai strategy.js default; angka = override eksplisit.
     // Lihat strategy.getEffectiveStopLoss / getEffectiveImmediateTakeProfit.
-    stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? null,
+    stopLossPct:           u.stopLossPct           || u.emergencyPriceDropPct || null,
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? null,
     autoTakeProfitPct:     u.autoTakeProfitPct     ?? 50,
     minSolToOpen:          u.minSolToOpen          ?? 0.55,

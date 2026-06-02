@@ -11,7 +11,7 @@ import {
   trackPosition,
 } from "../state.js";
 
-const STATE_FILE = path.join(process.cwd(), "state.json");
+const STATE_FILE = process.env.PONYOU_STATE_FILE || path.join(process.cwd(), "state.json");
 let backup = null;
 
 beforeEach(() => {

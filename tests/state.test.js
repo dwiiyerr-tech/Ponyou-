@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const STATE_FILE = path.join(__dirname, "..", "state.json");
+const STATE_FILE = process.env.PONYOU_STATE_FILE || path.join(__dirname, "..", "state.json");
 
 // Since state.js has a module-level cache, we isolate each describe block
 // by resetting the module and removing the state file.

@@ -4,10 +4,10 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LESSONS_FILE = path.join(__dirname, "..", "lessons.json");
-const PERF_FILE = path.join(__dirname, "..", "performance.json");
-const RUG_FILE = path.join(__dirname, "..", "rug-memory.json");
-const DARWIN_FILE = path.join(__dirname, "..", "darwin-weights.json");
+const LESSONS_FILE = process.env.PONYOU_LESSONS_FILE || path.join(__dirname, "..", "lessons.json");
+const PERF_FILE = process.env.PONYOU_PERF_FILE || path.join(__dirname, "..", "performance.json");
+const RUG_FILE = process.env.PONYOU_RUG_MEMORY_FILE || path.join(__dirname, "..", "rug-memory.json");
+const DARWIN_FILE = process.env.PONYOU_DARWIN_FILE || path.join(__dirname, "..", "darwin-weights.json");
 
 function cleanFiles() {
   try { fs.unlinkSync(LESSONS_FILE); } catch (_) {}

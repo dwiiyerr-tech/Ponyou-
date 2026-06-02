@@ -5,11 +5,23 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readBotState, _setBasePath } from "../dashboard/state-reader.js";
 
 let tmpDir;
+const ENV_KEYS = ["PONYOU_STATE_FILE", "PONYOU_EXEC_QUALITY_FILE", "PONYOU_PLAN_FILE"];
+let savedEnv;
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ponyou-dash-state-"));
   _setBasePath(tmpDir);
+  // The reader gives env-redirected paths precedence over BASE_PATH, so clear
+  // those vars here to let _setBasePath drive reads to this test's tmpDir.
+  savedEnv = {};
+  for (const k of ENV_KEYS) { savedEnv[k] = process.env[k]; delete process.env[k]; }
 });
-afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+afterEach(() => {
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
 
 describe("readBotState", () => {
   it("returns safe defaults when no files exist", async () => {
