@@ -48,7 +48,7 @@ async function fetchRugCheck(path, retries = 2) {
         signal: AbortSignal.timeout(8000),
       });
       if (res.status === 429) { await new Promise(r => setTimeout(r, 4000 * (i + 1))); continue; }
-      if (res.status === 404) return { not_found: true };
+      if (res.status === 404 || res.status === 400) return { not_found: true };
       if (!res.ok) throw new Error(`RugCheck ${res.status}`);
       return await res.json();
     } catch (e) { lastErr = e; }

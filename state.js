@@ -85,7 +85,9 @@ export function cleanStaleTestPositions() {
   if (events.length > 0) {
     const testMintPattern = /^(mintSell|SMOKE_TEST|TEST_)/i;
     state.recentEvents = events.filter(e => {
-      const isTest = testMintPattern.test(e.position || "") || testMintPattern.test(e.position_key || "");
+      const pos = e.position || "", key = e.position_key || "";
+      const isTest = testMintPattern.test(pos) || testMintPattern.test(key)
+        || pos.startsWith("MINT") || key.startsWith("MINT");
       if (isTest) eventsCleaned++;
       return !isTest;
     });

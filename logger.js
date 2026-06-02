@@ -12,7 +12,7 @@ async function getTelegram() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LOG_DIR = path.join(__dirname, "logs");
+const LOG_DIR = process.env.PONYOU_LOG_DIR || path.join(__dirname, "logs");
 const LOG_LEVEL = process.env.LOG_LEVEL || "info";
 
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };

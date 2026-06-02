@@ -19,6 +19,8 @@ const STATE_TMP = path.join(os.tmpdir(), "ponyou-vitest-state");
 export default defineConfig({
   test: {
     globalSetup: ["./tests/_globals.js"],
+    exclude: ["node_modules/**", ".claude/**", ".claude-flow/**"],
+    include: ["tests/**/*.test.{js,ts}", "tools/__tests__/**/*.test.{js,ts}"],
     env: {
       // collab layer
       PONYOU_ORCH_FILE: path.join(STATE_TMP, "orchestrator-state.json"),
@@ -53,6 +55,7 @@ export default defineConfig({
       // key explicitly and restore it in afterEach.
       GMGN_API_KEY: "dummy-gmgn-key",
       PONYOU_BACKTEST_DATA_DIR: STATE_TMP,
+      PONYOU_LOG_DIR: path.join(STATE_TMP, "logs"),
     },
   },
 });
