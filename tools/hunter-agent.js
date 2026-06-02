@@ -23,6 +23,7 @@
 import { log } from "../logger.js";
 import { config } from "../config.js";
 import { getTrendingTokens, getTrenches, getTokenSignals, isGmgnEnabled, extractGmgnRowRisk } from "./gmgn.js";
+import { recordChainSnapshot, getChainAllocationWeights } from "../market-chain-intel.js";
 
 // ─── Hunting Sources ────────────────────────────────────────────
 
@@ -715,9 +716,12 @@ async function huntGmgnTrending(strategy) {
   const chains = Array.isArray(config.gmgn?.chains) && config.gmgn.chains.length > 0
     ? config.gmgn.chains : ["sol"];
   const seen = new Set();
-  const tokens = [];
+  // Bucket processed tokens per chain so we can record per-chain market intel
+  // and then trim each chain's contribution by its allocation weight.
+  const perChain = new Map(); // chain → token[]
 
   for (const chain of chains) {
+    const chainTokens = [];
     try {
       const [rank1h, rank5m] = await Promise.all([
         getTrendingTokens("1h", 40, chain),
@@ -749,7 +753,7 @@ async function huntGmgnTrending(strategy) {
           const chainTag = chain !== "sol" ? [chain] : [];
           const reasons = [`gmgn_trending_${interval}`, ...chainTag, mcap ? `mcap:${Math.round(mcap / 1000)}k` : null, ...riskReasons].filter(Boolean);
 
-          tokens.push({
+          chainTokens.push({
             mint,
             chain,
             symbol: t.symbol || "?",
@@ -784,11 +788,51 @@ async function huntGmgnTrending(strategy) {
 
       process(rank1h, "1h");
       process(rank5m, "5m");
+
+      // Per-chain market intelligence. Count high-rug-ratio tokens as "rug
+      // active" so a chain that looks hot by volume but is full of likely rugs
+      // gets a score penalty (stops the hunter chasing rug farms).
+      const rugActiveCount = chainTokens.filter(t => t._gmgn_risk?.rug_ratio > 0.7).length;
+      try { recordChainSnapshot(chain, chainTokens, rugActiveCount); } catch {}
     } catch (e) {
       log("hunter_error", `GMGN trending hunt failed (${chain}): ${e.message}`);
     }
+    perChain.set(chain, chainTokens);
   }
-  return tokens;
+
+  return allocateAcrossChains(perChain, chains);
+}
+
+/**
+ * Trim each chain's hunter contribution by its allocation weight so the hottest
+ * chain keeps the most slots and dead chains contribute 0. The total slot
+ * budget scales with how many tokens were actually found. Single-chain configs
+ * (the default ["sol"]) pass through unchanged.
+ */
+function allocateAcrossChains(perChain, chains) {
+  const all = [];
+  for (const list of perChain.values()) all.push(...list);
+
+  // No weighting needed for a single active chain — keep current behavior.
+  if (chains.length <= 1 || all.length === 0) return all;
+
+  const weights = getChainAllocationWeights(chains);
+  const totalFound = all.length;
+
+  const out = [];
+  for (const chain of chains) {
+    const list = (perChain.get(chain) || [])
+      .slice()
+      .sort((a, b) => (b._hunter_score || 0) - (a._hunter_score || 0));
+    if (list.length === 0) continue;
+    const w = weights[chain] ?? 0;
+    if (w <= 0) continue; // dead chain → 0 slots
+    // Keep at least 1 token from any alive chain so a quiet-but-alive chain
+    // isn't fully starved by rounding.
+    const cap = Math.max(1, Math.round(totalFound * w));
+    out.push(...list.slice(0, cap));
+  }
+  return out.length > 0 ? out : all;
 }
 
 /**
@@ -834,7 +878,7 @@ async function huntGmgnTrenches(strategy) {
         const [penalizedScore, riskReasons] = applyGmgnRiskPenalty(score, rowRisk);
         const reasons = [`trenches:${t._trench_type || "new"}`, ...chainTag, isNearGrad ? "near_graduation" : null, ...riskReasons].filter(Boolean);
 
-        tokens.push({
+        const trenchToken = {
           mint,
           chain,
           symbol: t.symbol || "?",
@@ -860,8 +904,15 @@ async function huntGmgnTrenches(strategy) {
           narrative_tags: [],
           hot_level: isNearGrad ? 2 : 1,
           creator: t.creator || null,
-        });
+        };
+        tokens.push(trenchToken);
       }
+
+      // NOTE: per-chain market-intel snapshots are recorded ONLY from
+      // huntGmgnTrending() — its trending-rank rows carry real swap/volume
+      // depth. Trench rows are early/low-liquidity by nature and would clobber
+      // that signal with a near-always-DEAD reading. Allocation weighting is
+      // applied to the final flat list below (grouped by token.chain).
 
       // Overlay smart money signals — bump scores for tokens that signal wallets are buying
       const signalList = Array.isArray(signals) ? signals
@@ -902,7 +953,16 @@ async function huntGmgnTrenches(strategy) {
       log("hunter_error", `GMGN trenches hunt failed (${chain}): ${e.message}`);
     }
   }
-  return tokens;
+
+  // Allocation weighting: group the flat list by token.chain, then trim each
+  // chain by its allocation weight (hottest chain keeps the most, dead = 0).
+  const byChain = new Map();
+  for (const t of tokens) {
+    const c = t.chain || "sol";
+    if (!byChain.has(c)) byChain.set(c, []);
+    byChain.get(c).push(t);
+  }
+  return allocateAcrossChains(byChain, chains);
 }
 
 // Prey cache — stores latest hunt results for injection into screening

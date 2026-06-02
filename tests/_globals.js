@@ -32,6 +32,7 @@ const GUARDED = [
   "darwin-weights.json",
   "observed-tokens.json",
   "market-intel.json",
+  "market-chain-intel.json",
   "state.json",
   "vault-state.json",
   "automation-state.json",

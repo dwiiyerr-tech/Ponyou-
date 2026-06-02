@@ -113,6 +113,9 @@ import {
   getRecommendedAdjustments, recordMarketResearchEnrichment,
 } from "./market-intelligence.js";
 import {
+  rankChainsByActivity, getHottestChain, getAllChainIntelligence,
+} from "./market-chain-intel.js";
+import {
   scoreRugRisk, isDevBlocked, isTokenBlacklisted, recordRug, getRugMemory,
 } from "./lessons.js";
 import {
@@ -1084,6 +1087,29 @@ async function handleStrategyTelegramCommand(text) {
       return valid;
     };
 
+    if (sub === "status") {
+      // Per-chain activity intel recorded by the hunter after GMGN fetches.
+      const intel = getAllChainIntelligence(); // Map<chain, snapshot> (fresh only)
+      const ranking = rankChainsByActivity();
+      const hottest = getHottestChain("sol");
+      const lines = [`⛓️ <b>Chain Activity</b>`, fmt.divider()];
+      if (intel.size === 0) {
+        lines.push(`No fresh per-chain data yet (hunter records it after a GMGN fetch).`);
+        lines.push(``, `Active discovery chains: <b>${cur.join(", ")}</b>`);
+      } else {
+        const condEmoji = { EXTREME: "🔥🔥", HOT: "🔥", NORMAL: "🟢", COLD: "🟦", DEAD: "💤" };
+        for (const snap of ranking) {
+          const m = snap.metrics || {};
+          const hot = snap.chain === hottest ? " ⭐" : "";
+          lines.push(`${condEmoji[snap.condition] || "•"} <code>${snap.chain}</code> ${snap.condition} — score <b>${snap.score}</b>${hot}`);
+          lines.push(`   swaps≈${m.avg_swaps ?? 0} · vol $${Math.round((m.vol_usd ?? 0) / 1000)}k · tokens ${m.token_count ?? 0} · buy${Math.round((m.buy_ratio ?? 0) * 100)}%${m.rug_active_count ? ` · rugs ${m.rug_active_count}` : ""}`);
+        }
+        lines.push(``, `Hottest chain: <b>${hottest}</b>`);
+      }
+      await sendHTML(lines.join("\n"));
+      return true;
+    }
+
     if (sub === "set" || sub === "add" || sub === "remove") {
       const args = parts.slice(2).map(c => c.toLowerCase());
       if (args.length === 0) { await sendHTML(`Usage: /chains ${sub} sol base`); return true; }
@@ -1116,6 +1142,7 @@ async function handleStrategyTelegramCommand(text) {
     lines.push(`EVM execution: <b>${execOn ? "ON" : "OFF (dry-run/discovery only)"}</b>`);
     lines.push(``, fmt.it("/chains set sol base — activate sol + base discovery"));
     lines.push(fmt.it("/chains add base · /chains remove base"));
+    lines.push(fmt.it("/chains status — per-chain activity ranking"));
     await sendHTML(lines.join("\n"));
     return true;
   }
@@ -3338,6 +3365,16 @@ export async function runScreeningCycle({ silent = false } = {}) {
     const marketIntel = getMarketIntelligence();
     const heatmap = computeMarketRegime();
     log("market", `Market: ${marketIntel.condition} (confidence: ${marketSnap.confidence}) → heatmap ${heatmap.regime} maxPos=${heatmap.max_positions}`);
+
+    // ─── Multi-chain market intelligence (additive — guides hunter allocation,
+    // recorded by the hunter after GMGN fetches; does not gate screening) ───
+    const chainRanking = rankChainsByActivity();
+    const hottestChain = getHottestChain("sol");
+    if (chainRanking.length > 1) {
+      log("market", `Chain ranking: ${chainRanking.map(c => `${c.chain}(${c.score})`).join(" > ")}`);
+      log("market", `Hottest chain: ${hottestChain}`);
+    }
+
     enrichMarketResearchWithAgentRouter({ marketIntel, candidates: cappedCandidates })
       .catch(e => log("market_research_error", e.message));
 
