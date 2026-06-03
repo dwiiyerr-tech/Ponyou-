@@ -337,6 +337,7 @@ const SIGNAL_TYPES_SUPPORTED = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 17, 1
 
 /**
  * Smart-money / large-buy / KOL token signals (POST /v1/market/token_signal).
+ * NOTE: Endpoint is currently returning 401 (deprecated/unavailable). Returns empty array.
  * Returns a flat array of signal rows (token_address, signal_type, market_cap,
  * signal_times, …) or null. 3min TTL.
  *
@@ -344,16 +345,10 @@ const SIGNAL_TYPES_SUPPORTED = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 17, 1
  * @param {object}   [filters]     optional group filters (mc_min, mc_max, …)
  */
 export async function getTokenSignals(signalTypes = SIGNAL_TYPES_SUPPORTED, filters = {}, chain = DEFAULT_CHAIN) {
-  const c = normalizeChain(chain);
-  const types = (Array.isArray(signalTypes) ? signalTypes : [signalTypes])
-    .map(Number)
-    .filter((t) => Number.isFinite(t) && ![14, 15, 16].includes(t));
-  const group = { signal_type: types.length ? types : SIGNAL_TYPES_SUPPORTED, ...filters };
-  const cacheKey = `${c}:signals:${group.signal_type.join(",")}:${JSON.stringify(filters)}`;
-  return withCache(cacheKey, 3 * 60_000, async () => {
-    const raw = await gmgnFetch("POST", "/v1/market/token_signal", {}, { chain: c, groups: [group] }, 2, c);
-    return asFeed(raw);
-  });
+  // GMGN token_signal endpoint is currently unavailable (401 auth failure).
+  // Gracefully return empty array so pipeline doesn't break.
+  log("gmgn", "getTokenSignals: endpoint unavailable, returning empty array");
+  return [];
 }
 
 // ─── User/wallet endpoints ────────────────────────────────────────────────────

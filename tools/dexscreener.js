@@ -1219,7 +1219,7 @@ export async function getSmartMoneyInflow({ timeframe = "1h" } = {}) {
   const cutoff = Date.now() / 1000 - (timeframe === "1h" ? 3600 : timeframe === "6h" ? 21600 : 86400);
   const tokenAccum = new Map(); // mint → { wallets: Set, buy_count, sell_count, weighted_buy_score }
 
-  for (const wallet of wallets.slice(0, 10)) {
+  for (const wallet of wallets.slice(0, 5)) {
     try {
       const txns = await fetchHeliusTxns(wallet.address, apiKey, 30);
       const history = summarizeSmartWalletHistory(wallet.address, { timeframe: "24h", limit: 12 });

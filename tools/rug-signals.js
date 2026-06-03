@@ -116,10 +116,10 @@ export async function getMintExtensions(connection, mintAddress) {
 // so callers gracefully skip Helius enrichment rather than piling up retries.
 // A single successful response resets the consecutive counter and closes the circuit.
 
-const HELIUS_MAX_CONCURRENT   = 2;
-const HELIUS_MIN_INTERVAL_MS  = 1500;   // ~0.67 req/s — well under free-tier burst
-const HELIUS_CB_THRESHOLD     = 3;      // consecutive 429s before opening
-const HELIUS_CB_COOLDOWN_MS   = 5 * 60 * 1000; // 5-minute cooldown
+const HELIUS_MAX_CONCURRENT   = 1;      // Reduced to 1 for free tier stability
+const HELIUS_MIN_INTERVAL_MS  = 2500;   // Increased to 2.5s (~0.4 req/s) for free tier
+const HELIUS_CB_THRESHOLD     = 2;      // Reduced threshold to 2 consecutive 429s
+const HELIUS_CB_COOLDOWN_MS   = 10 * 60 * 1000; // Increased to 10-minute cooldown
 
 let _heliusInflight      = 0;
 const _heliusQueue       = [];

@@ -3094,7 +3094,13 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     const _allActiveUseLlm = getActiveStrategyIds().every(id => getStrategy(id)?.use_llm !== false);
     if (remainingTokens.length > 0 && isLLMReviewEnabled() && _allActiveUseLlm) {
-      const planSummary = getPlanSummary();
+      let planSummary;
+      try {
+        planSummary = getPlanSummary();
+      } catch (e) {
+        log("plan", `WARN: getPlanSummary failed: ${e.message}`);
+        planSummary = null;
+      }
       const marketIntel = getMarketIntelligence();
 
       // MGMT-3: build the "do not exit" hint so the LLM is told which
@@ -4494,7 +4500,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
         (b.conviction?.conviction_score || 0) - (a.conviction?.conviction_score || 0) ||
         (a.workflow?.caution_score || 0) - (b.workflow?.caution_score || 0)
       );
-    const planSummary = getPlanSummary();
+    let planSummary;
+    try {
+      planSummary = getPlanSummary();
+    } catch (e) {
+      log("plan", `WARN: getPlanSummary failed in screening: ${e.message}`);
+      planSummary = null;
+    }
 
     if (entryBlockedByFee) {
       passingCandidates = applyFeeEntryGuard(passingCandidates, gasFee);
