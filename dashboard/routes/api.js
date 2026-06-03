@@ -1,4 +1,6 @@
 import { Router } from "express";
+import _fs from "fs";
+import _path from "path";
 import { readBotState } from "../state-reader.js";
 import { writeAutomationCommand } from "../command-writer.js";
 import { readConfig, writeConfig } from "../config-writer.js";
@@ -507,12 +509,11 @@ export function createApiRouter() {
   // Reads data/strategy-registry.json directly — no circular import from index.js.
   router.get("/strategies/evolved", (req, res) => {
     try {
-      const { existsSync, readFileSync } = require("fs");
-      const { join } = require("path");
-      const p = join(process.cwd(), "data", "strategy-registry.json");
-      if (!existsSync(p)) return res.json({ ok: true, evolved: [], total: 0 });
-      const all = JSON.parse(readFileSync(p, "utf8"));
-      const evolved = Array.isArray(all) ? all : [];
+      // Bug fix: was using CJS require() in an ESM module. Use fs/path directly.
+      const registryPath = _path.join(process.cwd(), "data", "strategy-registry.json");
+      if (!_fs.existsSync(registryPath)) return res.json({ ok: true, evolved: [], total: 0 });
+      const raw = JSON.parse(_fs.readFileSync(registryPath, "utf8"));
+      const evolved = Array.isArray(raw) ? raw : (Array.isArray(raw?.strategies) ? raw.strategies : []);
       res.json({
         ok: true,
         evolved: evolved.map(s => ({

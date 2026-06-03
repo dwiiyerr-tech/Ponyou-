@@ -20,7 +20,7 @@ import { initTrashLayer } from "./agents/trash-layer.js";
 import { initLearningAgent, getStrategyPerformance } from "./agents/learning-agent.js";
 import { shadowWatch } from "./tools/shadow-watchlist.js";
 import { initOrchestratorAgent, runOrchestratorCycle, setFullAutomationMode, getOrchestratorDashboard } from "./agents/orchestrator-agent.js";
-import { runAutomationQualification, isAutomationActive, guardAutomatedDecision, getAutomationState, approveAutomation, rejectAutomation, revokeAutomation } from "./agents/automation-rules.js";
+import { runAutomationQualification, checkAutomationQualification, isAutomationActive, guardAutomatedDecision, getAutomationState, approveAutomation, rejectAutomation, revokeAutomation } from "./agents/automation-rules.js";
 import { initProOrchestrator, isProModeActive, isProValidationMode, getProDashboard, proBuyDecision, proSellDecision, proCutlossDecision, proCastNetDecision, runProAnalysis, validateStrategyReadiness } from "./agents/pro-orchestrator.js";
 import { checkWalletSignals, getWalletTierStats, discoverWalletTiers, TIER_CONFIG } from "./tools/wallet-tiers.js";
 import { log } from "./logger.js";
@@ -1588,7 +1588,9 @@ async function executePendingIntent(id) {
   let result;
   const swapStartedAt = Date.now();
   try {
-    result = await swapToken({ ...args, executionContext: { source: "pending-intent", approvedIntent: true } });
+    // Opus B-2 fix: route through sellByChain so EVM intents use gmgnSwap
+    // instead of Jupiter. Was: swapToken(...) directly which ignores chain field.
+    result = await sellByChain({ ...args, executionContext: { source: "pending-intent", approvedIntent: true } });
   } catch (e) {
     await consumeIntent(id, "failed", { error: e.message });
     recordSwapOutcome({ success: false });
