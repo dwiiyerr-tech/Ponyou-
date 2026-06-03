@@ -282,6 +282,9 @@ describe("state — syncOpenPositions", () => {
   });
 
   it("paper_trade=true positions are NOT auto-closed on sync-miss", async () => {
+    // Use vi.resetModules() to get a fresh state.js instance — prevents cross-
+    // test cache contamination from earlier vi.resetModules() calls in this file.
+    vi.resetModules();
     const { trackPosition, syncOpenPositions, getState, _resetStateForTests } = await import("../state.js");
     _resetStateForTests();
     const mint = "PaperMint111111111111111111111111111111111";
@@ -289,20 +292,16 @@ describe("state — syncOpenPositions", () => {
       position: mint, pool: "jupiter", pool_name: "PAPER",
       amount_sol: 0.5, initial_value_usd: 50, paper_trade: true,
     });
-    // Paper position must be in state immediately after tracking
-    const stateAfterTrack = getState();
-    const posKey = Object.keys(stateAfterTrack.positions).find(k => k.includes(mint));
+    // Paper position must exist in state immediately after tracking
+    const state0 = getState();
+    const posKey = Object.keys(state0.positions).find(k => k.includes(mint));
     expect(posKey).toBeTruthy();
 
-    // Simulate 10 consecutive sync cycles with mint not in active list
+    // 10 consecutive sync cycles — paper position must survive
     for (let i = 0; i < 10; i++) syncOpenPositions([]);
-
-    // Paper position must survive all sync cycles
-    const stateAfterSync = getState();
-    const pos = stateAfterSync.positions[posKey];
-    expect(pos).toBeDefined();
-    expect(pos.closed).toBe(false);
-    expect(pos.paper_trade).toBe(true);
+    const pos = getState().positions[posKey];
+    expect(pos?.closed).toBe(false);
+    expect(pos?.paper_trade).toBe(true);
   });
 
   it("paper_trade=false positions get sync_misses incremented (not skipped)", async () => {

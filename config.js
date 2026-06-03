@@ -183,6 +183,22 @@ export const config = {
   // ─── Vault / Tabungan ──────────────────────
   vault: buildVaultConfig(u),
 
+  // ─── Super Brain (main agent intelligence upgrades) ────────────────────────
+  episodicMemory: {
+    enabled:    Boolean(u.episodicMemoryEnabled ?? false),
+    minSamples: finiteNumber(u.episodicMinSamples, 3),
+  },
+  adaptiveRisk: {
+    enabled:        Boolean(u.adaptiveRiskEnabled ?? false),
+    maxMultiplier:  finiteNumber(u.adaptiveRiskMaxMult, 1.25),
+    minSol:         finiteNumber(u.adaptiveRiskMinSol, 0),
+  },
+  promptEvolution: {
+    enabled:    Boolean(u.promptEvolutionEnabled ?? false),
+    minSamples: finiteNumber(u.promptEvolutionMinSamples, 5),
+    maxRules:   finiteNumber(u.promptEvolutionMaxRules, 4),
+  },
+
   // ─── Daily Report ──────────────────────────
   report: {
     enabled:    u.dailyReportEnabled ?? true,

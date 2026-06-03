@@ -172,6 +172,9 @@ import {
   recordVaultTransfer, getVaultStatus, buildVaultNotification, computeProfitSweepAmount,
 } from "./vault.js";
 import { isTokenOnCooldown, setTokenCooldown } from "./trade-cooldowns.js";
+import { recordEpisode, getEpisodicBlock }   from "./episodic-memory.js";
+import { adaptDeployAmount, getAdaptiveRiskPromptLine } from "./adaptive-risk.js";
+import { attributeOutcome, getLearnedRulesBlock }       from "./prompt-evolution.js";
 import {
   generateDailyReport, formatReportTelegram, wasTodayReported,
 } from "./daily-report.js";
@@ -2894,6 +2897,27 @@ export async function runManagementCycle({ silent = false } = {}) {
           pnl_pct: tradePnl,
         });
 
+        // ── Super Brain: episodic memory + prompt evolution ─────────────
+        // Record trade outcome for pattern retrieval and learned rules.
+        // Fire-and-forget — never block the exit loop.
+        setImmediate(() => {
+          const tokenCtx = { ...tokenData, rug_score: exit.rug_score ?? tokenData?.rug_score };
+          if (config.episodicMemory?.enabled) {
+            recordEpisode({
+              mint: exit.mint, symbol: exit.symbol, token: tokenCtx,
+              pnl_pct: tradePnl, hold_minutes: holdMinutes,
+              exit_reason: exit.reason, is_rug: /rug/i.test(exit.reason || ""),
+            });
+          }
+          if (config.promptEvolution?.enabled) {
+            attributeOutcome({
+              token: tokenCtx, pnl_pct: tradePnl,
+              exit_reason: exit.reason, is_rug: /rug/i.test(exit.reason || ""),
+              verdict: tracked?.signal_snapshot?.workflow?.verdict || null,
+            });
+          }
+        });
+
         // ── Strategy performance feedback loop ──────────────────────────
         // Feed strategy outcome back to learning-agent so it can track
         // per-strategy win/loss and surface degrading presets.
@@ -3303,7 +3327,30 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return; // skip this screening cycle
     }
 
-    const deployAmount = computeDeployAmount(walletSol, { solPriceUsd: balance.sol_price });
+    let deployAmount = computeDeployAmount(walletSol, { solPriceUsd: balance.sol_price });
+    // ── Adaptive Risk: clamp deployAmount based on intra-session state ──────
+    if (config.adaptiveRisk?.enabled) {
+      const recentTradesForRug = (getPerformanceHistory?.({ limit: 10 }) || []);
+      const rugRateRecent = recentTradesForRug.length > 0
+        ? recentTradesForRug.filter(t => t.rug_detected).length / recentTradesForRug.length
+        : 0;
+      const adj = adaptDeployAmount(deployAmount, {
+        consecutiveLosses: getConsecutiveLosses?.() ?? 0,
+        sessionPnlPct:    planSummary?.today_pnl_pct ?? 0,
+        circuitLocked:    _rugCircuitBreaker?.getStatus?.()?.locked ?? false,
+        rugRateRecent,
+        marketCondition:  marketIntel?.condition ?? "NORMAL",
+        openRatio:        openTokens.length / Math.max(1, positionLimit),
+      }, { minSol: config.adaptiveRisk.minSol, maxMultiplier: config.adaptiveRisk.maxMultiplier });
+      if (adj.multiplier === 0) {
+        log("adaptive_risk", `CIRCUIT_LOCKED: ${adj.reason} — skipping screening cycle`);
+        return `[ADAPTIVE RISK] ${adj.reason} — cycle skipped`;
+      }
+      if (adj.multiplier !== 1.0) {
+        log("adaptive_risk", `${adj.level}: deployAmount ${deployAmount}→${adj.amount_sol} SOL (${adj.reason})`);
+        deployAmount = adj.amount_sol;
+      }
+    }
     const walletPlanSummary = buildCapitalAwareWalletPlan(
       balance.sol,
       deployAmount,
@@ -4564,6 +4611,22 @@ export async function runScreeningCycle({ silent = false } = {}) {
               : null;
             return [_vaultCtx, _smCtx, _chainStratCtx].filter(Boolean).join("\n") || null;
           })();
+      // Super Brain: adaptive risk status, episodic recall, learned rules
+      const _adaptiveRiskLine = config.adaptiveRisk?.enabled
+        ? getAdaptiveRiskPromptLine({
+            consecutiveLosses: getConsecutiveLosses?.() ?? 0,
+            sessionPnlPct:     planSummary?.today_pnl_pct ?? 0,
+            circuitLocked:     _rugCircuitBreaker?.getStatus?.()?.locked ?? false,
+            marketCondition:   marketIntel?.condition ?? "NORMAL",
+          })
+        : null;
+      const _episodicBlock = config.episodicMemory?.enabled
+        ? getEpisodicBlock(passingCandidates, { minSamples: config.episodicMemory.minSamples })
+        : null;
+      const _learnedRules = config.promptEvolution?.enabled
+        ? getLearnedRulesBlock()
+        : null;
+
       const { content } = await agentLoop(`
 SCREENING CYCLE
 Amount: ${deployAmount} SOL
@@ -4571,7 +4634,7 @@ Gas: ${gasFee.level}
 Market: ${marketIntel.condition} — ${marketIntel.description}
 ${planSummary ? `Plan: Day ${planSummary.day} | P&L: ${planSummary.today_pnl_pct}% | Target: +${planSummary.daily_target_pct}%${planSummary.profit_mode ? " | 🔥 PROFIT MODE — no trade limit" : ""}` : ""}
 Posisi aktif: ${openTokens.length}/${positionLimit}
-${_vaultBlock ? _vaultBlock + '\n' : ''}
+${_vaultBlock ? _vaultBlock + '\n' : ''}${_adaptiveRiskLine ? _adaptiveRiskLine + '\n' : ''}${_episodicBlock ? _episodicBlock + '\n' : ''}${_learnedRules ? _learnedRules + '\n' : ''}
 CANDIDATES (lolos 4-filter + rug check):
 ${JSON.stringify(passingCandidates)}
 ${narrativeVelocity.promptContext ? `\n${narrativeVelocity.promptContext}\n` : ""}${crossBatchVelocity.promptContext ? `${crossBatchVelocity.promptContext}\n` : ""}

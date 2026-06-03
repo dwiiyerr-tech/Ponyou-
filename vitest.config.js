@@ -45,6 +45,9 @@ export default defineConfig({
       PONYOU_STRATEGY_SKILLS_LOCK_FILE: path.join(STATE_TMP, "strategy-skills-lock.json"),
       // per-skill P&L attribution written by the portfolio manager
       PONYOU_SKILL_ATTRIBUTION_FILE: path.join(STATE_TMP, "skill-attribution.json"),
+      // Super Brain — episodic memory + prompt evolution (must not touch live files)
+      PONYOU_EPISODIC_FILE: path.join(STATE_TMP, "episodic-memory.json"),
+      PONYOU_PROMPT_EVOLUTION_FILE: path.join(STATE_TMP, "prompt-evolution.json"),
       // GMGN OpenAPI credential dir — never touch the real ~/.config/gmgn in tests
       PONYOU_GMGN_ENV_DIR: path.join(STATE_TMP, "gmgn"),
       // Pin GMGN OFF by default so the suite is deterministic regardless of the
