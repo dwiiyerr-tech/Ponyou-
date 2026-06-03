@@ -138,3 +138,8 @@ dev-reputation.json
 hunter-performance.json
 name-patterns-learned.json
 market-chain-intel.json
+.claude/worktrees/
+episodic-memory.json
+prompt-evolution.json
+data/memory.db
+test-database-provider.rvf
