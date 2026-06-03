@@ -262,3 +262,41 @@ export function getPatternOverrides() {
   return _patOvCache;
 }
 export function _resetPatOvCache() { _patOvCache = null; _patOvTs = 0; }
+
+// ─── Chain overrides (50-Chains/) ────────────────────────────────────────────
+// Reads 50-Chains/chain-overrides.md frontmatter.
+// preferred_strategy_<chain> → use this strategy preset for that chain's tokens
+// disable_chains             → remove these chains from discovery (no restart needed)
+let _chainOvCache = null, _chainOvTs = 0;
+const KNOWN_CHAINS = ["sol", "base", "bsc", "eth"];
+
+export function getChainOverrides() {
+  if (_chainOvTs && (Date.now() - _chainOvTs) < CACHE_TTL_MS) return _chainOvCache;
+  try {
+    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const vaultDir  = path.dirname(notesFile);
+    const file = path.join(vaultDir, "50-Chains", "chain-overrides.md");
+    const fm = parseFrontmatter(fs.readFileSync(file, "utf8"));
+
+    // preferred_strategy_sol, preferred_strategy_base, etc.
+    const preferred_strategy = {};
+    for (const chain of KNOWN_CHAINS) {
+      const val = fm[`preferred_strategy_${chain}`];
+      if (typeof val === "string" && val.trim()) {
+        preferred_strategy[chain] = val.trim();
+      }
+    }
+
+    // disable_chains: ["base", "bsc"]
+    const disable_chains = (Array.isArray(fm.disable_chains) ? fm.disable_chains : [])
+      .map(String)
+      .filter(c => KNOWN_CHAINS.includes(c));
+
+    _chainOvCache = { preferred_strategy, disable_chains };
+  } catch {
+    _chainOvCache = { preferred_strategy: {}, disable_chains: [] };
+  }
+  _chainOvTs = Date.now();
+  return _chainOvCache;
+}
+export function _resetChainOvCache() { _chainOvCache = null; _chainOvTs = 0; }

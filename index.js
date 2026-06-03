@@ -164,7 +164,7 @@ import { runAllMaintenance } from "./data-maintenance.js";
 import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
-import { getVaultOverrides, getVaultContext, getDevOverrides, getWalletOverrides, getSmartMoneyContext, getPatternOverrides } from "./tools/vault-reader.js";
+import { getVaultOverrides, getVaultContext, getDevOverrides, getWalletOverrides, getSmartMoneyContext, getPatternOverrides, getChainOverrides } from "./tools/vault-reader.js";
 import { logScreeningDecision, logTradeOutcome, refreshVaultSnapshots } from "./tools/vault-writer.js";
 import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
@@ -4533,8 +4533,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
     }
     if (!screenReport && passingCandidates.length > 0 && !anyRuleBased) {
       log("cron", `${passingCandidates.length} passed — invoking LLM`);
-      const _vaultCtx = getVaultContext();
-      const _smCtx    = getSmartMoneyContext();
+      const _vaultCtx    = getVaultContext();
+      const _smCtx       = getSmartMoneyContext();
+      const _chainOv     = getChainOverrides();
+      // Build per-chain strategy hint: "[CHAIN STRATEGY] sol=scalping base=momentum"
+      const _chainStratParts = Object.entries(_chainOv.preferred_strategy)
+        .map(([c, s]) => `${c}=${s}`);
+      const _chainStratCtx = _chainStratParts.length > 0
+        ? `[CHAIN STRATEGY] ${_chainStratParts.join(" ")} — gunakan preset ini untuk token dari chain tersebut`
+        : null;
       const { content } = await agentLoop(`
 SCREENING CYCLE
 Amount: ${deployAmount} SOL
@@ -4542,7 +4549,7 @@ Gas: ${gasFee.level}
 Market: ${marketIntel.condition} — ${marketIntel.description}
 ${planSummary ? `Plan: Day ${planSummary.day} | P&L: ${planSummary.today_pnl_pct}% | Target: +${planSummary.daily_target_pct}%${planSummary.profit_mode ? " | 🔥 PROFIT MODE — no trade limit" : ""}` : ""}
 Posisi aktif: ${openTokens.length}/${positionLimit}
-${_vaultCtx ? _vaultCtx + '\n' : ''}${_smCtx ? _smCtx + '\n' : ''}
+${_vaultCtx ? _vaultCtx + '\n' : ''}${_smCtx ? _smCtx + '\n' : ''}${_chainStratCtx ? _chainStratCtx + '\n' : ''}
 CANDIDATES (lolos 4-filter + rug check):
 ${JSON.stringify(passingCandidates)}
 ${narrativeVelocity.promptContext ? `\n${narrativeVelocity.promptContext}\n` : ""}${crossBatchVelocity.promptContext ? `${crossBatchVelocity.promptContext}\n` : ""}

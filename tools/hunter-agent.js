@@ -24,6 +24,7 @@ import { log } from "../logger.js";
 import { config } from "../config.js";
 import { getTrendingTokens, getTrenches, getTokenSignals, isGmgnEnabled, extractGmgnRowRisk } from "./gmgn.js";
 import { recordChainSnapshot, getChainAllocationWeights } from "../market-chain-intel.js";
+import { getChainOverrides } from "./vault-reader.js";
 
 // ─── Hunting Sources ────────────────────────────────────────────
 
@@ -713,8 +714,10 @@ async function huntGmgnTrending(strategy) {
   // Run discovery per active chain. Default ["sol"] = single-chain (current
   // behavior). Chains are processed sequentially because the GMGN rate-gate is
   // global/per-key — parallel fan-out just queues on the same 300ms gate.
-  const chains = Array.isArray(config.gmgn?.chains) && config.gmgn.chains.length > 0
-    ? config.gmgn.chains : ["sol"];
+  const _disabledChains = new Set(getChainOverrides().disable_chains);
+  const chains = (Array.isArray(config.gmgn?.chains) && config.gmgn.chains.length > 0
+    ? config.gmgn.chains : ["sol"]
+  ).filter(c => !_disabledChains.has(c));
   const seen = new Set();
   // Bucket processed tokens per chain so we can record per-chain market intel
   // and then trim each chain's contribution by its allocation weight.
@@ -843,8 +846,10 @@ async function huntGmgnTrenches(strategy) {
   if (!isGmgnEnabled() || config.gmgn?.hunter === false) return [];
   // Per active chain. getTrenches() returns [] for EVM (no launchpad map yet),
   // so EVM contributes via signals only; sol contributes trenches + signals.
-  const chains = Array.isArray(config.gmgn?.chains) && config.gmgn.chains.length > 0
-    ? config.gmgn.chains : ["sol"];
+  const _disabledChainsTrenches = new Set(getChainOverrides().disable_chains);
+  const chains = (Array.isArray(config.gmgn?.chains) && config.gmgn.chains.length > 0
+    ? config.gmgn.chains : ["sol"]
+  ).filter(c => !_disabledChainsTrenches.has(c));
   const seen = new Set();
   const tokens = [];
 

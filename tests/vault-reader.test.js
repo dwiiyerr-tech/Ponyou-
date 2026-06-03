@@ -283,3 +283,49 @@ describe("getPatternOverrides", () => {
     expect(ov.mute).toContain("learned_xyz");
   });
 });
+
+describe("getChainOverrides", () => {
+  let getChainOverrides, _resetChainOvCache;
+
+  beforeEach(async () => {
+    const mod = await import("../tools/vault-reader.js");
+    getChainOverrides = mod.getChainOverrides;
+    _resetChainOvCache = mod._resetChainOvCache;
+    _resetChainOvCache?.();
+  });
+
+  it("returns empty preferred_strategy and disable_chains when file is missing", () => {
+    _resetChainOvCache();
+    const ov = getChainOverrides();
+    expect(ov.preferred_strategy).toEqual({});
+    expect(ov.disable_chains).toEqual([]);
+  });
+
+  it("parses preferred_strategy_sol and preferred_strategy_base", () => {
+    writeOverrideFile("50-Chains/chain-overrides.md",
+      'preferred_strategy_sol: "momentum"\npreferred_strategy_base: "scalping"\ndisable_chains: []');
+    _resetChainOvCache();
+    const ov = getChainOverrides();
+    expect(ov.preferred_strategy.sol).toBe("momentum");
+    expect(ov.preferred_strategy.base).toBe("scalping");
+  });
+
+  it("parses disable_chains and only keeps known chains", () => {
+    writeOverrideFile("50-Chains/chain-overrides.md",
+      'disable_chains: ["base", "bsc", "unknown_chain"]');
+    _resetChainOvCache();
+    const ov = getChainOverrides();
+    expect(ov.disable_chains).toContain("base");
+    expect(ov.disable_chains).toContain("bsc");
+    expect(ov.disable_chains).not.toContain("unknown_chain");
+  });
+
+  it("ignores preferred_strategy for unknown chains", () => {
+    writeOverrideFile("50-Chains/chain-overrides.md",
+      'preferred_strategy_phantom: "scalping"\npreferred_strategy_sol: "trend"');
+    _resetChainOvCache();
+    const ov = getChainOverrides();
+    expect(ov.preferred_strategy.sol).toBe("trend");
+    expect(ov.preferred_strategy.phantom).toBeUndefined();
+  });
+});

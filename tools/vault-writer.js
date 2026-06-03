@@ -316,6 +316,71 @@ export async function writeActiveRugPatterns() {
   } catch { /* best-effort */ }
 }
 
+/** 50-Chains/_status.md — per-chain condition, wallet, strategy, execution flag */
+export async function writeChainStatus() {
+  try {
+    const { getAllChainIntelligence } = await import("../market-chain-intel.js");
+    const { getActiveStrategyId, getActiveStrategyIds } = await import("../strategies.js");
+    const { config } = await import("../config.js");
+
+    const vaultDir = _getVaultWriterDir();
+    const dir = path.join(vaultDir, "50-Chains");
+    _ensureDir(dir);
+
+    const intel      = getAllChainIntelligence(); // { chain: { chain, score, condition, metrics, ts } }
+    const activeCfg  = Array.isArray(config.gmgn?.chains) && config.gmgn.chains.length
+      ? config.gmgn.chains : ["sol"];
+    const execEnabled = !!config.gmgn?.execEnabled;
+    const evmWallets  = (config.gmgn?.wallets && typeof config.gmgn.wallets === "object")
+      ? config.gmgn.wallets : {};
+    const solWallet   = config.wallet?.address || "";
+    const stratIds    = getActiveStrategyIds();
+    const primaryStrat = getActiveStrategyId() || "scalping";
+    const now = new Date().toISOString();
+
+    // Build frontmatter: one key per chain for easy parsing
+    const fmLines = ["type: bot-snapshot", `updated: ${now}`, `primary_strategy: ${primaryStrat}`];
+    const KNOWN = ["sol", "base", "bsc", "eth"];
+
+    const statusRows = [];
+    const fmChains = {};
+
+    for (const chain of KNOWN) {
+      const snap    = intel[chain] || {};
+      const inCfg   = activeCfg.includes(chain);
+      const cond    = snap.condition || (inCfg ? "UNKNOWN" : "OFF");
+      const score   = snap.score != null ? snap.score : "—";
+      const wallet  = chain === "sol"
+        ? (solWallet ? solWallet.slice(0, 8) + "…" : "—")
+        : (evmWallets[chain] ? evmWallets[chain].slice(0, 10) + "…" : "—");
+      const exec    = chain === "sol" ? "Jupiter" : (execEnabled && evmWallets[chain] ? "GMGN" : "OFF");
+      const discovery = inCfg ? "ON" : "OFF";
+      // Store compact chain state in frontmatter for vault-reader
+      fmChains[chain] = `${cond}|${score}|${discovery}|${exec}`;
+
+      const condIcon = { HOT: "🔥", EXTREME: "🚀", NORMAL: "⚪", COLD: "❄️", DEAD: "💀", UNKNOWN: "❓", OFF: "⬛" }[cond] ?? "❓";
+      statusRows.push(
+        `| ${condIcon} ${chain.padEnd(4)} | ${String(cond).padEnd(7)} | ${String(score).padStart(3)} | ${wallet.padEnd(12)} | ${primaryStrat.padEnd(10)} | ${discovery.padEnd(9)} | ${exec} |`
+      );
+    }
+
+    for (const [chain, val] of Object.entries(fmChains)) {
+      fmLines.push(`chain_${chain}: "${val}"`);
+    }
+
+    const body =
+      `---\n${fmLines.join("\n")}\n---\n\n` +
+      `# Chain Status\n\n` +
+      `_Auto-generated. Edit \`chain-overrides.md\` to set preferred_strategy or disable_chains._\n\n` +
+      `Active strategies: ${stratIds.join(", ") || primaryStrat}\n\n` +
+      `| chain | condition | score | wallet | strategy | discovery | execution |\n` +
+      `|-------|-----------|-------|--------|----------|-----------|-----------|\n` +
+      `${statusRows.join("\n")}\n`;
+
+    atomicWriteText(path.join(dir, "_status.md"), body);
+  } catch { /* best-effort */ }
+}
+
 /**
  * Refresh all vault snapshots. Called on the 5-min cron.
  * Each snapshot runs independently — one failure never blocks the others.
@@ -326,5 +391,6 @@ export async function refreshVaultSnapshots() {
     writeSmartMoneyLive(),
     writeNarrativeHeat(),
     writeActiveRugPatterns(),
+    writeChainStatus(),
   ]);
 }
