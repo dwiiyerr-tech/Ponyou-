@@ -167,3 +167,98 @@ export function getVaultContext() {
 
 /** Force-expire vault-context cache (for tests) */
 export function _resetVaultContextCache() { _ctxCache = null; _ctxCacheTs = 0; }
+
+// ─── Dev overrides (Priority 1) ──────────────────────────────────────────────
+// Reads 20-Devs/dev-overrides.md frontmatter.
+// trusted_devs  → whitelist: suppress auto-blacklist + boost conviction
+// distrust_devs → manual permanent blacklist (operator's gut call)
+let _devOvCache = null, _devOvTs = 0;
+export function getDevOverrides() {
+  if (_devOvTs && (Date.now() - _devOvTs) < CACHE_TTL_MS) return _devOvCache;
+  try {
+    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const vaultDir = path.dirname(notesFile);
+    const file = path.join(vaultDir, "20-Devs", "dev-overrides.md");
+    const fm = parseFrontmatter(fs.readFileSync(file, "utf8"));
+    const trusted    = new Set((Array.isArray(fm.trusted_devs)  ? fm.trusted_devs  : []).map(String));
+    const distrusted = new Set((Array.isArray(fm.distrust_devs) ? fm.distrust_devs : []).map(String));
+    _devOvCache = { trusted, distrusted };
+  } catch {
+    _devOvCache = { trusted: new Set(), distrusted: new Set() };
+  }
+  _devOvTs = Date.now();
+  return _devOvCache;
+}
+export function _resetDevOvCache() { _devOvCache = null; _devOvTs = 0; }
+
+// ─── Wallet overrides (Priority 2) ───────────────────────────────────────────
+// Reads 10-SmartMoney/follow-overrides.md frontmatter.
+// boost_wallets → count double in smart-money context; mute_wallets → ignore.
+let _walletOvCache = null, _walletOvTs = 0;
+export function getWalletOverrides() {
+  if (_walletOvTs && (Date.now() - _walletOvTs) < CACHE_TTL_MS) return _walletOvCache;
+  try {
+    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const vaultDir = path.dirname(notesFile);
+    const file = path.join(vaultDir, "10-SmartMoney", "follow-overrides.md");
+    const fm = parseFrontmatter(fs.readFileSync(file, "utf8"));
+    const boost = new Set((Array.isArray(fm.boost_wallets) ? fm.boost_wallets : []).map(String));
+    const mute  = new Set((Array.isArray(fm.mute_wallets)  ? fm.mute_wallets  : []).map(String));
+    _walletOvCache = { boost, mute };
+  } catch {
+    _walletOvCache = { boost: new Set(), mute: new Set() };
+  }
+  _walletOvTs = Date.now();
+  return _walletOvCache;
+}
+export function _resetWalletOvCache() { _walletOvCache = null; _walletOvTs = 0; }
+
+// ─── Smart money context for LLM prompt (Priority 2) ─────────────────────────
+// Reads 10-SmartMoney/_live.md frontmatter (written by refreshVaultSnapshots).
+// Returns compact one-liner or null when no data.
+let _smLiveCache = null, _smLiveTs = 0;
+export function getSmartMoneyContext() {
+  if (_smLiveTs && (Date.now() - _smLiveTs) < CACHE_TTL_MS) return _smLiveCache;
+  try {
+    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const vaultDir = path.dirname(notesFile);
+    const file = path.join(vaultDir, "10-SmartMoney", "_live.md");
+    const fm = parseFrontmatter(fs.readFileSync(file, "utf8"));
+    const count   = Number(fm.wallet_count) || 0;
+    const wr      = Number(fm.avg_winrate)  || 0;
+    const topSyms = typeof fm.top_symbols === "string" ? fm.top_symbols.trim() : "";
+    if (count === 0) { _smLiveCache = null; _smLiveTs = Date.now(); return null; }
+    const wrPart  = wr > 0 ? ` | avg wr ${(wr * 100).toFixed(0)}%` : "";
+    const symPart = topSyms ? ` | recently followed: ${topSyms}` : "";
+    _smLiveCache = `[SMART MONEY] ${count} proven wallets tracked${wrPart}${symPart}`;
+  } catch {
+    _smLiveCache = null;
+  }
+  _smLiveTs = Date.now();
+  return _smLiveCache;
+}
+export function _resetSmLiveCache() { _smLiveCache = null; _smLiveTs = 0; }
+
+// ─── Pattern overrides (Priority 4) ──────────────────────────────────────────
+// Reads 40-RugPatterns/pattern-overrides.md frontmatter.
+// approve_patterns → auto-call approvePattern() on refresh
+// mute_patterns    → matchPatterns() skips these pattern IDs at runtime
+let _patOvCache = null, _patOvTs = 0;
+export function getPatternOverrides() {
+  if (_patOvTs && (Date.now() - _patOvTs) < CACHE_TTL_MS) return _patOvCache;
+  try {
+    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const vaultDir = path.dirname(notesFile);
+    const file = path.join(vaultDir, "40-RugPatterns", "pattern-overrides.md");
+    const fm = parseFrontmatter(fs.readFileSync(file, "utf8"));
+    _patOvCache = {
+      approve: (Array.isArray(fm.approve_patterns) ? fm.approve_patterns : []).map(String),
+      mute:    (Array.isArray(fm.mute_patterns)    ? fm.mute_patterns    : []).map(String),
+    };
+  } catch {
+    _patOvCache = { approve: [], mute: [] };
+  }
+  _patOvTs = Date.now();
+  return _patOvCache;
+}
+export function _resetPatOvCache() { _patOvCache = null; _patOvTs = 0; }

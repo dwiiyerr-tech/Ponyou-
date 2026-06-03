@@ -164,8 +164,8 @@ import { runAllMaintenance } from "./data-maintenance.js";
 import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
-import { getVaultOverrides, getVaultContext } from "./tools/vault-reader.js";
-import { logScreeningDecision, logTradeOutcome } from "./tools/vault-writer.js";
+import { getVaultOverrides, getVaultContext, getDevOverrides, getWalletOverrides, getSmartMoneyContext, getPatternOverrides } from "./tools/vault-reader.js";
+import { logScreeningDecision, logTradeOutcome, refreshVaultSnapshots } from "./tools/vault-writer.js";
 import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
   isVaultDue, computeVaultAmount, executeVaultTransfer,
@@ -3555,18 +3555,28 @@ export async function runScreeningCycle({ silent = false } = {}) {
       // ── RugCheck integration: convert RugCheck report → Ponyou signals
       const rugCheckSignals = rugCheck?.indexed ? rugCheckToSignals(rugCheck) : {};
 
-      // ── Dev blacklist check (market-cap-aware)
+      // ── Dev blacklist check (market-cap-aware) + vault overrides
       const creatorAddr = token.creator || security?.security?.creator || null;
-      const devBl = checkDevBlacklist(creatorAddr);
+      const _devOv = getDevOverrides();
+      // Vault distrust_devs = manual permanent block (operator's explicit call)
+      if (creatorAddr && _devOv.distrusted.has(creatorAddr)) {
+        log("vault_override", `${token.symbol}: BLOCKED — dev ${creatorAddr.slice(0, 10)} in vault distrust_devs`);
+        continue;
+      }
+      // Vault trusted_devs = skip auto-blacklist
+      const devBl = creatorAddr && _devOv.trusted.has(creatorAddr)
+        ? { blocked: false, flagged: false, tier: null, entry: null }
+        : checkDevBlacklist(creatorAddr);
       if (devBl.blocked) {
         log("dev_blacklist", `${token.symbol}: BLOCKED — dev ${creatorAddr?.slice(0, 10)} is ${devBl.tier} blacklisted (${devBl.entry?.reason})`);
         continue;
       }
-      // Flagged devs add to rug score
+      // Flagged devs add to rug score; trusted devs get a conviction bonus (handled below)
       let devBlBonus = 0;
       if (devBl.flagged) {
         devBlBonus = devBl.tier === "MEDIUM" ? 12 : 6;
       }
+      const devTrusted = creatorAddr ? _devOv.trusted.has(creatorAddr) : false;
 
       const rugRisk = scoreRugRisk({
         mint: token.mint,
@@ -3586,6 +3596,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       if (devBlBonus > 0) {
         rugRisk.score = Math.min(100, rugRisk.score + devBlBonus);
         rugRisk.reasons.push(`Dev ${devBl.tier} blacklisted (${devBl.entry?.rug_count || 1} rugs, +${devBlBonus})`);
+      }
+      // Vault trusted dev → small rug score reduction (operator explicitly endorses this dev)
+      if (devTrusted) {
+        rugRisk.score = Math.max(0, rugRisk.score - 8);
+        rugRisk.reasons.push("Dev vault-trusted (-8)");
       }
 
       // ─── Experiment #1 telemetry: GMGN row-risk (Layer 2d) ────────────────
@@ -4519,6 +4534,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
     if (!screenReport && passingCandidates.length > 0 && !anyRuleBased) {
       log("cron", `${passingCandidates.length} passed — invoking LLM`);
       const _vaultCtx = getVaultContext();
+      const _smCtx    = getSmartMoneyContext();
       const { content } = await agentLoop(`
 SCREENING CYCLE
 Amount: ${deployAmount} SOL
@@ -4526,7 +4542,7 @@ Gas: ${gasFee.level}
 Market: ${marketIntel.condition} — ${marketIntel.description}
 ${planSummary ? `Plan: Day ${planSummary.day} | P&L: ${planSummary.today_pnl_pct}% | Target: +${planSummary.daily_target_pct}%${planSummary.profit_mode ? " | 🔥 PROFIT MODE — no trade limit" : ""}` : ""}
 Posisi aktif: ${openTokens.length}/${positionLimit}
-${_vaultCtx ? _vaultCtx + '\n' : ''}
+${_vaultCtx ? _vaultCtx + '\n' : ''}${_smCtx ? _smCtx + '\n' : ''}
 CANDIDATES (lolos 4-filter + rug check):
 ${JSON.stringify(passingCandidates)}
 ${narrativeVelocity.promptContext ? `\n${narrativeVelocity.promptContext}\n` : ""}${crossBatchVelocity.promptContext ? `${crossBatchVelocity.promptContext}\n` : ""}
@@ -5408,6 +5424,9 @@ export function startCronJobs() {
       if (added > 0) log("smart_wallets", `Rediscovery: added ${added} new wallets (pool: ${existing} → ${existing + added})`);
     } catch (e) { /* best-effort */ }
   }));
+
+  // Vault snapshots (second brain — refresh every 5 min, fire-and-forget)
+  tasks.push(cron.schedule("*/5 * * * *", () => refreshVaultSnapshots().catch(e => log("vault_snapshot_error", e.message))));
 
   // Vault (daily check — cron checks if 7 days elapsed)
   tasks.push(cron.schedule("0 */6 * * *", () => runVaultCycle().catch(e => log("vault_error", e.message))));

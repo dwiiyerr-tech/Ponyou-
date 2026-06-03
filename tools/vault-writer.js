@@ -162,3 +162,169 @@ export async function logScreeningDecision({ candidates, decision, marketConditi
     // best-effort: never throw
   }
 }
+
+// ─── Snapshot writers ──────────────────────────────────────────────────────
+// Bot-owned markdown mirrors of in-process data. Operator reads these in
+// Obsidian. Each function is fully independent and never throws.
+
+function _ensureDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+/** 20-Devs/_blacklist.md — mirror of getDevBlacklist() */
+export async function writeDevBlacklistSnapshot() {
+  try {
+    const { getDevBlacklist } = await import("./dev-blacklist.js");
+    const vaultDir = _getVaultWriterDir();
+    const dir = path.join(vaultDir, "20-Devs");
+    _ensureDir(dir);
+    const bl = getDevBlacklist();
+    const now = new Date().toISOString();
+    const recent = (bl.entries || []).slice(0, 12);
+    const tiers = { CRITICAL: [], HIGH: [], MEDIUM: [], LOW: [] };
+    for (const e of recent) {
+      const t = e.tier || "LOW";
+      if (tiers[t]) tiers[t].push(e);
+    }
+    const tierLines = t => tiers[t].map(e => {
+      const exp  = e.expires_at ? ` expires ${e.expires_at.slice(0, 10)}` : "";
+      const rugs = e.rug_count > 1 ? ` (${e.rug_count}×)` : "";
+      return `- \`${(e.creator || "?").slice(0, 12)}…\`${rugs} — ${(e.reason || "").slice(0, 50)}${exp}`;
+    }).join("\n");
+
+    const body =
+      `---\ntype: bot-snapshot\nupdated: ${now}\ntotal: ${bl.total}\ncritical: ${bl.critical}\nhigh: ${bl.high}\nmedium: ${bl.medium}\nlow: ${bl.low}\n---\n\n` +
+      `# Dev Blacklist — ${bl.total} active (${bl.critical} CRITICAL, ${bl.high} HIGH, ${bl.medium} MEDIUM, ${bl.low} LOW)\n\n` +
+      `_Auto-generated. Edit \`dev-overrides.md\` to trust/distrust a dev._\n\n` +
+      (tiers.CRITICAL.length ? `## CRITICAL (permanent)\n${tierLines("CRITICAL")}\n\n` : "") +
+      (tiers.HIGH.length     ? `## HIGH (30d)\n${tierLines("HIGH")}\n\n`    : "") +
+      (tiers.MEDIUM.length   ? `## MEDIUM (14d)\n${tierLines("MEDIUM")}\n\n` : "") +
+      (tiers.LOW.length      ? `## LOW (7d)\n${tierLines("LOW")}\n\n`       : "") +
+      (bl.total === 0 ? "_No entries yet._\n" : "");
+    atomicWriteText(path.join(dir, "_blacklist.md"), body);
+  } catch { /* best-effort */ }
+}
+
+/** 10-SmartMoney/_live.md — mirror of top discovered wallets */
+export async function writeSmartMoneyLive() {
+  try {
+    const { listDiscoveredWallets } = await import("./wallet-discovery.js");
+    const vaultDir = _getVaultWriterDir();
+    const dir = path.join(vaultDir, "10-SmartMoney");
+    _ensureDir(dir);
+    const wallets = listDiscoveredWallets({ qualified_only: true, limit: 20 });
+    const now     = new Date().toISOString();
+    const count   = wallets.length;
+    const avgWr   = count > 0
+      ? wallets.reduce((s, w) => s + (w.stats?.win_rate || 0), 0) / count
+      : 0;
+    const topSyms = wallets
+      .flatMap(w => (w.source_tokens || []).slice(0, 2))
+      .filter((s, i, a) => s && a.indexOf(s) === i)
+      .slice(0, 6)
+      .join(", ");
+
+    const rows = wallets.slice(0, 15).map(w => {
+      const addr = (w.address || "?").slice(0, 8) + "…";
+      const wr   = w.stats?.win_rate != null ? `${(w.stats.win_rate * 100).toFixed(0)}%` : "?";
+      const pnl  = w.stats?.realized_pnl_sol != null ? `${w.stats.realized_pnl_sol.toFixed(2)}` : "?";
+      const tr   = w.stats?.total_trades || 0;
+      return `| ${addr} | ${wr} | ${pnl} | ${tr} |`;
+    }).join("\n");
+
+    const body =
+      `---\ntype: bot-snapshot\nupdated: ${now}\nwallet_count: ${count}\navg_winrate: ${avgWr.toFixed(3)}\ntop_symbols: "${topSyms}"\n---\n\n` +
+      `# Smart Money — Top Proven Wallets\n\n` +
+      `_Auto-generated. Edit \`follow-overrides.md\` to boost/mute wallets._\n\n` +
+      `${count} qualified wallets tracked${avgWr > 0 ? ` | avg win rate ${(avgWr * 100).toFixed(0)}%` : ""}\n\n` +
+      (rows ? `| wallet | win rate | PnL (SOL) | trades |\n|--------|----------|-----------|--------|\n${rows}\n` : "_No qualified wallets yet._\n");
+    atomicWriteText(path.join(dir, "_live.md"), body);
+  } catch { /* best-effort */ }
+}
+
+/** 30-Narratives/_heat.md — mirror of getNarrativeHeat() */
+export async function writeNarrativeHeat() {
+  try {
+    const { getNarrativeHeat } = await import("./narratives.js");
+    const vaultDir = _getVaultWriterDir();
+    const dir      = path.join(vaultDir, "30-Narratives");
+    _ensureDir(dir);
+    const heat = getNarrativeHeat({ min_trades: 2, include_emerging: true });
+    const now  = new Date().toISOString();
+
+    const mkRow = n => {
+      const wr  = n.winrate != null ? `${(n.winrate * 100).toFixed(0)}%` : "?";
+      const pnl = n.avg_pnl_pct != null ? `${n.avg_pnl_pct > 0 ? "+" : ""}${n.avg_pnl_pct.toFixed(0)}%` : "?";
+      return `| ${n.narrative} | ${wr} | ${pnl} | ${n.trades || "?"} |`;
+    };
+    const tbl = arr => arr.length
+      ? `| narrative | win rate | avg PnL | trades |\n|-----------|----------|---------|--------|\n${arr.map(mkRow).join("\n")}\n`
+      : "_None yet._\n";
+
+    const hotItems  = heat.hot_items      || heat.ranked?.filter(n => n.winrate >= 0.55) || [];
+    const coldItems = heat.cold_items     || heat.ranked?.filter(n => n.winrate < 0.4)   || [];
+    const emItems   = heat.emerging_items || heat.emerging_list?.map(name => ({ narrative: name, tier: "emerging" })) || [];
+
+    const body =
+      `---\ntype: bot-snapshot\nupdated: ${now}\n---\n\n` +
+      `# Narrative Heat\n\n` +
+      `_Auto-generated. Adjust \`focus_narrative\` / \`blacklist_narratives\` in \`operator-notes.md\` to override._\n\n` +
+      `## 🔥 Hot (winning)\n${tbl(hotItems)}\n` +
+      `## ❄️ Cold (losing)\n${tbl(coldItems)}\n` +
+      `## 🌱 Emerging (watch)\n${tbl(emItems)}\n`;
+    atomicWriteText(path.join(dir, "_heat.md"), body);
+  } catch { /* best-effort */ }
+}
+
+/** 40-RugPatterns/_active.md — mirror of listPatterns(), with vault-approve side-effect */
+export async function writeActiveRugPatterns() {
+  try {
+    const { listPatterns, approvePattern } = await import("./rug-patterns.js");
+    const { getPatternOverrides } = await import("./vault-reader.js");
+    const vaultDir = _getVaultWriterDir();
+    const dir      = path.join(vaultDir, "40-RugPatterns");
+    _ensureDir(dir);
+    const pats      = listPatterns();
+    const overrides = getPatternOverrides();
+    const now       = new Date().toISOString();
+
+    // Apply vault-approved patterns (idempotent)
+    for (const id of overrides.approve) {
+      try { approvePattern(id, { approvedBy: "vault-operator" }); } catch { /* skip */ }
+    }
+    const muted = new Set(overrides.mute);
+
+    const seedRows = (pats.seed_patterns || []).slice(0, 10).map(p =>
+      `- \`${p.id || p.name}\` (w${p.weight || "?"}) — ${(p.description || p.reason || "").slice(0, 60)}`
+    ).join("\n") || "_None._";
+
+    const learnedRows = (pats.learned_patterns || []).slice(0, 15).map(p => {
+      const mutedTag  = muted.has(p.id) ? " 🔇 MUTED" : "";
+      const statusTag = p.review_status === "approved" ? " ✅" : " ⏳ PENDING REVIEW";
+      const conf      = p.confidence != null ? ` conf ${p.confidence.toFixed(2)}` : "";
+      const occ       = p.occurrences != null ? ` ${p.occurrences}×` : "";
+      return `- \`${p.id}\` (w${p.weight || "?"}${conf}${occ})${statusTag}${mutedTag} — ${(p.description || "").slice(0, 50)}`;
+    }).join("\n") || "_None learned yet._";
+
+    const body =
+      `---\ntype: bot-snapshot\nupdated: ${now}\nseed_count: ${pats.seed}\nlearned_count: ${pats.learned}\npending_review: ${pats.pending_learned}\n---\n\n` +
+      `# Rug Patterns — ${pats.seed} seed, ${pats.learned} learned (${pats.pending_learned} pending review)\n\n` +
+      `_Auto-generated. Add IDs to \`pattern-overrides.md\` (\`approve_patterns\` / \`mute_patterns\`) to act._\n\n` +
+      `## Seed (hard rules)\n${seedRows}\n\n` +
+      `## Learned (auto)\n${learnedRows}\n`;
+    atomicWriteText(path.join(dir, "_active.md"), body);
+  } catch { /* best-effort */ }
+}
+
+/**
+ * Refresh all vault snapshots. Called on the 5-min cron.
+ * Each snapshot runs independently — one failure never blocks the others.
+ */
+export async function refreshVaultSnapshots() {
+  await Promise.allSettled([
+    writeDevBlacklistSnapshot(),
+    writeSmartMoneyLive(),
+    writeNarrativeHeat(),
+    writeActiveRugPatterns(),
+  ]);
+}

@@ -13,6 +13,14 @@ let getVaultOverrides;
 let _resetVaultCache;
 let getVaultContext;
 let _resetVaultContextCache;
+let getDevOverrides;
+let _resetDevOvCache;
+let getWalletOverrides;
+let _resetWalletOvCache;
+let getSmartMoneyContext;
+let _resetSmLiveCache;
+let getPatternOverrides;
+let _resetPatOvCache;
 
 beforeEach(async () => {
   process.env.PONYOU_VAULT_NOTES_FILE = TMP_FILE;
@@ -22,6 +30,14 @@ beforeEach(async () => {
   _resetVaultCache = mod._resetVaultCache;
   getVaultContext = mod.getVaultContext;
   _resetVaultContextCache = mod._resetVaultContextCache;
+  getDevOverrides = mod.getDevOverrides;
+  _resetDevOvCache = mod._resetDevOvCache;
+  getWalletOverrides = mod.getWalletOverrides;
+  _resetWalletOvCache = mod._resetWalletOvCache;
+  getSmartMoneyContext = mod.getSmartMoneyContext;
+  _resetSmLiveCache = mod._resetSmLiveCache;
+  getPatternOverrides = mod.getPatternOverrides;
+  _resetPatOvCache = mod._resetPatOvCache;
   _resetVaultCache();
   _resetVaultContextCache();
 });
@@ -159,5 +175,111 @@ describe("getVaultContext", () => {
     writeCtxNotes('notes: ""\nblacklist_tokens: []\nfocus_narrative: null');
     _resetVaultContextCache();
     expect(getVaultContext()).toBeNull();
+  });
+});
+
+// ─── Override reader tests ───────────────────────────────────────────────────
+
+const OV_DIR = path.join(os.tmpdir(), `ponyou-vault-ov-${process.pid}`);
+const OV_NOTES = path.join(OV_DIR, "operator-notes.md");
+
+function writeOverrideFile(subpath, frontmatter) {
+  const full = path.join(OV_DIR, subpath);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, `---\n${frontmatter}\n---\n`, "utf8");
+}
+
+beforeEach(() => {
+  fs.mkdirSync(OV_DIR, { recursive: true });
+  fs.writeFileSync(OV_NOTES, "---\n---\n", "utf8");
+  process.env.PONYOU_VAULT_NOTES_FILE = OV_NOTES;
+  _resetDevOvCache?.();
+  _resetWalletOvCache?.();
+  _resetSmLiveCache?.();
+  _resetPatOvCache?.();
+});
+afterEach(() => {
+  fs.rmSync(OV_DIR, { recursive: true, force: true });
+});
+
+describe("getDevOverrides", () => {
+  it("returns empty sets when file is missing", () => {
+    _resetDevOvCache();
+    const ov = getDevOverrides();
+    expect(ov.trusted.size).toBe(0);
+    expect(ov.distrusted.size).toBe(0);
+  });
+
+  it("parses trusted_devs and distrust_devs correctly", () => {
+    writeOverrideFile("20-Devs/dev-overrides.md",
+      'trusted_devs: ["GOOD_ADDR_1", "GOOD_ADDR_2"]\ndistrust_devs: ["BAD_ADDR_1"]');
+    _resetDevOvCache();
+    const ov = getDevOverrides();
+    expect(ov.trusted.has("GOOD_ADDR_1")).toBe(true);
+    expect(ov.trusted.has("GOOD_ADDR_2")).toBe(true);
+    expect(ov.distrusted.has("BAD_ADDR_1")).toBe(true);
+    expect(ov.trusted.has("BAD_ADDR_1")).toBe(false);
+  });
+});
+
+describe("getWalletOverrides", () => {
+  it("returns empty sets when file is missing", () => {
+    _resetWalletOvCache();
+    const ov = getWalletOverrides();
+    expect(ov.boost.size).toBe(0);
+    expect(ov.mute.size).toBe(0);
+  });
+
+  it("parses boost_wallets and mute_wallets correctly", () => {
+    writeOverrideFile("10-SmartMoney/follow-overrides.md",
+      'boost_wallets: ["BOOST_ADDR"]\nmute_wallets: ["MUTE_ADDR"]');
+    _resetWalletOvCache();
+    const ov = getWalletOverrides();
+    expect(ov.boost.has("BOOST_ADDR")).toBe(true);
+    expect(ov.mute.has("MUTE_ADDR")).toBe(true);
+    expect(ov.boost.has("MUTE_ADDR")).toBe(false);
+  });
+});
+
+describe("getSmartMoneyContext", () => {
+  it("returns null when _live.md is missing", () => {
+    _resetSmLiveCache();
+    expect(getSmartMoneyContext()).toBeNull();
+  });
+
+  it("returns a [SMART MONEY] line when _live.md has wallet data", () => {
+    writeOverrideFile("10-SmartMoney/_live.md",
+      'type: bot-snapshot\nwallet_count: 15\navg_winrate: 0.71\ntop_symbols: "BONK2, WIF3"');
+    _resetSmLiveCache();
+    const ctx = getSmartMoneyContext();
+    expect(ctx).toContain("[SMART MONEY]");
+    expect(ctx).toContain("15 proven wallets");
+    expect(ctx).toContain("71%");
+    expect(ctx).toContain("BONK2");
+  });
+
+  it("returns null when wallet_count is 0", () => {
+    writeOverrideFile("10-SmartMoney/_live.md",
+      'type: bot-snapshot\nwallet_count: 0\navg_winrate: 0\ntop_symbols: ""');
+    _resetSmLiveCache();
+    expect(getSmartMoneyContext()).toBeNull();
+  });
+});
+
+describe("getPatternOverrides", () => {
+  it("returns empty arrays when file is missing", () => {
+    _resetPatOvCache();
+    const ov = getPatternOverrides();
+    expect(ov.approve).toEqual([]);
+    expect(ov.mute).toEqual([]);
+  });
+
+  it("parses approve_patterns and mute_patterns correctly", () => {
+    writeOverrideFile("40-RugPatterns/pattern-overrides.md",
+      'approve_patterns: ["learned_abc"]\nmute_patterns: ["learned_xyz"]');
+    _resetPatOvCache();
+    const ov = getPatternOverrides();
+    expect(ov.approve).toContain("learned_abc");
+    expect(ov.mute).toContain("learned_xyz");
   });
 });
