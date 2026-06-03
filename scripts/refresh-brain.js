@@ -566,6 +566,14 @@ writeVaultFile("00-Overview/_auto-status.md", statusContent);
 
 function gitSync() {
   try {
+    // Respect the wizard's sync config — operator can disable auto-push.
+    try {
+      const cfgPath = path.join(VAULT, ".secondbrain-sync.json");
+      if (fs.existsSync(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+        if (cfg.autoPush === false) { console.log("  • Git sync disabled (autoPush:false)"); return; }
+      }
+    } catch { /* fall through to default behaviour */ }
     const hasRemote = execSync("git -C /home/ubuntu/ponyou-brain remote -v 2>/dev/null", { encoding: "utf8" }).trim();
     if (!hasRemote) return;
     execSync("git -C /home/ubuntu/ponyou-brain add -A", { stdio: "pipe" });

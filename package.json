@@ -28,7 +28,9 @@
     "agent:24x7:demo": "bash ./ops/run-24x7.sh demo",
     "wizard": "node terminal-app/src/modes/wizard-standalone.js",
     "setup": "node terminal-app/src/modes/wizard-standalone.js",
-    "telegram:auth": "node scripts/telegram-auth.js"
+    "telegram:auth": "node scripts/telegram-auth.js",
+    "secondbrain:setup": "node scripts/setup-secondbrain.mjs",
+    "secondbrain:status": "node -e \"import('./secondbrain-sync.js').then(m=>console.log(m.buildSyncStatus()))\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
