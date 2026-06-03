@@ -181,10 +181,11 @@ async function getDecimals(mint) {
   } catch (e) {
     log("jupiter_warn", `getDecimals fetch failed for ${mint?.slice(0, 8)}: ${e.message}`);
   }
-  // RPC unavailable. pump.fun mints (address ends with "pump") are always 6
-  // decimals — use that rather than a blind 9. The heuristic is RPC-consistent
-  // for real pump.fun tokens, so it only ever helps during an RPC outage.
-  if (typeof mint === "string" && mint.endsWith("pump")) {
+  // RPC unavailable. pump.fun mints are always 6 decimals — use that rather
+  // than a blind 9. P2-3: guard that this is a genuine pump.fun address:
+  // must be 44 chars (standard base58 pubkey length) AND end with "pump".
+  // Shorter addresses ending in "pump" are not pump.fun mints.
+  if (typeof mint === "string" && mint.length === 44 && mint.endsWith("pump")) {
     log("jupiter_warn", `getDecimals: RPC unavailable for ${mint.slice(0, 8)} — assuming 6 (pump.fun convention)`);
     return 6;
   }

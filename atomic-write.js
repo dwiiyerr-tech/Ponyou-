@@ -4,6 +4,10 @@ import path from "path";
 // Clean up orphaned .tmp files from crashed writes on startup.
 // Only removes files older than 60s to avoid touching in-progress writes
 // from a concurrently-starting process.
+function isPidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
 (function cleanupOrphanedTmp() {
   const dirs = [path.resolve(".")];
   for (const dir of dirs) {
@@ -15,9 +19,15 @@ import path from "path";
         const fp = path.join(dir, f);
         try {
           const stat = fs.statSync(fp);
-          if (now - stat.mtimeMs > 60_000) {
-            fs.unlinkSync(fp);
+          if (now - stat.mtimeMs <= 60_000) continue;
+          // P2-1: skip if the PID encoded in the tmp name is still alive —
+          // that process is mid-write and we must not unlink its tmp file.
+          const pidMatch = f.match(/\.tmp\.(\d+)\./);
+          if (pidMatch) {
+            const writerPid = parseInt(pidMatch[1], 10);
+            if (writerPid !== process.pid && isPidAlive(writerPid)) continue;
           }
+          fs.unlinkSync(fp);
         } catch {}
       }
     } catch {}

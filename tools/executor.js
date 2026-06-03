@@ -49,6 +49,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "../user-config.json");
 import { log, logAction } from "../logger.js";
 import { recordCounter } from "../metrics.js";
+import { isKilled } from "../kill-switch.js";
 import { notifyDeploy, notifyClose, notifySwap, sendHTML, isEnabled as telegramEnabled } from "../telegram.js";
 import { createPendingIntent } from "../intents.js";
 import { getStrategy } from "../strategies.js";
@@ -91,6 +92,18 @@ export const CONFIG_BOUNDS = {
   minVolume:             { min: 0, max: 1e9 },
   minMcap:               { min: 0, max: 1e10 },
   maxMcap:               { min: 0, max: 1e10 },
+  // Screening/rug filter bounds — LLM must not zero these out
+  maxTop10Pct:           { min: 10, max: 100 },
+  maxBundlePct:          { min: 5, max: 100 },
+  maxBotHoldersPct:      { min: 5, max: 100 },
+  minOrganic:            { min: 0, max: 100 },
+  minHolders:            { min: 0, max: 10000 },
+  minTokenAgeHours:      { min: 0, max: 720 },
+  athFilterPct:          { min: 0, max: 100 },
+  minQuoteOrganic:       { min: 0, max: 100 },
+  maxDailyTrades:        { min: 1, max: 500 },
+  maxOpenPositions:      { min: 1, max: 50 },
+  cooldownMinutes:       { min: 0, max: 1440 },
 };
 
 export function clampConfigValue(key, value) {
@@ -868,12 +881,32 @@ async function runSafetyChecks(name, args) {
   switch (name) {
     case "swap_token":
     case "jupiter_swap": {
+      // P0-2: Re-check kill-switch at call site — cycle-start gate may be stale
+      // if operator triggered /kill while LLM was running (30-90s window).
+      if (isKilled()) {
+        return { pass: false, reason: "Kill-switch is active — swap blocked." };
+      }
+
       // EVM swaps route through GMGN (separate wallet/gas model). The SOL balance
       // safety-check below is Solana-specific; GMGN's own balance/gas handling +
       // the execEnabled flag + dry-run gate cover EVM. Skip the SOL check for non-sol.
       if ((args.chain || "sol").toLowerCase() !== "sol") {
         return { pass: true };
       }
+
+      // P0-1: Enforce maxDeployAmount cap on SOL buys — LLM amount is not
+      // pre-clamped by computeDeployAmount() so we guard here.
+      if (args.token_in === "SOL") {
+        const maxDeploy = config.risk?.maxDeployAmount ?? 35;
+        const amount = Number(args.amount) || 0;
+        if (amount > maxDeploy) {
+          return {
+            pass: false,
+            reason: `Amount ${amount} SOL exceeds maxDeployAmount limit of ${maxDeploy} SOL.`,
+          };
+        }
+      }
+
       // Live always runs the balance safety-check; demo runs it too when strict
       // gates are on (checks the virtual balance covers amount+gas / token held).
       if (process.env.DRY_RUN !== "true" || demoStrictGates()) {
@@ -909,6 +942,8 @@ async function runSafetyChecks(name, args) {
     }
     case "self_update": {
       if (process.env.ALLOW_SELF_UPDATE !== "true") return { pass: false, reason: "self_update is disabled." };
+      // P1-2: Require explicit commit hash to prevent blind git pull
+      if (!args.commit_hash) return { pass: false, reason: "self_update requires a commit_hash argument to prevent blind git pull." };
       return { pass: true };
     }
     default:

@@ -596,7 +596,8 @@ export function createApiRouter() {
     if (typeof cmd !== "string" || cmd.length > 64) {
       return res.status(400).json({ error: "Invalid cmd" });
     }
-    if (!ALLOWED_SLASH_CMDS.has(cmd.split(" ")[0])) {
+    const baseCmd = cmd.split(" ")[0];
+    if (!ALLOWED_SLASH_CMDS.has(baseCmd)) {
       return res.status(400).json({ error: "Unknown or disallowed command" });
     }
     if (!Array.isArray(args) || args.length > 16) {
@@ -605,6 +606,11 @@ export function createApiRouter() {
     for (const a of args) {
       if (typeof a !== "string" || a.length > 256) {
         return res.status(400).json({ error: "Invalid arg entry" });
+      }
+      // P2-2: reject args containing shell metacharacters (defence-in-depth;
+      // IPC is file-based so no OS injection, but keeps handlers clean)
+      if (/[;&|`$<>]/.test(a)) {
+        return res.status(400).json({ error: "Invalid characters in arg" });
       }
     }
     const result = await sendBotCommand({ cmd, args });

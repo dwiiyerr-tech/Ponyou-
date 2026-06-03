@@ -39,22 +39,13 @@ export function createDashboardServer({ port = 3000 } = {}) {
     } catch { return true; }
   }
 
-  // Auth middleware — exempt public HTML pages always; exempt wizard API
-  // routes only during first-time setup (no walletAddress yet).
+  // Auth middleware — exempt only public HTML pages. All API routes (including
+  // wizard routes) require the dashboard token even during first-time setup.
+  // P1-3: previously wizard write endpoints were unauth during setup window —
+  // any local process could overwrite config before the operator completed setup.
   app.use((req, res, next) => {
     const publicPaths = ["/", "/wizard", "/wizard.html", "/index.html"];
-    const wizardApiPaths = [
-      { method: "GET",  path: "/wizard/config" },
-      { method: "POST", path: "/wizard/save" },
-      { method: "GET",  path: "/wizard/wallet-status" },
-      { method: "GET",  path: "/wizard/test-telegram" },
-      { method: "GET",  path: "/wizard/gmgn-key-status" },
-      { method: "POST", path: "/wizard/gmgn-keygen" },
-    ];
     if (publicPaths.includes(req.path)) return next();
-    if (wizardApiPaths.some(p => p.method === req.method && p.path === req.path) && isFirstTimeSetup()) {
-      return next();
-    }
     authMiddleware(req, res, next);
   });
 

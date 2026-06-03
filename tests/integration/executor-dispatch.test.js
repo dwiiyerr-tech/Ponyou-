@@ -251,10 +251,16 @@ describe("runSafetyChecks via executeTool", () => {
     expect(r).toMatchObject({ blocked: true, reason: expect.stringMatching(/self_update is disabled/) });
   });
 
-  it("self_update proceeds when ALLOW_SELF_UPDATE=true", async () => {
+  it("self_update blocked without commit_hash even when ALLOW_SELF_UPDATE=true", async () => {
+    process.env.ALLOW_SELF_UPDATE = "true";
+    const r = await executeTool("self_update", {});
+    expect(r).toMatchObject({ blocked: true, reason: expect.stringMatching(/commit_hash/) });
+  });
+
+  it("self_update proceeds when ALLOW_SELF_UPDATE=true and commit_hash provided", async () => {
     process.env.ALLOW_SELF_UPDATE = "true";
     h.execSync.mockReturnValue("Already up to date.");
-    const r = await executeTool("self_update", {});
+    const r = await executeTool("self_update", { commit_hash: "abc1234" });
     expect(r.blocked).toBeUndefined();
     expect(r.success).toBe(true);
   });

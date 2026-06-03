@@ -67,4 +67,34 @@ describe("clampConfigValue — EX-6 bounds", () => {
       expect(CONFIG_BOUNDS[k], `missing bounds for ${k}`).toBeDefined();
     }
   });
+
+  // P1-1: screening filter keys must be bounded so LLM cannot zero them out
+  it("CONFIG_BOUNDS includes screening filter keys (P1-1)", () => {
+    const screeningKeys = [
+      "maxTop10Pct", "maxBundlePct", "maxBotHoldersPct",
+      "minOrganic", "minHolders", "minTokenAgeHours",
+      "athFilterPct", "maxDailyTrades", "maxOpenPositions",
+    ];
+    for (const k of screeningKeys) {
+      expect(CONFIG_BOUNDS[k], `P1-1: missing bounds for screening key ${k}`).toBeDefined();
+    }
+  });
+
+  it("clamps maxTop10Pct — cannot be set to 0 (would allow 100% concentrated tokens)", () => {
+    const r = clampConfigValue("maxTop10Pct", 0);
+    expect(r.clamped).toBe(true);
+    expect(r.value).toBe(10); // min=10
+  });
+
+  it("clamps minHolders — cannot be set below 0", () => {
+    const r = clampConfigValue("minHolders", -999);
+    expect(r.clamped).toBe(true);
+    expect(r.value).toBe(0);
+  });
+
+  it("clamps maxDailyTrades to sane range", () => {
+    const r = clampConfigValue("maxDailyTrades", 99999);
+    expect(r.clamped).toBe(true);
+    expect(r.value).toBe(500);
+  });
 });
