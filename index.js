@@ -3454,6 +3454,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
       planSummary = null;
     }
 
+    // TDZ FIX: marketIntel is first used in the adaptive-risk block below but
+    // was only declared ~90 lines later (after recordMarketSnapshot), throwing
+    // "Cannot access 'marketIntel' before initialization". Fetch the last
+    // recorded snapshot early (fine for risk sizing — regime doesn't flip
+    // mid-cycle); it's refreshed after recordMarketSnapshot for the main flow.
+    let marketIntel = getMarketIntelligence();
+
     let deployAmount = computeDeployAmount(walletSol, { solPriceUsd: balance.sol_price });
     // ── Adaptive Risk: clamp deployAmount based on intra-session state ──────
     if (config.adaptiveRisk?.enabled) {
@@ -3556,7 +3563,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     // ─── Market intelligence ─────────────────────
     const marketSnap = await recordMarketSnapshot(cappedCandidates);
-    const marketIntel = getMarketIntelligence();
+    marketIntel = getMarketIntelligence(); // refresh after snapshot (declared early for adaptive-risk TDZ fix)
     const heatmap = computeMarketRegime();
     log("market", `Market: ${marketIntel.condition} (confidence: ${marketSnap.confidence}) → heatmap ${heatmap.regime} maxPos=${heatmap.max_positions}`);
 
