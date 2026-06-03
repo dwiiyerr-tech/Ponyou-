@@ -20,7 +20,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { gateBatch } from "./social-trash-gate.js";
 import { log } from "./logger.js";
-import { withFileLock } from "./atomic-write.js";
+import { withFileLock, atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT      = __dirname;
@@ -374,7 +374,7 @@ function saveCache(signals) {
       signals:   [...combined.values()].sort((a, b) => (b.socialScore || 0) - (a.socialScore || 0)),
     };
 
-    writeFileSync(SIGNALS_FILE, JSON.stringify(payload, null, 2));
+    atomicWriteJson(SIGNALS_FILE, payload);
     return payload;
   });
 }

@@ -23,6 +23,7 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { gateSignal } from "./social-trash-gate.js";
+import { atomicWriteJson } from "./atomic-write.js";
 import { log } from "./logger.js";
 import { withFileLock } from "./atomic-write.js";
 
@@ -53,7 +54,7 @@ function loadState() {
 }
 
 function saveState(state) {
-  try { writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch {}
+  try { atomicWriteJson(STATE_FILE, state); } catch {}
 }
 
 // ─── Discord REST ──────────────────────────────────────────────
@@ -226,7 +227,7 @@ function mergeIntoCache(newSignals) {
 
     cache.updatedAt = new Date().toISOString();
     cache.signals   = [...existing.values()];
-    try { writeFileSync(SIGNALS_FILE, JSON.stringify(cache, null, 2)); } catch {}
+    try { atomicWriteJson(SIGNALS_FILE, cache); } catch {}
   });
 }
 

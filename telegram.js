@@ -244,6 +244,7 @@ export function stopPolling() {
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve as _resolve, dirname as _dirname } from "path";
 import { fileURLToPath as _ftu } from "url";
+import { atomicWriteJson } from "./atomic-write.js";
 const _root = _dirname(_ftu(import.meta.url));
 const _SIGNALS_FILE = _resolve(_root, "social-signals.json");
 
@@ -342,7 +343,7 @@ export async function handleCallMessage(message = {}) {
   if (passed > 0) {
     cache.updatedAt = new Date().toISOString();
     cache.signals   = [...existing.values()];
-    try { writeFileSync(_SIGNALS_FILE, JSON.stringify(cache, null, 2)); } catch {}
+    try { atomicWriteJson(_SIGNALS_FILE, cache); } catch {}
   }
 
   return passed;

@@ -471,10 +471,13 @@ export async function syncGmgnWallets({ minWinRate = 0.60, minPnl = 0, maxNew = 
     return { added: 0, skipped: 0, total: 0, reason: "gmgn_disabled" };
   }
 
-  const [smartMoney, kols] = await Promise.all([
+  // Use allSettled to prevent one API failure from crashing discovery
+  const results = await Promise.allSettled([
     getSmartMoneyWallets(100),
     getKolWallets(50),
   ]);
+  const smartMoney = results[0].status === "fulfilled" ? results[0].value : [];
+  const kols = results[1].status === "fulfilled" ? results[1].value : [];
 
   // smartmoney/kol are ACTIVITY FEEDS (no win rate); dedupe to distinct, untracked
   // wallets, then enrich each via wallet_stats (the real 0–1 win rate + USD PnL)
