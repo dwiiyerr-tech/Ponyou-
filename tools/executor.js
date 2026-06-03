@@ -611,6 +611,27 @@ const toolMap = {
     if (!_ponyouControls?.setConfirmMode) return { error: "Controls not registered" };
     return _ponyouControls.setConfirmMode(!!enable);
   },
+
+  // ── Trading Plan Management ──────────────────────────────────────────────
+  ponyou_get_plan: () => {
+    if (!_ponyouControls?.getPlan) return { error: "Controls not registered" };
+    return _ponyouControls.getPlan();
+  },
+  ponyou_update_plan: ({ dailyTargetPct, dailyStopLossPct, maxPositions, deployAmountSol } = {}) => {
+    if (!_ponyouControls?.updatePlan) return { error: "Controls not registered" };
+    return _ponyouControls.updatePlan({ dailyTargetPct, dailyStopLossPct, maxPositions, deployAmountSol });
+  },
+
+  // ── Vault Memory (Second Brain) ──────────────────────────────────────────
+  ponyou_remember: ({ lesson, source } = {}) => {
+    if (!_ponyouControls?.rememberLesson) return { error: "Controls not registered" };
+    if (!lesson) return { error: "lesson text required" };
+    return _ponyouControls.rememberLesson(String(lesson), source || "user");
+  },
+  ponyou_vault_summary: () => {
+    if (!_ponyouControls?.getVaultSummary) return { error: "Controls not registered" };
+    return _ponyouControls.getVaultSummary();
+  },
 };
 
 const SWAP_TOOL_NAMES = new Set(["swap_token", "jupiter_swap"]);

@@ -35,6 +35,10 @@ const PONYOU_CONTROL_TOOLS = new Set([
   "ponyou_get_status", "ponyou_toggle_automation", "ponyou_switch_strategy",
   "ponyou_toggle_feature", "ponyou_get_agents", "ponyou_get_open_positions",
   "ponyou_set_confirm_mode",
+  // Trading plan management
+  "ponyou_get_plan", "ponyou_update_plan",
+  // Vault memory / second brain
+  "ponyou_remember", "ponyou_vault_summary",
 ]);
 
 // Intent → tool subsets for GENERAL role

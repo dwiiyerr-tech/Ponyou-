@@ -46,21 +46,40 @@ function buildSystemPrompt(stateSnapshot) {
 ${stateSnapshot}
 
 ## Controls yang Bisa Kamu Eksekusi
+
+### 📊 Status & Info
 - **ponyou_get_status** — status lengkap real-time
-- **ponyou_toggle_automation** — start/stop automation (enable: true/false)
-- **ponyou_switch_strategy** — ganti strategi (sniper/scalper/conservative/balanced/aggressive)
-- **ponyou_toggle_feature** — enable/disable fitur (conviction/narrative_velocity/kelly_edge/dll)
 - **ponyou_get_agents** — status semua sub-agent
 - **ponyou_get_open_positions** — daftar posisi aktif
-- **ponyou_set_confirm_mode** — nyalakan/matikan mode konfirmasi sebelum trade
 - **get_performance_history** — riwayat P&L
 - **get_market_intelligence** — kondisi market sekarang
 - **get_wallet_balance** — saldo wallet
 - **get_learning_status** — status mode belajar
-- **add_lesson** — tambah pelajaran baru ke memory Ponyou
-- **list_lessons** — lihat semua pelajaran tersimpan
-- **add_to_blacklist** — blacklist token
 - **score_rug_risk** — cek rug risk sebuah token
+
+### 🎮 Trading Control
+- **ponyou_toggle_automation** — start/stop automation (enable: true/false)
+- **ponyou_switch_strategy** — ganti strategi (scalping/sniper/dip_buy/smart_money/degen/day_phase_trading)
+- **ponyou_toggle_feature** — enable/disable fitur
+- **ponyou_set_confirm_mode** — mode konfirmasi sebelum trade
+- **add_to_blacklist** — blacklist token
+
+### 📋 Trading Plan Management
+- **ponyou_get_plan** — lihat trading plan saat ini (target harian, stop loss, dll)
+- **ponyou_update_plan** — ubah parameter plan:
+  - dailyTargetPct: target profit harian (%)
+  - dailyStopLossPct: batas kerugian harian (negatif, misal -15)
+  - maxPositions: maks posisi terbuka (1-5)
+  - deployAmountSol: ukuran entry per posisi (SOL)
+
+### 🧠 Memory & Second Brain (PENTING)
+- **ponyou_remember** — simpan pelajaran/preferensi user ke second brain Ponyou
+  Contoh: "ingat bahwa saya suka AI narrative" → tersimpan di vault, berlaku setiap cycle
+  Contoh: "jangan trading saat market DEAD" → bot akan ikuti ini otomatis
+  Contoh: "BSC terlalu berisiko, skip saja" → ditambahkan ke operator lessons
+- **ponyou_vault_summary** — lihat semua yang sudah Ponyou "ingat" (vault intelligence)
+- **add_lesson** — tambah pelajaran teknis ke memory
+- **list_lessons** — lihat semua pelajaran teknis tersimpan
 
 ## Perintah yang Tidak Perlu Tool
 - "/help" atau "help" → jelaskan commands tersedia
@@ -70,8 +89,12 @@ ${stateSnapshot}
 1. Kalau user minta start/stop bot → gunakan ponyou_toggle_automation
 2. Kalau user minta ganti strategi → gunakan ponyou_switch_strategy
 3. Kalau user minta info status → gunakan ponyou_get_status
-4. Jangan mengarang data — kalau tidak tahu, gunakan tool yang sesuai
-5. Setelah eksekusi control → konfirmasi hasilnya ke user dengan jelas`;
+4. Kalau user bilang "ingat", "remember", "catat", "simpan" → gunakan ponyou_remember SEGERA
+5. Kalau user minta ubah target/stop loss/max positions → gunakan ponyou_update_plan
+6. Jangan mengarang data — kalau tidak tahu, gunakan tool yang sesuai
+7. Setelah eksekusi control → konfirmasi hasilnya ke user dengan jelas
+8. ponyou_remember sangat penting — ini cara user "mengajari" Ponyou strategi mereka
+   Setiap instruksi dari user yang bersifat preferensi/strategi HARUS disimpan`;
 }
 
 // ─── State Snapshot ───────────────────────────────────────────────────────
@@ -142,6 +165,15 @@ export async function handleGeneralMessage(text) {
   // Quick responses tanpa LLM
   const quick = _quickResponse(text);
   if (quick) return quick;
+
+  // ── Direct memory shortcuts (no LLM needed for explicit remember commands) ──
+  const rememberMatch = text.match(/^(?:ingat|remember|catat|simpan)[:\s]+(.+)/is);
+  if (rememberMatch && _controls?.rememberLesson) {
+    const lesson = rememberMatch[1].trim();
+    _controls.rememberLesson(lesson, "user");
+    log("general", `Memory saved: "${lesson.slice(0, 80)}"`);
+    return `✅ <b>Disimpan ke Second Brain</b>\n<i>"${lesson.slice(0, 100)}"</i>\n\nPonyou akan menggunakan pelajaran ini pada setiap screening cycle berikutnya.`;
+  }
 
   if (!_agentLoop) {
     return "LLM belum siap. Coba lagi sebentar.";

@@ -165,7 +165,7 @@ import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
 import { getVaultOverrides, getVaultContext, getVaultIntelligenceContext, getDevOverrides, getWalletOverrides, getSmartMoneyContext, getPatternOverrides, getChainOverrides } from "./tools/vault-reader.js";
-import { logScreeningDecision, logTradeOutcome, refreshVaultSnapshots, ensureIntelligenceTemplates } from "./tools/vault-writer.js";
+import { logScreeningDecision, logTradeOutcome, refreshVaultSnapshots, ensureIntelligenceTemplates, logSkippedTokens, appendOperatorLesson } from "./tools/vault-writer.js";
 import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
   isVaultDue, computeVaultAmount, executeVaultTransfer,
@@ -350,6 +350,55 @@ const _generalControls = {
   setConfirmMode: (enable) => {
     config.trading.confirmMode = enable;
     return { confirm_mode: enable, message: `Confirm mode ${enable ? "ON" : "OFF"}` };
+  },
+
+  // ── Trading Plan Management ──────────────────────────────────────────────
+  getPlan: () => {
+    const plan = getPlanSummary();
+    return {
+      day:                plan?.day ?? null,
+      days_total:         plan?.days_total ?? null,
+      today_pnl_pct:      plan?.today_pnl_pct ?? null,
+      daily_target_pct:   config.management?.dailyTargetPct ?? 25,
+      daily_stoploss_pct: config.management?.dailyStopLossPct ?? -10,
+      deploy_amount_sol:  config.management?.deployAmountSol ?? 0.5,
+      max_positions:      config.risk?.maxPositions ?? 3,
+      pilot_capital_usd:  config.pilot?.capitalUsd ?? 10,
+    };
+  },
+  updatePlan: ({ dailyTargetPct, dailyStopLossPct, maxPositions, deployAmountSol } = {}) => {
+    const changed = [];
+    if (Number.isFinite(dailyTargetPct) && dailyTargetPct > 0) {
+      config.management.dailyTargetPct = dailyTargetPct;
+      changed.push(`dailyTargetPct → ${dailyTargetPct}%`);
+    }
+    if (Number.isFinite(dailyStopLossPct) && dailyStopLossPct < 0) {
+      config.management.dailyStopLossPct = dailyStopLossPct;
+      changed.push(`dailyStopLossPct → ${dailyStopLossPct}%`);
+    }
+    if (Number.isFinite(maxPositions) && maxPositions >= 1) {
+      config.risk.maxPositions = Math.round(maxPositions);
+      changed.push(`maxPositions → ${maxPositions}`);
+    }
+    if (Number.isFinite(deployAmountSol) && deployAmountSol > 0) {
+      config.management.deployAmountSol = deployAmountSol;
+      changed.push(`deployAmountSol → ${deployAmountSol} SOL`);
+    }
+    return { updated: changed, message: changed.length > 0 ? `Updated: ${changed.join(", ")}` : "No valid changes" };
+  },
+
+  // ── Vault Memory (second brain) ──────────────────────────────────────────
+  rememberLesson: (text, source = "user") => {
+    appendOperatorLesson(text, source).catch(() => {});
+    return { saved: true, message: `Pelajaran disimpan ke vault: "${text.slice(0, 60)}..."` };
+  },
+  getVaultSummary: () => {
+    try {
+      const ctx = getVaultIntelligenceContext();
+      return { summary: ctx || "Vault belum memiliki data intelligence. Jalankan bot beberapa cycle dulu." };
+    } catch {
+      return { summary: "Vault summary tidak tersedia." };
+    }
   },
 };
 
@@ -4394,6 +4443,14 @@ export async function runScreeningCycle({ silent = false } = {}) {
           }
         }
       } catch (e) { log("shadow_error", e.message); }
+
+      // Log rule-based rejections to vault — operator sees what rug defense caught
+      try {
+        const skipped = scoredCandidates.filter(c => !c.passed && (c.rug_score ?? 0) >= 50);
+        if (skipped.length > 0) {
+          setImmediate(() => logSkippedTokens(skipped, marketIntel?.condition || "UNKNOWN").catch(() => {}));
+        }
+      } catch { /* best-effort */ }
 
       // Feed fundamental signals to the strategy producer. Internal throttle
       // (maxPerHour) prevents spam — tick is safe to call every screening cycle.

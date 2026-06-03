@@ -324,6 +324,7 @@ describe("state — syncOpenPositions", () => {
   });
 
   it("trackPosition stores paper_trade flag correctly", async () => {
+    vi.resetModules();
     const { trackPosition, getState, _resetStateForTests } = await import("../state.js");
     _resetStateForTests();
     const mint = "FlagMint1111111111111111111111111111111111";

@@ -905,5 +905,52 @@ export const tools = [
         }
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "ponyou_get_plan",
+      description: "Get the current trading plan parameters: daily target %, stop loss %, max positions, deploy amount, pilot capital.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "ponyou_update_plan",
+      description: "Update trading plan parameters live (no restart needed). Use to adjust daily target, stop loss, position size, or max positions.",
+      parameters: {
+        type: "object",
+        properties: {
+          dailyTargetPct:    { type: "number", description: "Daily profit target % (e.g. 25 = 25%)" },
+          dailyStopLossPct:  { type: "number", description: "Daily stop loss % (negative, e.g. -15)" },
+          maxPositions:      { type: "number", description: "Max open positions (1-5)" },
+          deployAmountSol:   { type: "number", description: "Base deploy amount per entry in SOL" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "ponyou_remember",
+      description: "Save a lesson, preference, or strategy note to Ponyou's second brain (vault). The bot will apply this knowledge in every future screening cycle. Use this when the user says 'ingat', 'remember', 'catat', or shares any trading preference or rule.",
+      parameters: {
+        type: "object",
+        required: ["lesson"],
+        properties: {
+          lesson: { type: "string", description: "The lesson, preference, or strategy note to remember (natural language)" },
+          source: { type: "string", enum: ["user", "bot"], description: "Who provided this lesson (default: user)" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "ponyou_vault_summary",
+      description: "Show everything Ponyou currently 'knows' — chain conditions, narrative performance, operator lessons, money management rules, smart money status, and strategy performance.",
+      parameters: { type: "object", properties: {} }
+    }
   }
 ];
