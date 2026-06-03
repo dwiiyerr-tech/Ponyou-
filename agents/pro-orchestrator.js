@@ -53,7 +53,9 @@ let _validationMode = false;
 let _tradesSinceLastAnalysis = 0;
 let _analysisCache = null;
 let _analysisCacheTime = 0;
+let _consecutiveErrors = 0;
 const ANALYSIS_CACHE_TTL_MS = 120_000; // 2 min — matches orchestrator cycle
+const MAX_CONSECUTIVE_ERRORS = 5;      // auto-suspend pro mode after this many errors
 
 function proValidationModeEnabled() {
   const requested = process.env.PRO_VALIDATION_MODE === "true" || _runtimeConfig.pro?.validationMode === true;
@@ -61,20 +63,30 @@ function proValidationModeEnabled() {
   return requested && demoSafe;
 }
 
-// ─── Pro Decision Thresholds ──────────────────────────────────
+/**
+ * In validation mode, pro decisions are SHADOW-ONLY: logged but do NOT veto.
+ * Only full pro mode (all 8 requirements + manual approval) vetoes entries.
+ * This allows safe testing of pro logic without blocking the screening pipeline.
+ */
+export function isProValidationMode() {
+  return _validationMode;
+}
 
-const PRO_THRESHOLDS = {
-  // BUY: multi-signal convergence required
-  buy: {
-    minConvictionScore: 65,
-    minSignalAggregate: 55,
-    minKellyEdge: 0.08,
-    maxRugScore: 25,
-    requiredSignalsConverging: 4, // at least 4 features must agree
-    minLiquidityUSD: 2000,
-    maxVolatilityPercentile: 80,
-    requireNarrativeVelocity: false, // optional in COLD
-  },
+// ─── Pro Decision Thresholds (configurable via user-config) ───────────────
+
+function _buildThresholds() {
+  const cfg = _runtimeConfig.pro || {};
+  return {
+    buy: {
+      minConvictionScore:       cfg.minConvictionScore       ?? 65,
+      minSignalAggregate:       cfg.minSignalAggregate       ?? 55,
+      minKellyEdge:             cfg.minKellyEdge             ?? 0.08,
+      maxRugScore:              cfg.maxRugScore              ?? 25,
+      requiredSignalsConverging: cfg.requiredSignals         ?? 4,
+      minLiquidityUSD:          cfg.minLiquidityUsd          ?? 2000,
+      maxVolatilityPercentile:  cfg.maxVolatilityPercentile  ?? 80,
+      requireNarrativeVelocity: cfg.requireNarrativeVelocity ?? false,
+    },
 
   // SELL: multi-signal exit triggers
   sell: {
@@ -95,20 +107,25 @@ const PRO_THRESHOLDS = {
     lowConfidenceRegime: true,        // skip if regime confidence < 40%
   },
 
-  // CUTLOSS: adaptive cut-loss based on historical patterns
-  cutloss: {
-    fastFailureMinutes: 8,            // cut if down -8% in < 8 min
-    fastFailurePnL: -8,
-    standardCutLossPnL: -15,          // standard hard cut
-    convictionCollapsePnL: -10,       // cut sooner if conviction collapses
-    regimeAdjustedCutLoss: {
-      HOT: -18,    // wider stops in volatile markets
-      NORMAL: -15,
-      COLD: -10,   // tighter stops in thin markets
-      DEAD: -5,     // immediate exit
+    // CUTLOSS: adaptive cut-loss based on historical patterns
+    cutloss: {
+      fastFailureMinutes: 8,            // cut if down -8% in < 8 min
+      fastFailurePnL: -8,
+      standardCutLossPnL: -15,          // standard hard cut
+      convictionCollapsePnL: -10,       // cut sooner if conviction collapses
+      regimeAdjustedCutLoss: {
+        HOT: -18,    // wider stops in volatile markets
+        NORMAL: -15,
+        COLD: -10,   // tighter stops in thin markets
+        DEAD: -5,     // immediate exit
+      },
     },
-  },
-};
+  };
+}
+
+// Backward-compatible static snapshot (defaults). Live decisions use
+// _buildThresholds() so user-config.pro overrides apply without restart.
+const PRO_THRESHOLDS = _buildThresholds();
 
 // ─── Data Loaders ─────────────────────────────────────────────
 
@@ -134,6 +151,7 @@ export function runProAnalysis() {
     return _analysisCache;
   }
 
+  try {
   const intelligence = {
     analyzedAt: new Date().toISOString(),
     regimes: {},
@@ -265,7 +283,18 @@ export function runProAnalysis() {
 
   _analysisCache = intelligence;
   _analysisCacheTime = Date.now();
+  _consecutiveErrors = 0;          // reset error counter on a clean analysis
   return intelligence;
+  } catch (e) {
+    _consecutiveErrors++;
+    log("pro_orchestrator_error", `Analysis failed (${_consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${e.message}`);
+    if (_consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+      _proModeActive = false;
+      setAgentStatus(AGENT_NAME, "stopped", `Auto-suspended after ${MAX_CONSECUTIVE_ERRORS} consecutive analysis errors`);
+      log("pro_orchestrator", "AUTO-SUSPEND: pro mode disabled — screening pipeline continues without pro gate");
+    }
+    return null;
+  }
 }
 
 export function clearProAnalysisCache() {
@@ -824,7 +853,7 @@ export function validateStrategyCandidate(candidate) {
  * More strict than standard screening BUY.
  */
 export function proBuyDecision({ conviction, signal, kelly, workflow, rugScore, marketCondition, narrativeVelocity, volatilityPercentile, liquidity }) {
-  const thresholds = PRO_THRESHOLDS.buy;
+  const thresholds = _buildThresholds().buy;
 
   let convergingSignals = 0;
   const reasons = [];
@@ -903,7 +932,7 @@ export function proBuyDecision({ conviction, signal, kelly, workflow, rugScore, 
  * Pro SELL decision — multi-signal exit triggers.
  */
 export function proSellDecision({ position, conviction, marketCondition, narrativeVelocity, regimeHistory }) {
-  const thresholds = PRO_THRESHOLDS.sell;
+  const thresholds = _buildThresholds().sell;
   let exitSignals = 0;
   const reasons = [];
 
@@ -962,7 +991,7 @@ export function proSellDecision({ position, conviction, marketCondition, narrati
 export function proCutlossDecision({ pnlPct, holdMinutes, marketCondition, conviction, entryConviction } = {}) {
   const safePnl = Number.isFinite(Number(pnlPct)) ? Number(pnlPct) : 0;
   const safeHold = Number.isFinite(Number(holdMinutes)) ? Number(holdMinutes) : 0;
-  const thresholds = PRO_THRESHOLDS.cutloss;
+  const thresholds = _buildThresholds().cutloss;
 
   // Fast failure detection
   if (safeHold <= thresholds.fastFailureMinutes && safePnl <= thresholds.fastFailurePnL) {

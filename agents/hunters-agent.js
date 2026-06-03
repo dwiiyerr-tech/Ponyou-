@@ -162,9 +162,18 @@ export async function runHuntersExpedition({ strategy = null } = {}) {
 
   setAgentStatus(AGENT_NAME, "running");
   const startTime = Date.now();
+  const EXPEDITION_TIMEOUT_MS = 30_000;
 
   try {
-    const prey = await runHunterExpedition({ strategy: huntingStrategy });
+    // Wrap expedition with timeout — if multi-source API calls hang beyond 30s,
+    // fall back to cached prey so the screening cycle isn't starved of candidates.
+    const expeditionWithTimeout = Promise.race([
+      runHunterExpedition({ strategy: huntingStrategy }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`expedition_timeout_${EXPEDITION_TIMEOUT_MS}ms`)), EXPEDITION_TIMEOUT_MS)
+      ),
+    ]);
+    const prey = await expeditionWithTimeout;
 
     // Tag each token with its hunt source for learning-agent attribution
     for (const token of prey) {
@@ -212,6 +221,18 @@ export async function runHuntersExpedition({ strategy = null } = {}) {
 
     return filteredPrey;
   } catch (e) {
+    const isTimeout = e.message?.startsWith("expedition_timeout");
+    if (isTimeout) {
+      log("hunters_timeout", `Expedition timed out after ${EXPEDITION_TIMEOUT_MS}ms — falling back to cached prey`);
+      updateAgentHealth(AGENT_NAME, { lastTimeout: new Date().toISOString(), lastError: "timeout" });
+      // Return cached prey so the screening cycle still has candidates
+      const cached = getCachedPrey();
+      if (cached.length > 0) {
+        log("hunters", `Timeout fallback: returning ${cached.length} cached tokens`);
+        return cached;
+      }
+      return [];
+    }
     log("hunters_error", `Expedition failed: ${e.message}`);
     updateAgentHealth(AGENT_NAME, { lastError: e.message });
     return [];

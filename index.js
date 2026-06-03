@@ -21,7 +21,7 @@ import { initLearningAgent, getStrategyPerformance } from "./agents/learning-age
 import { shadowWatch } from "./tools/shadow-watchlist.js";
 import { initOrchestratorAgent, runOrchestratorCycle, setFullAutomationMode, getOrchestratorDashboard } from "./agents/orchestrator-agent.js";
 import { runAutomationQualification, isAutomationActive, guardAutomatedDecision, getAutomationState, approveAutomation, rejectAutomation, revokeAutomation } from "./agents/automation-rules.js";
-import { initProOrchestrator, isProModeActive, getProDashboard, proBuyDecision, proSellDecision, proCutlossDecision, proCastNetDecision, runProAnalysis, validateStrategyReadiness } from "./agents/pro-orchestrator.js";
+import { initProOrchestrator, isProModeActive, isProValidationMode, getProDashboard, proBuyDecision, proSellDecision, proCutlossDecision, proCastNetDecision, runProAnalysis, validateStrategyReadiness } from "./agents/pro-orchestrator.js";
 import { checkWalletSignals, getWalletTierStats, discoverWalletTiers, TIER_CONFIG } from "./tools/wallet-tiers.js";
 import { log } from "./logger.js";
 import { getWalletBalances } from "./tools/wallet.js";
@@ -4219,13 +4219,21 @@ export async function runScreeningCycle({ silent = false } = {}) {
           liquidity: enhancedToken?.liquidity ?? 0,
         });
         if (proBuyResult.action === "SKIP") {
-          proBuySkipped = true;
-          flags.push(
-            `Pro gate SKIP: ${proBuyResult.convergingSignals}/${proBuyResult.requiredSignals} signals — ${proBuyResult.reasons.join(", ")}`
-          );
-          log("pro_orchestrator",
-            `BUY SKIP ${token.symbol}: ${proBuyResult.convergingSignals}/${proBuyResult.requiredSignals} signals (conf=${proBuyResult.confidence}%)`
-          );
+          // Validation mode = SHADOW ONLY: log the would-be veto but do NOT block.
+          // Only full pro mode (8 requirements + manual approval) actually vetoes.
+          if (isProValidationMode()) {
+            log("pro_orchestrator",
+              `[SHADOW] would-SKIP ${token.symbol}: ${proBuyResult.convergingSignals}/${proBuyResult.requiredSignals} signals (conf=${proBuyResult.confidence}%) — NOT blocking (validation mode)`
+            );
+          } else {
+            proBuySkipped = true;
+            flags.push(
+              `Pro gate SKIP: ${proBuyResult.convergingSignals}/${proBuyResult.requiredSignals} signals — ${proBuyResult.reasons.join(", ")}`
+            );
+            log("pro_orchestrator",
+              `BUY SKIP ${token.symbol}: ${proBuyResult.convergingSignals}/${proBuyResult.requiredSignals} signals (conf=${proBuyResult.confidence}%)`
+            );
+          }
         } else {
           log("pro_orchestrator",
             `BUY PASS ${token.symbol}: ${proBuyResult.convergingSignals}/${proBuyResult.requiredSignals} signals (conf=${proBuyResult.confidence}%)`

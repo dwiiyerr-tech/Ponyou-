@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "episodes": {
+    "sol|mcap:30-100k|liq:5-20k|narr:ai-agent|rug:low|tier:A": {
+      "n": 5,
+      "wins": 3,
+      "rugs": 0,
+      "pnl_sum": 99,
+      "hold_sum_min": 70,
+      "last_ts": "2026-06-03T04:07:27.393Z",
+      "recent": [
+        {
+          "mint": "los1",
+          "sym": "LOS1",
+          "pnl_pct": -18,
+          "hold_min": 5,
+          "reason": "",
+          "ts": "2026-06-03T04:07:27.393Z"
+        },
+        {
+          "mint": "los0",
+          "sym": "LOS0",
+          "pnl_pct": -18,
+          "hold_min": 5,
+          "reason": "",
+          "ts": "2026-06-03T04:07:27.391Z"
+        },
+        {
+          "mint": "win2",
+          "sym": "WIN2",
+          "pnl_pct": 45,
+          "hold_min": 20,
+          "reason": "",
+          "ts": "2026-06-03T04:07:27.388Z"
+        },
+        {
+          "mint": "win1",
+          "sym": "WIN1",
+          "pnl_pct": 45,
+          "hold_min": 20,
+          "reason": "",
+          "ts": "2026-06-03T04:07:27.384Z"
+        },
+        {
+          "mint": "win0",
+          "sym": "WIN0",
+          "pnl_pct": 45,
+          "hold_min": 20,
+          "reason": "",
+          "ts": "2026-06-03T04:07:27.377Z"
+        }
+      ]
+    }
+  }
+}

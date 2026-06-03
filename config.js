@@ -210,8 +210,19 @@ export const config = {
     enabled: u.automationEnabled ?? true,
   },
 
+  // ─── Pro Orchestrator (elite full automation) ───────────────────────────
+  // validationMode = shadow-only: pro logic runs + logs but never vetoes entries.
+  // Thresholds tunable via user-config without touching pro-orchestrator.js.
   pro: {
-    validationMode: u.proValidationMode === true || process.env.PRO_VALIDATION_MODE === "true",
+    validationMode:           u.proValidationMode === true || process.env.PRO_VALIDATION_MODE === "true",
+    minConvictionScore:       finiteNumber(u.proMinConvictionScore, 65),
+    minSignalAggregate:       finiteNumber(u.proMinSignalAggregate, 55),
+    minKellyEdge:             finiteNumber(u.proMinKellyEdge, 0.08),
+    maxRugScore:              finiteNumber(u.proMaxRugScore, 25),
+    requiredSignals:          finiteNumber(u.proRequiredSignals, 4),
+    minLiquidityUsd:          finiteNumber(u.proMinLiquidityUsd, 2000),
+    maxVolatilityPercentile:  finiteNumber(u.proMaxVolatilityPercentile, 80),
+    requireNarrativeVelocity: Boolean(u.proRequireNarrativeVelocity ?? false),
   },
 
   // ─── Daily Trade Guard ──────────────────────
