@@ -14,7 +14,7 @@ import { demoStrictGates } from "../runtime-mode.js";
 import { scanRefundableTokenAccounts, closeRefundableTokenAccounts } from "../rent-refund.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons, recordRug, scoreRugRisk, getRugMemorySummary } from "../lessons.js";
 import { setPositionInstruction, getTrackedPosition, flushState } from "../state.js";
-import { getPlanSummary, initTradingPlan, pauseSession, advanceDay, checkSessionGate, isInProfitMode, getDynamicPositionLimit } from "../trading-plan.js";
+import { getPlanSummary, initTradingPlan, pauseSession, advanceDay, checkSessionGate, isInProfitMode, getDynamicPositionLimit, getConsecutiveLosses } from "../trading-plan.js";
 import { getMarketIntelligence, getMarketTrend } from "../market-intelligence.js";
 import { getLearningModeStatus, getLearningStatusSummary, getLearningHistory, activateLearningMode } from "../learning-mode.js";
 import { getVaultStatus, isVaultDue, computeVaultAmount } from "../vault.js";

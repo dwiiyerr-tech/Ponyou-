@@ -254,10 +254,16 @@ export function initLearningAgent() {
   agentBus.subscribe("learning:trash_blocked", (payload) => {
     const { symbol = "", name = "", type = "unknown" } = payload;
     if (!symbol && !name) return;
-    // Count as a loss-signal for the hunt source so sources that produce
-    // lots of trash get their weights downgraded over time.
     const source = payload._hunt_source || "unknown";
-    if (type === "scam_name" || type === "honeypot" || type === "rugcheck") {
+
+    // Bug #2 fix: only count rug-quality blocks toward source stats.
+    // "prescreen" blocks (dust mcap, zero liquidity, blacklisted stablecoin)
+    // are data-quality filters — they reflect the state of the token, not
+    // the hunt source's ability to find good tokens. Counting them as "rug"
+    // inflated rug_rate to 1.0 for all sources after a single scan cycle.
+    // Only scam_name, honeypot, and rugcheck blocks reflect source quality.
+    const RUG_QUALITY_TYPES = new Set(["scam_name", "honeypot", "rugcheck"]);
+    if (RUG_QUALITY_TYPES.has(type)) {
       bumpSource(source, "rug");
     }
     log("learning", `TRASH BLOCK free learn: ${symbol} type=${type} source=${source}`);
