@@ -280,6 +280,8 @@ export function recordClose(position_address, reason, wallet_address = null) {
     const pos = state.positions[key];
     pos.closed = true;
     pos.closed_at = new Date().toISOString();
+    // P1-10: guard against legacy positions missing the notes array
+    if (!Array.isArray(pos.notes)) pos.notes = [];
     pos.notes.push(`Closed at ${pos.closed_at}: ${reason}`);
     pushEvent(state, { action: "close", position: pos.position, position_key: key, pool_name: pos.pool_name || pos.pool, reason, wallet_address: pos.wallet_address });
     log("state", `Position ${key} marked closed: ${reason}`);
@@ -329,6 +331,11 @@ export function getTrackedPosition(position_address, wallet_address = null) {
   if (state.positions[position_address]) return state.positions[position_address] || null;
   const matches = findPositionKeys(state, position_address, wallet_address, true);
   if (matches.length === 1) return state.positions[matches[0]] || null;
+  // P2-11: in multi-wallet mode, multiple open positions for the same mint
+  // across wallets is ambiguous — require wallet_address to disambiguate.
+  if (matches.length > 1 && !wallet_address) {
+    log("state_warn", `getTrackedPosition: ${matches.length} open positions for ${position_address?.slice(0,8)} — provide wallet_address to disambiguate. Returning first match.`);
+  }
   return matches.length > 0 ? state.positions[matches[0]] || null : null;
 }
 
@@ -410,7 +417,8 @@ const SYNC_GRACE_MS = 5 * 60_000; // don't auto-close positions deployed < 5 min
 // up on-chain again.
 const SYNC_MISS_THRESHOLD = 3;
 
-export function syncOpenPositions(active_addresses) {
+// P3-4: async so callers can await the write and auto-close is durable.
+export async function syncOpenPositions(active_addresses) {
   const state = load();
   const activeSet = new Set(active_addresses);
   let changed = false;
@@ -453,12 +461,14 @@ export function syncOpenPositions(active_addresses) {
 
     pos.closed = true;
     pos.closed_at = new Date().toISOString();
+    if (!Array.isArray(pos.notes)) pos.notes = []; // P1-10: guard legacy positions
     pos.notes.push(`Auto-closed during state sync (${SYNC_MISS_THRESHOLD} consecutive misses on-chain)`);
     changed = true;
     log("state", `Position ${normalizedKey} auto-closed (missing on-chain for ${SYNC_MISS_THRESHOLD} consecutive syncs)`);
   }
 
-  if (changed) save(state); // fire-and-forget — the write queue persists, no need to block
+  // P3-4: await the write so auto-close is durable before the caller returns.
+  if (changed) await save(state);
 }
 
 export function _resetStateForTests() {

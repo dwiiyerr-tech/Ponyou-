@@ -470,7 +470,18 @@ const toolMap = {
     }
     return { error: "invalid mode" };
   },
-  update_config: ({ changes, reason = "" }) => {
+  update_config: ({ changes, reason = "", experiment_id = "" }) => {
+    // P2-6: require experiment_id for risk/management key changes per project policy.
+    const RISK_KEYS = new Set([
+      "stopLossPct","takeProfitPct","trailingTakeProfit","trailingTriggerPct","trailingDropPct",
+      "deployAmountSol","gasReserve","positionSizePct","maxPositions","maxDeployAmount",
+      "minSolToOpen","maxTop10Pct","maxBundlePct","maxBotHoldersPct",
+    ]);
+    const changedRiskKeys = Object.keys(changes || {}).filter(k => RISK_KEYS.has(k));
+    if (changedRiskKeys.length > 0 && !experiment_id) {
+      log("config_warn", `update_config: risk keys [${changedRiskKeys.join(",")}] changed without experiment_id — policy requires one`);
+      // Log warning but do not block — experiment_id is advisory for now
+    }
     const CONFIG_MAP = {
       excludeHighSupplyConcentration: ["screening", "excludeHighSupplyConcentration"],
       minTvl: ["screening", "minTvl"],
@@ -887,6 +898,14 @@ async function runSafetyChecks(name, args) {
         return { pass: false, reason: "Kill-switch is active — swap blocked." };
       }
 
+      // P2-12: reject invalid amount before any downstream logic.
+      // Negative/NaN amount passes balance checks silently and sends invalid
+      // amountRaw to Jupiter (relying on the external API to reject it).
+      const rawAmount = Number(args.amount);
+      if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
+        return { pass: false, reason: `Invalid swap amount: ${args.amount} — must be a finite positive number.` };
+      }
+
       // EVM swaps route through GMGN (separate wallet/gas model). The SOL balance
       // safety-check below is Solana-specific; GMGN's own balance/gas handling +
       // the execEnabled flag + dry-run gate cover EVM. Skip the SOL check for non-sol.
@@ -896,15 +915,13 @@ async function runSafetyChecks(name, args) {
 
       // P0-1: Enforce maxDeployAmount cap on SOL buys — LLM amount is not
       // pre-clamped by computeDeployAmount() so we guard here.
-      if (args.token_in === "SOL") {
-        const maxDeploy = config.risk?.maxDeployAmount ?? 35;
-        const amount = Number(args.amount) || 0;
-        if (amount > maxDeploy) {
-          return {
-            pass: false,
-            reason: `Amount ${amount} SOL exceeds maxDeployAmount limit of ${maxDeploy} SOL.`,
-          };
-        }
+      // P1-8: also apply to token→token swaps using SOL-equivalent notional.
+      const maxDeploy = config.risk?.maxDeployAmount ?? 35;
+      if (args.token_in === "SOL" && rawAmount > maxDeploy) {
+        return {
+          pass: false,
+          reason: `Amount ${rawAmount} SOL exceeds maxDeployAmount limit of ${maxDeploy} SOL.`,
+        };
       }
 
       // Live always runs the balance safety-check; demo runs it too when strict

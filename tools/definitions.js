@@ -414,7 +414,7 @@ export const tools = [
     type: "function",
     function: {
       name: "update_config",
-      description: "Update the agent's runtime configuration (thresholds, risk, models).",
+      description: "Update the agent's runtime configuration (thresholds, risk, models). Changes to risk.* or management.* keys (stopLossPct, maxDeployAmount, maxPositions, etc.) MUST include experiment_id per project policy.",
       parameters: {
         type: "object",
         properties: {
@@ -422,9 +422,10 @@ export const tools = [
             type: "object",
             description: "Dictionary of config keys to update."
           },
-          reason: { type: "string", description: "Why this change is being made." }
+          reason: { type: "string", description: "Why this change is being made." },
+          experiment_id: { type: "string", description: "Required for risk/management key changes (stopLossPct, maxDeployAmount, maxPositions, etc.)." }
         },
-        required: ["changes"]
+        required: ["changes", "reason"]
       }
     }
   },

@@ -100,8 +100,10 @@ function getToolsForRole(agentType, goal = "") {
   }
 
   if (matched.size === PONYOU_CONTROL_TOOLS.size) {
-    // No other intents matched — return all non-restricted tools + control tools
-    return tools.filter(t => !GENERAL_INTENT_ONLY_TOOLS.has(t.function.name));
+    // P1-9: No intent matched — return only safe read/control tools.
+    // Previously returned all tools (minus a small denylist) which included
+    // swap_token and other money-spending tools for any ambiguous prompt.
+    return tools.filter(t => PONYOU_CONTROL_TOOLS.has(t.function.name));
   }
   return Array.from(matched);
 }
@@ -306,12 +308,16 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   const supportsToolChoice = providerFeatures.toolChoice !== false;
 
   // Tools the agent must call at most once per agentLoop invocation.
-  // Mostly money-spending actions where retry == double-execution risk.
+  // P0-C: firedOnce is passed in from the caller context so it persists
+  // across retry calls within the same trading cycle, not just one loop.
+  // Callers that need cross-loop dedup pass their own Set; fallback is the
+  // old per-invocation behavior (safe for non-money intents).
   const ONCE_PER_SESSION = new Set(["swap_token"]);
-  const firedOnce = new Set();
+  const firedOnce = options?.firedOnce instanceof Set ? options.firedOnce : new Set();
   const mustUseRealTool = shouldRequireRealToolUse(goal, agentType, interactive);
   let sawToolCall = false;
   let noToolRetryCount = 0;
+  let emptyResponseCount = 0; // P3-2: track consecutive empty responses
 
   for (let step = 0; step < maxSteps; step++) {
     log("agent", `Step ${step + 1}/${maxSteps}`);
@@ -322,7 +328,11 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       let response;
       let usedModel = activeModel;
       const ACTION_INTENTS = /\b(buy|sell|deploy|close|swap|block|blacklist)\b/i;
-      let toolChoice = supportsToolChoice && (step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) ? "required" : "auto";
+      // P3-1: assert tool_choice="required" on any step where a real tool is
+      // still needed (not just step 0), so multi-step mutating intents don't
+      // terminate silently after the first forced call.
+      const needsToolNow = mustUseRealTool && !sawToolCall;
+      let toolChoice = supportsToolChoice && (step === 0 || needsToolNow) && (ACTION_INTENTS.test(goal) || mustUseRealTool) ? "required" : "auto";
       if (!supportsToolChoice && step === 0 && (ACTION_INTENTS.test(goal) || mustUseRealTool)) {
         log("agent", `Provider ${currentProvider} lacks trusted tool-choice support; using auto mode.`);
       }
@@ -404,7 +414,14 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       messages.push(msg);
 
       if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        if (!msg.content) { messages.pop(); continue; }
+        if (!msg.content) {
+          // P3-2: abort after 3 consecutive empty responses instead of
+          // burning all remaining steps on no-op iterations.
+          emptyResponseCount++;
+          if (emptyResponseCount >= 3) return { content: "No response from model.", userMessage: goal };
+          messages.pop(); continue;
+        }
+        emptyResponseCount = 0;
         if (mustUseRealTool && !sawToolCall) {
           noToolRetryCount += 1;
           messages.pop();

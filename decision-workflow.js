@@ -205,9 +205,14 @@ export function evaluateCandidateDecision({
   // ═══════════════════════════════════════════════════════════════
 
   const flagCount = Array.isArray(token.flags) ? token.flags.length : 0;
+  // P1-2: count string-form critical flags — string labels like "honeypot" or
+  // "mint_authority" are just as dangerous as object flags with severity fields.
+  // Previously all strings were unconditionally excluded, allowing a token with
+  // string-encoded critical flags to evade the critical-flag caution bump.
+  const CRITICAL_FLAG_STRINGS = new Set(["honeypot","mint_authority","freeze_authority","rug","blacklisted","scam"]);
   const criticalFlags = Array.isArray(token.flags)
     ? token.flags.filter(f => {
-      if (typeof f === "string") return false;
+      if (typeof f === "string") return CRITICAL_FLAG_STRINGS.has(f.toLowerCase());
       return f?.severity === "critical" || f?.severity === "high";
     })
     : [];
@@ -310,7 +315,13 @@ export function evaluateCandidateDecision({
   // ═══════════════════════════════════════════════════════════════
   // LAYER 7: Conviction Bonus (only if no hard blocks)
   // ═══════════════════════════════════════════════════════════════
-  const canConvictionReduce = !(
+  // P3-3: conviction bonus must not cancel portfolio-safety caution (near kill-switch,
+  // loss streak, cooldown). High conviction in a token should not override the fact
+  // that the account is in a risk-halted state.
+  const hasPortfolioSafetyBlock = contextBlocks.some(b =>
+    ["near_kill_switch", "loss_streak", "narrative_concentration"].includes(b)
+  );
+  const canConvictionReduce = !hasPortfolioSafetyBlock && !(
     (token.rug_score || 0) >= 20 ||
     criticalFlags.length >= 1 ||
     token.kelly?.should_skip === true
@@ -329,8 +340,12 @@ export function evaluateCandidateDecision({
   // Velocity override: lower conviction thresholds for trending narratives
   const probeConvictionFloor = velocityOverride ? 45 : 65;
   const shadowConvictionFloor = velocityOverride ? 20 : 35;
+  // P1-3: velocity override may lower conviction floors for trending narratives,
+  // but never below the policy's own shadow floor — prevents a narrative-gamed
+  // token from lowering the floor to 30 regardless of what policy specifies.
+  const VELOCITY_CONFIDENCE_FLOOR_MIN = 35;
   const activeConfidenceFloor = velocityOverride
-    ? Math.min(policy.entry.activeConfidenceFloor || 0, 30)
+    ? Math.max(VELOCITY_CONFIDENCE_FLOOR_MIN, Math.min(policy.entry.activeConfidenceFloor || 0, 45))
     : policy.entry.activeConfidenceFloor;
 
   let verdict = "active";

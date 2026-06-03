@@ -22,7 +22,7 @@ import { planCastNetExecution } from "./wallet-strategy.js";
 import { recordCastNetFire } from "./tools/cast-net-gate.js";
 import { getAllWallets, getWalletByAddress } from "./tools/wallet-manager.js";
 import { trackPosition } from "./state.js";
-import { recordSwapOutcome } from "./kill-switch.js";
+import { recordSwapOutcome, isKilled } from "./kill-switch.js";
 import {
   startTimer, elapsedMs, recordLatency, recordCounter,
 } from "./metrics.js";
@@ -104,6 +104,19 @@ export async function executeFastBuy({
   }
   if (!(deployAmountSol > 0)) {
     return { success: false, error: "deployAmountSol must be > 0" };
+  }
+
+  // P0-A: kill-switch re-check at fast-buy call site — executor guards don't
+  // cover this path because fast-buy calls swapToken() directly.
+  if (isKilled()) {
+    return { success: false, blocked: true, error: "Kill-switch is active — fast-buy blocked." };
+  }
+
+  // P0-A + P1-8: enforce maxDeployAmount cap for SOL buys in the fast-buy path.
+  // The executor's runSafetyChecks never runs here so we must guard explicitly.
+  const maxDeploy = config.risk?.maxDeployAmount ?? 35;
+  if (deployAmountSol > maxDeploy) {
+    return { success: false, blocked: true, error: `deployAmountSol ${deployAmountSol} SOL exceeds maxDeployAmount ${maxDeploy} SOL.` };
   }
 
   // confirmMode blocks live BUYs; also blocks demo BUYs when strict gates are on

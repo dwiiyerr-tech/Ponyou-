@@ -17,9 +17,9 @@ beforeEach(() => {
 });
 
 describe("profit pattern summary + mints (Phase 3 inputs)", () => {
-  it("aggregates nested fingerprint fields (mcap tier + narrative)", () => {
+  it("aggregates nested fingerprint fields (mcap tier + narrative)", async () => {
     for (let i = 0; i < 4; i++) {
-      recordProfitPattern({
+      await recordProfitPattern({
         mint: `m${i}`, symbol: "WIN", name: "win", pnl_pct: 40, hold_minutes: 10,
         token: { mcap: 120_000, narrative_tags: ["cats"] }, strategy: "scalping",
       });
@@ -29,10 +29,10 @@ describe("profit pattern summary + mints (Phase 3 inputs)", () => {
     expect(s.best_narratives[0].narrative).toBe("cats");
   });
 
-  it("returns recent winning mints newest-first, de-duped", () => {
-    recordProfitPattern({ mint: "a", symbol: "A", pnl_pct: 10, hold_minutes: 5, token: { mcap: 100 } });
-    recordProfitPattern({ mint: "b", symbol: "B", pnl_pct: 10, hold_minutes: 5, token: { mcap: 100 } });
-    recordProfitPattern({ mint: "a", symbol: "A", pnl_pct: 20, hold_minutes: 5, token: { mcap: 100 } });
+  it("returns recent winning mints newest-first, de-duped", async () => {
+    await recordProfitPattern({ mint: "a", symbol: "A", pnl_pct: 10, hold_minutes: 5, token: { mcap: 100 } });
+    await recordProfitPattern({ mint: "b", symbol: "B", pnl_pct: 10, hold_minutes: 5, token: { mcap: 100 } });
+    await recordProfitPattern({ mint: "a", symbol: "A", pnl_pct: 20, hold_minutes: 5, token: { mcap: 100 } });
     const mints = getRecentProfitMints({ limit: 10 });
     expect(mints[0]).toBe("a"); // newest first
     expect(mints.filter(m => m === "a")).toHaveLength(1); // de-duped

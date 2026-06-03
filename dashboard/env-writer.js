@@ -39,6 +39,15 @@ export function gmgnKeyStatus() {
  */
 export function writeGmgnPrivateKey(pem) {
   if (typeof pem !== "string" || !/PRIVATE KEY/.test(pem)) throw new Error("invalid Ed25519 PEM private key");
+  // P3-6: validate base64 body decodes to a plausible key length (>= 32 bytes).
+  // Previously any string containing "PRIVATE KEY" passed the check.
+  try {
+    const b64 = pem.replace(/-----[^-]+-----/g, "").replace(/\s/g, "");
+    const decoded = Buffer.from(b64, "base64");
+    if (decoded.length < 32) throw new Error("decoded key too short");
+  } catch {
+    throw new Error("invalid Ed25519 PEM: base64 body does not decode to a valid key");
+  }
   const dir = gmgnEnvDir();
   fs.mkdirSync(dir, { recursive: true });
   try { fs.chmodSync(dir, 0o700); } catch {} // dir holds a signing secret

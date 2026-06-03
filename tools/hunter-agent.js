@@ -60,7 +60,7 @@ const HUNT_QUERIES = [
 ];
 
 // pump.fun DEX identifiers on DexScreener
-const PUMPFUN_DEXES = ["pumpswap", "pump.fun", "pumpfun", "pump", "pump swap"];
+export const PUMPFUN_DEXES = ["pumpswap", "pump.fun", "pumpfun", "pump", "pump swap"];
 // Raydium — where tokens migrate after pump.fun graduation
 const RAYDIUM_DEXES = ["raydium", "raydium clmm", "raydium cpmm"];
 // LetsBonk.fun launchpad DEX identifiers on DexScreener
@@ -117,7 +117,9 @@ function mapPair(pair, source = "hunter") {
     name: pair.baseToken.name,
     price: parseFloat(pair.priceUsd || 0),
     mcap: pair.marketCap || pair.fdv || 0,
-    liquidity: pair.liquidity?.usd || pair.marketCap || pair.fdv || 0,
+    // P2-5: never substitute marketCap/fdv for missing liquidity —
+    // conflating FDV with LP depth defeats the LP-hard-block in trash-filter.
+    liquidity: pair.liquidity?.usd || 0,
     volume: vol,
     swaps: total,
     buys,
@@ -575,9 +577,9 @@ async function huntSmartMoney(strategy) {
         symbol: smToken.symbol || "?",
         name: smToken.symbol || "?",
         price: smToken.price || 0,
-        mcap: 0,
-        liquidity: 0,
-        volume: 0,
+        mcap: smToken.market_cap || smToken.mcap || 0,
+        liquidity: smToken.liquidity || 0,
+        volume: smToken.volume || 0,
         swaps: 0,
         buys: smToken.buy_count || 0,
         sells: smToken.sell_count || 0,
@@ -586,7 +588,10 @@ async function huntSmartMoney(strategy) {
         price_change_24h: 0,
         buy_vol: 0,
         sell_vol: 0,
-        created_at: null,
+        // P2-10: mark unknown age explicitly so the age gate can treat it as
+        // age-unverified, preventing anti-snipe bypass via null created_at.
+        created_at: smToken.created_at || null,
+        _age_unknown: !smToken.created_at, // flag for downstream age gate
         pair_address: null,
         dex: "unknown",
         launchpad: "unknown",
@@ -931,6 +936,11 @@ async function huntGmgnTrenches(strategy) {
           existing._hunter_reasons.push("gmgn_signal");
           existing.hot_level = Math.min(3, existing.hot_level + 1);
         } else if (!seen.has(mint)) {
+          const sigLiquidity = Number(s.liquidity ?? 0);
+          // P1-11: require non-zero liquidity before injecting signal-only tokens.
+          // A GMGN signal with zero fundamentals was entering at hot_level:3/score:55
+          // without going through the LP hard-block in trash-filter.
+          if (sigLiquidity <= 0) continue;
           seen.add(mint);
           tokens.push({
             mint,
@@ -939,7 +949,7 @@ async function huntGmgnTrenches(strategy) {
             name: s.name || s.symbol || "?",
             price: Number(s.price ?? 0),
             mcap: Number(s.market_cap ?? 0),
-            liquidity: Number(s.liquidity ?? 0),
+            liquidity: sigLiquidity,
             volume: Number(s.volume ?? 0),
             swaps: 0, buys: 0, sells: 0,
             price_change_1h: 0, price_change_6h: 0, price_change_24h: 0,
@@ -947,10 +957,10 @@ async function huntGmgnTrenches(strategy) {
             created_at: null, pair_address: null,
             dex: "unknown", launchpad: "unknown",
             _hunter_source: "gmgn_signal",
-            _hunter_score: 55,
-            _hunter_tier: "GOOD",
+            _hunter_score: 40, // reduced from 55 — signal-only needs enrichment
+            _hunter_tier: "WATCH",
             _hunter_reasons: ["gmgn_smart_money_signal", ...chainTag],
-            narrative_tags: [], hot_level: 3, creator: null,
+            narrative_tags: [], hot_level: 2, creator: null, // tier WATCH not GOOD
           });
         }
       }
@@ -1027,14 +1037,32 @@ export async function runHunterExpedition({ strategy = null } = {}) {
     const seenMints = new Set();
 
     const SKIP_SYMBOLS = new Set(["SOL", "USDC", "USDT", "WSOL"]);
+    // mintIndex: mint → index in allTokens for fast dedup-by-score merging
+    const mintIndex = new Map();
     const collectResults = (results, source) => {
       if (results.status !== "fulfilled" || !Array.isArray(results.value)) return 0;
       let added = 0;
       for (const token of results.value) {
-        if (seenMints.has(token.mint)) continue;
         if (SKIP_SYMBOLS.has((token.symbol || "").toUpperCase())) continue;
         if (token.mint === SOL_MINT) continue;
+        if (seenMints.has(token.mint)) {
+          // P2-4: when same mint appears from a better source, keep the higher-score
+          // record and union risk fields (_gmgn_risk, _rug_signals, etc.) so downstream
+          // rug scoring never loses signals from a later, richer source.
+          const idx = mintIndex.get(token.mint);
+          if (idx !== undefined) {
+            const existing = allTokens[idx];
+            if ((token._hunter_score || 0) > (existing._hunter_score || 0)) {
+              allTokens[idx] = { ...token, _hunter_score: token._hunter_score };
+            }
+            // Union risk metadata regardless of which record wins
+            if (token._gmgn_risk) existing._gmgn_risk = { ...(existing._gmgn_risk || {}), ...token._gmgn_risk };
+            if (token._rug_signals) existing._rug_signals = { ...(existing._rug_signals || {}), ...token._rug_signals };
+          }
+          continue;
+        }
         seenMints.add(token.mint);
+        mintIndex.set(token.mint, allTokens.length);
         allTokens.push(token);
         added++;
       }

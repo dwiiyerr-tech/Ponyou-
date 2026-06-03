@@ -63,7 +63,11 @@ function loadProfitPatterns() {
   catch { return { patterns: [] }; }
 }
 
+// P1-5: pattern files need their own lock — concurrent trade closes raced on
+// load→push→save, causing one set of fingerprints to be silently lost.
 function saveProfitPatterns(data) { atomicWriteJson(PROFIT_PATTERNS_FILE, data); }
+async function withProfitLock(fn) { return withFileLock(PROFIT_PATTERNS_FILE, fn); }
+async function withLossLock(fn)   { return withFileLock(LOSS_PATTERNS_FILE,   fn); }
 
 function loadLossPatterns() {
   if (!fs.existsSync(LOSS_PATTERNS_FILE)) return { patterns: [] };
@@ -756,41 +760,42 @@ export function getLossScore(token = {}, { topN = 100, minMatches = 3 } = {}) {
 // ─── Record Loss Pattern ──────────────────────────────────────────────────────
 // Dipanggil saat trade RUGI atau RUG — simpan sidik jari kekalahan.
 
-export function recordLossPattern({ mint, symbol, pnl_pct, hold_minutes, exit_reason, token = {} } = {}) {
+// P1-5: wrapped in withLossLock to prevent concurrent trade closes losing writes.
+// P1-6: now async — callers must await.
+export async function recordLossPattern({ mint, symbol, pnl_pct, hold_minutes, exit_reason, token = {} } = {}) {
   if (!mint || (pnl_pct || 0) >= 0) return null;
-
   const fingerprint = buildLossFingerprint({ mint, symbol, pnl_pct, hold_minutes, exit_reason, token });
-  const data = loadLossPatterns();
-  data.patterns.push(fingerprint);
-  if (data.patterns.length > 500) data.patterns = data.patterns.slice(-500);
-  data.last_updated  = new Date().toISOString();
-  data.total_losses  = (data.total_losses || 0) + 1;
-  saveLossPatterns(data);
-  return fingerprint;
+  return withLossLock(() => {
+    const data = loadLossPatterns();
+    data.patterns.push(fingerprint);
+    if (data.patterns.length > 500) data.patterns = data.patterns.slice(-500);
+    data.last_updated = new Date().toISOString();
+    data.total_losses = (data.total_losses || 0) + 1;
+    saveLossPatterns(data);
+    return fingerprint;
+  });
 }
 
 // ─── Record Profit Pattern ────────────────────────────────────────────────────
-// Dipanggil saat trade PROFIT ditutup — simpan sidik jari pengalaman.
-
-export function recordProfitPattern({ mint, symbol, name, pnl_pct, hold_minutes, token = {}, strategy = null } = {}) {
+// P1-5: wrapped in withProfitLock to prevent concurrent trade closes losing writes.
+// P1-6: now async — callers must await.
+export async function recordProfitPattern({ mint, symbol, name, pnl_pct, hold_minutes, token = {}, strategy = null } = {}) {
   if (!mint || (pnl_pct || 0) <= 0) return null;
-
   const fingerprint = buildProfitFingerprint({ mint, symbol, name, pnl_pct, hold_minutes, token, strategy });
-  const data = loadProfitPatterns();
-
-  data.patterns.push(fingerprint);
-  // Rolling window — buang yang paling lama
-  if (data.patterns.length > MAX_PROFIT_PATTERNS) {
-    data.patterns = data.patterns.slice(-MAX_PROFIT_PATTERNS);
-  }
-  data.last_updated = new Date().toISOString();
-  data.total_wins   = (data.total_wins || 0) + 1;
-  data.avg_pnl      = parseFloat(
-    ((data.patterns.reduce((s, p) => s + p.pnl_pct, 0)) / data.patterns.length).toFixed(2)
-  );
-
-  saveProfitPatterns(data);
-  return fingerprint;
+  return withProfitLock(() => {
+    const data = loadProfitPatterns();
+    data.patterns.push(fingerprint);
+    if (data.patterns.length > MAX_PROFIT_PATTERNS) {
+      data.patterns = data.patterns.slice(-MAX_PROFIT_PATTERNS);
+    }
+    data.last_updated = new Date().toISOString();
+    data.total_wins   = (data.total_wins || 0) + 1;
+    data.avg_pnl      = parseFloat(
+      ((data.patterns.reduce((s, p) => s + p.pnl_pct, 0)) / data.patterns.length).toFixed(2)
+    );
+    saveProfitPatterns(data);
+    return fingerprint;
+  });
 }
 
 // ─── Profit Pattern Summary ───────────────────────────────────────────────────
@@ -968,7 +973,8 @@ export function recordObservationOutcomes(results = []) {
 // ─── Record Trade Conviction Outcome ─────────────────────────────────────────
 // Dipanggil setiap trade ditutup. Jika profit → simpan profit fingerprint.
 
-export function recordTradeConvictionOutcome({ mint, symbol, name, pnl_pct = 0, hold_minutes = 0, exit_reason = "", token = {}, strategy = null } = {}) {
+// P1-6: now async — callers must await to catch pattern-write errors.
+export async function recordTradeConvictionOutcome({ mint, symbol, name, pnl_pct = 0, hold_minutes = 0, exit_reason = "", token = {}, strategy = null } = {}) {
   if (!mint) return null;
 
   // CM-3: serialize through the same file lock recordCoinObservation uses.
@@ -994,43 +1000,38 @@ export function recordTradeConvictionOutcome({ mint, symbol, name, pnl_pct = 0, 
   if (isWin) {
     coin.win_count += 1;
     coin.cumulative_outcome_delta += Math.min(16, Math.max(6, pnl / 5));
-
-    // Simpan sidik jari profit — ini adalah "pengalaman" agent
-    try {
-      recordProfitPattern({ mint, symbol, name, pnl_pct: pnl, hold_minutes, token, strategy });
-    } catch (e) {
-      // profit pattern failure never blocks conviction update
-    }
+    try { await recordProfitPattern({ mint, symbol, name, pnl_pct: pnl, hold_minutes, token, strategy }); } catch {}
+  } else if (isRug) {
+    // P2-1: rug is exclusive from the loss branch — previously both ran,
+    // incrementing loss_count AND rug_count and applying two negative deltas.
+    coin.rug_count += 1;
+    coin.cumulative_outcome_delta -= 18; // single combined rug penalty
+    try { await recordLossPattern({ mint, symbol, pnl_pct: pnl, hold_minutes, exit_reason, token }); } catch {}
   } else {
     coin.loss_count += 1;
     coin.cumulative_outcome_delta -= Math.min(18, Math.max(6, Math.abs(pnl) / 4));
-
-    // Simpan sidik jari kekalahan — untuk menghindari pola yang sama
-    try {
-      recordLossPattern({ mint, symbol, pnl_pct: pnl, hold_minutes, exit_reason, token });
-    } catch (e) {
-      // loss pattern failure never blocks conviction update
-    }
+    try { await recordLossPattern({ mint, symbol, pnl_pct: pnl, hold_minutes, exit_reason, token }); } catch {}
   }
 
-  if (isRug) {
-    coin.rug_count += 1;
-    coin.cumulative_outcome_delta -= 10;
-  }
+  // P2-2: clamp cumulative_outcome_delta to [-60, 60] to prevent permanent
+  // max-conviction from accumulated outcomes regardless of current fundamentals.
+  coin.cumulative_outcome_delta = Math.max(-60, Math.min(60, coin.cumulative_outcome_delta));
 
   for (const narrative of narratives) {
     const slot = getOrCreateNarrative(store, narrative);
     if (isWin) {
       slot.win_count += 1;
       slot.cumulative_outcome_delta += Math.min(10, Math.max(4, pnl / 8));
+    } else if (isRug) {
+      // P2-1 (narrative): rug exclusive — do not also increment loss_count
+      slot.rug_count += 1;
+      slot.cumulative_outcome_delta -= 12;
     } else {
       slot.loss_count += 1;
       slot.cumulative_outcome_delta -= Math.min(12, Math.max(4, Math.abs(pnl) / 7));
     }
-    if (isRug) {
-      slot.rug_count += 1;
-      slot.cumulative_outcome_delta -= 8;
-    }
+    // P2-2: clamp narrative delta too
+    slot.cumulative_outcome_delta = Math.max(-60, Math.min(60, slot.cumulative_outcome_delta));
     slot.last_seen_at = new Date().toISOString();
   }
 

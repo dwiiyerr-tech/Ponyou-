@@ -48,9 +48,9 @@ function passingScorecard() {
   };
 }
 
-function seedWinningPatterns(n = 8, mcap = 100_000) {
+async function seedWinningPatterns(n = 8, mcap = 100_000) {
   for (let i = 0; i < n; i++) {
-    recordProfitPattern({
+    await recordProfitPattern({
       mint: `mint${i}`,
       symbol: "WIN",
       name: "win",
@@ -63,13 +63,13 @@ function seedWinningPatterns(n = 8, mcap = 100_000) {
 }
 
 describe("mineWinningPatterns", () => {
-  it("returns null without enough sample", () => {
+  it("returns null without enough sample", async () => {
     seedWinningPatterns(2);
     expect(mineWinningPatterns({ minSample: 5 })).toBeNull();
   });
 
-  it("surfaces the dominant mcap tier + narrative once enough patterns exist", () => {
-    seedWinningPatterns(8, 100_000); // micro tier
+  it("surfaces the dominant mcap tier + narrative once enough patterns exist", async () => {
+    await seedWinningPatterns(8, 100_000); // micro tier
     const p = mineWinningPatterns({ minSample: 5 });
     expect(p).toBeTruthy();
     expect(p.mcapTier).toBe("micro");
@@ -177,7 +177,7 @@ describe("runCodifierCycle", () => {
   });
 
   it("mines + authors but reports no_backtest_trades when the loader returns none", async () => {
-    seedWinningPatterns(8);
+    await seedWinningPatterns(8);
     const r = await runCodifierCycle({ loadTradesFn: async () => [] });
     expect(r.ran).toBe(true);
     expect(r.authored).toBe(false);

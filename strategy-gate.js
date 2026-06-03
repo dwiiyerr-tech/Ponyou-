@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { backtest } from "./backtest.js";
 import { getCoinConviction } from "./conviction-memory.js";
+import { isKilled } from "./kill-switch.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ATTRIBUTION_PATH = path.join(__dirname, "trade-attribution.json");
@@ -61,22 +62,31 @@ function computeEvidenceFromTrades(trades = {}, { profitFactor = false } = {}) {
 function normalizeEvidence(raw = {}, { requireProfitFactor = false } = {}) {
   const source = raw && typeof raw === "object" ? raw : {};
   if (Array.isArray(source.trades)) {
+    // P0-D: when a trades array is present, always compute metrics from it.
+    // Never trust caller-supplied scalar winRate/profitFactor over computed values —
+    // a trades array is the only verifiable evidence source.
     const computed = computeEvidenceFromTrades(source.trades, { profitFactor: requireProfitFactor });
+    // P2-3: Infinity profit factor (lossless backtest) must not pass the gate.
+    // Require at least one loss before profitFactor is meaningful.
+    const pf = computed.profitFactor;
+    const safePf = (!Number.isFinite(pf) || pf === Infinity) ? undefined : pf;
     return {
       ...computed,
-      ...source,
-      winRate: source.winRate == null ? computed.winRate : normalizeWinRate(source.winRate),
+      winRate: computed.winRate,         // always computed; never caller-supplied
       trades: source.trades.length,
-      profitFactor: source.profitFactor == null ? computed.profitFactor : finiteNumber(source.profitFactor),
+      profitFactor: safePf,
     };
   }
 
   const tradeCount = source.tradeCount ?? source.total ?? source.count ?? source.signals;
+  // P2-3: non-array path — treat undefined/Infinity profitFactor as failing.
+  const rawPf = source.profitFactor == null ? undefined : finiteNumber(source.profitFactor);
+  const safePf = rawPf == null || !Number.isFinite(rawPf) ? undefined : rawPf;
   return {
     ...source,
     winRate: normalizeWinRate(source.winRate ?? source.win_rate ?? source.successRate ?? source.success_rate),
     trades: Math.max(0, finiteNumber(source.trades ?? tradeCount, 0)),
-    profitFactor: source.profitFactor == null ? undefined : finiteNumber(source.profitFactor),
+    profitFactor: safePf,
   };
 }
 
@@ -236,14 +246,17 @@ export class StrategyGate {
       : { ...maybeCandidate, id: strategyOrId };
     const strategyId = candidate.id ?? candidate.strategyId ?? candidate.strategy_id;
 
-    // ── Provisional path for fundamental-produced candidates ────────
-    // These candidates lack trade evidence (no backtest/paper/live data)
-    // because they're produced from memory signals, not historical runs.
-    // Accept them provisionally based on fundamental conviction scores,
-    // then auto-promote once live trades accumulate.
-    const isFundamentalCandidate = candidate.source === "evolution"
-      || candidate.source === "fundamental"
-      || candidate._provisional === true;
+    // P1-1: kill-switch check — this is the last gate before a BUY fires.
+    if (isKilled()) {
+      return failResult({ layer: "KILL_SWITCH", reason: "Kill-switch is active — trading halted." });
+    }
+
+    // P0-B: only accept provisional path when source comes from a trusted
+    // internal producer (evolution engine or fundamental producer).
+    // Candidate-supplied `_provisional:true` is attacker-controllable and
+    // was bypassing all evidence gates — reject it as a trust signal.
+    const TRUSTED_PROVISIONAL_SOURCES = new Set(["evolution", "fundamental"]);
+    const isFundamentalCandidate = TRUSTED_PROVISIONAL_SOURCES.has(candidate.source);
 
     if (isFundamentalCandidate) {
       return this.#evaluateProvisional(candidate, strategyId);
@@ -376,8 +389,10 @@ export class StrategyGate {
     if (evidence.winRate < this.#cfg.minWinRate) {
       return `backtest win rate ${evidence.winRate} < ${this.#cfg.minWinRate}`;
     }
-    if (!(evidence.profitFactor > 1.0)) {
-      return `backtest profit factor ${evidence.profitFactor ?? 0} <= 1`;
+    // P2-3: Infinity (lossless backtest) and undefined both fail the check —
+    // require a finite, computed profit factor over at least one loss.
+    if (!Number.isFinite(evidence.profitFactor) || !(evidence.profitFactor > 1.0)) {
+      return `backtest profit factor ${evidence.profitFactor ?? "missing"} must be finite and > 1`;
     }
     return null;
   }

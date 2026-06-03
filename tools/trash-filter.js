@@ -29,20 +29,20 @@ const MIN_MCAP_USD = 1000;
 const MAX_PRICE_CHANGE_5M_PCT = 1500;
 const MAX_SYMBOL_LENGTH = 16;
 
-const HIGH_RISK_LAUNCHPADS = new Set(["pump.fun"]);
+// P2-9: HIGH_RISK_LAUNCHPADS now matches all pump.fun dex variants from hunter-agent,
+// not just the exact "pump.fun" string. DexScreener uses "pumpswap"/"pumpfun"/"pump".
+import { PUMPFUN_DEXES } from "./hunter-agent.js";
+const HIGH_RISK_LAUNCHPADS = new Set([...PUMPFUN_DEXES, "pump.fun"]);
 const BLOCKED_LAUNCHPADS = new Set([]);
 
 const BLOCKED_SYMBOLS_EXACT = new Set([
   "USDC", "USDT", "SOL", "BONK", "WIF",
 ]);
 
-const SCAM_NAME_PATTERNS = [
-  /\b(test|TEST)\b/,
-  /\b(scam|SCAM)\b/,
-  /\b(hack|HACK)\b/,
-  /\b(rug|RUG)\b/,
-  /\b(fake|FAKE)\b/,
-];
+// P2-7: scam name patterns with leet-normalize and case-insensitive matching.
+// Original patterns were case-sensitive and missed leet variants (RUGZ, T3ST, etc.)
+const SCAM_NAME_KEYWORDS = ["test", "scam", "hack", "rug", "fake", "rugpull", "honeypot"];
+const SCAM_NAME_PATTERNS = SCAM_NAME_KEYWORDS.map(w => new RegExp(`\\b${w}\\b`, "i"));
 
 // ─── Tier definitions ──────────────────────────────────────────────
 
@@ -442,9 +442,10 @@ function scoreDistribution(token) {
       score += 10;
       reasons.push(`${token.boosts}x Boost AFTER +${priceChange1h.toFixed(0)}% pump — distribution signal`);
     } else if (ageSec !== null && ageSec < 600 && priceChange1h < 50) {
-      // Boost + new token + no pump = dev committed (bullish)
-      score -= 3; // reward early organic promotion
-      reasons.push("Boost di awal launch — sinyal komitmen developer");
+      // P2-8: do NOT reduce score for boost — boost is an attacker-controllable
+      // signal (cheap to buy) and a negative risk contribution is flippable.
+      // Changed from -3 to 0 (neutral, no penalty but no reward).
+      reasons.push("Boost di awal launch (diabaikan — tidak menurunkan risk score)");
     }
   }
 
