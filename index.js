@@ -2510,7 +2510,10 @@ async function checkDeterministicExits(tokens) {
         if (klineData?.candles?.length >= 30) {
           const momentum = analyzeMomentum(klineData.candles);
           if (momentum.valid) {
-            const trendExit = checkTrendBreakExit(momentum.currentPrice, momentum.supertrend);
+            const trendExit = checkTrendBreakExit(momentum.currentPrice, momentum.supertrend, {
+              macd: momentum.macd,
+              supportResistance: momentum.supportResistance,
+            });
             if (trendExit.shouldExit) {
               exits.push({
                 mint: token.mint,
@@ -3949,6 +3952,16 @@ export async function runScreeningCycle({ silent = false } = {}) {
               supertrend: momentum.supertrend ? { trend: momentum.trend, value: momentum.supertrend.value } : null,
               momentum_score: momentumScore,
               entry_confirmed: momentumEntry.pass,
+              // UPGRADE indicators — surfaced to the LLM screening prompt for richer reads
+              macd: momentum.macd ? { trend: momentum.macd.trend, cross: momentum.macd.cross, histogram: momentum.macd.histogram, rising: momentum.macd.rising } : null,
+              ema_cross: momentum.emaCross ? { cross: momentum.emaCross.cross, fast_above: momentum.emaCross.fastAbove } : null,
+              support_resistance: momentum.supportResistance ? {
+                near_support: momentum.supportResistance.nearSupport,
+                near_resistance: momentum.supportResistance.nearResistance,
+                dist_support_pct: momentum.supportResistance.distToSupportPct,
+                dist_resistance_pct: momentum.supportResistance.distToResistancePct,
+              } : null,
+              volume: momentum.volume ? { trend: momentum.volume.volumeTrend, spike: momentum.volume.volumeSpike, buy_ratio: momentum.volume.buyVolRatio } : null,
             };
 
             // Calculate volatility and adjust position size

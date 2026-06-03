@@ -134,6 +134,199 @@ export function calculateVolatilityPercentile(klines, atrPeriod = 14) {
 }
 
 /**
+ * Exponential Moving Average (EMA) — building block for MACD + EMA-cross.
+ * Returns an array of EMA values aligned to the input (first `period-1`
+ * entries are seeded with the SMA, then EMA-smoothed).
+ * @param {Array<number>} values
+ * @param {number} period
+ * @returns {Array<number>|null}
+ */
+export function calculateEMA(values, period = 9) {
+  if (!Array.isArray(values) || values.length < period) return null;
+  const k = 2 / (period + 1);
+  const ema = [];
+  // Seed with SMA of first `period` values
+  let seed = 0;
+  for (let i = 0; i < period; i++) seed += values[i];
+  seed /= period;
+  // Pad the lead-in so the array length matches input
+  for (let i = 0; i < period - 1; i++) ema.push(null);
+  ema.push(seed);
+  for (let i = period; i < values.length; i++) {
+    ema.push(values[i] * k + ema[ema.length - 1] * (1 - k));
+  }
+  return ema;
+}
+
+/**
+ * MACD (Moving Average Convergence Divergence).
+ * Standard (12, 26, 9). Returns the latest reading + trend.
+ *   macd       = EMA(fast) - EMA(slow)
+ *   signal     = EMA(macd, signalPeriod)
+ *   histogram  = macd - signal   (>0 bullish momentum, rising = accelerating)
+ *   trend      = "bullish" | "bearish" | "neutral"
+ *   cross      = "bullish_cross" | "bearish_cross" | null  (this candle)
+ * @returns {{macd, signal, histogram, trend, cross}|null}
+ */
+export function calculateMACD(closes, fast = 12, slow = 26, signalPeriod = 9) {
+  if (!Array.isArray(closes) || closes.length < slow + signalPeriod) return null;
+  const emaFast = calculateEMA(closes, fast);
+  const emaSlow = calculateEMA(closes, slow);
+  if (!emaFast || !emaSlow) return null;
+
+  // MACD line where both EMAs are defined
+  const macdLine = [];
+  for (let i = 0; i < closes.length; i++) {
+    if (emaFast[i] == null || emaSlow[i] == null) { macdLine.push(null); continue; }
+    macdLine.push(emaFast[i] - emaSlow[i]);
+  }
+  const macdDefined = macdLine.filter(v => v != null);
+  if (macdDefined.length < signalPeriod + 1) return null;
+
+  const signalArr = calculateEMA(macdDefined, signalPeriod);
+  if (!signalArr) return null;
+
+  const macd = macdDefined[macdDefined.length - 1];
+  const signal = signalArr[signalArr.length - 1];
+  const prevMacd = macdDefined[macdDefined.length - 2];
+  const prevSignal = signalArr[signalArr.length - 2];
+  const histogram = macd - signal;
+  const prevHist = (prevMacd != null && prevSignal != null) ? prevMacd - prevSignal : null;
+
+  let cross = null;
+  if (prevHist != null) {
+    if (prevHist <= 0 && histogram > 0) cross = "bullish_cross";
+    else if (prevHist >= 0 && histogram < 0) cross = "bearish_cross";
+  }
+  // Treat a histogram within a tiny epsilon of zero as neutral momentum.
+  // On a steady (constant-slope) trend the signal line fully converges to the
+  // MACD line, so histogram→0 — that's "no acceleration", not bearish/bullish.
+  // Epsilon scales with the MACD-line magnitude so it works across price scales.
+  const eps = Math.max(1e-9, Math.abs(macd) * 1e-4);
+  const trend = histogram > eps ? "bullish" : histogram < -eps ? "bearish" : "neutral";
+
+  return {
+    macd: Number(macd.toFixed(8)),
+    signal: Number(signal.toFixed(8)),
+    histogram: Number(histogram.toFixed(8)),
+    rising: prevHist != null ? histogram > prevHist : null,
+    trend,
+    cross,
+  };
+}
+
+/**
+ * EMA crossover (fast vs slow). Detects golden/death cross + current state.
+ *   cross      = "golden" (fast crossed above slow) | "death" | null
+ *   fastAbove  = boolean (fast EMA currently above slow EMA)
+ * @returns {{cross, fastAbove, fast, slow}|null}
+ */
+export function calculateEMACross(closes, fastPeriod = 9, slowPeriod = 21) {
+  if (!Array.isArray(closes) || closes.length < slowPeriod + 1) return null;
+  const fast = calculateEMA(closes, fastPeriod);
+  const slow = calculateEMA(closes, slowPeriod);
+  if (!fast || !slow) return null;
+  const n = closes.length - 1;
+  const f = fast[n], s = slow[n], pf = fast[n - 1], ps = slow[n - 1];
+  if ([f, s, pf, ps].some(v => v == null)) return null;
+
+  let cross = null;
+  if (pf <= ps && f > s) cross = "golden";
+  else if (pf >= ps && f < s) cross = "death";
+
+  return { cross, fastAbove: f > s, fast: Number(f.toFixed(8)), slow: Number(s.toFixed(8)) };
+}
+
+/**
+ * Support / Resistance from recent swing highs/lows (pivot detection).
+ * Finds local pivots over `lookback` candles, returns nearest S/R to price
+ * and proximity flags. Memecoin-tuned: small pivot window (2 bars each side).
+ * @returns {{support, resistance, nearSupport, nearResistance, distToSupportPct, distToResistancePct}|null}
+ */
+export function calculateSupportResistance(highs, lows, closes, lookback = 50, pivotBars = 2) {
+  if (!Array.isArray(closes) || closes.length < pivotBars * 2 + 1) return null;
+  const start = Math.max(pivotBars, closes.length - lookback);
+  const price = closes[closes.length - 1];
+  const resistances = [];
+  const supports = [];
+
+  for (let i = start; i < closes.length - pivotBars; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= pivotBars; j++) {
+      if (highs[i] <= highs[i - j] || highs[i] <= highs[i + j]) isHigh = false;
+      if (lows[i] >= lows[i - j] || lows[i] >= lows[i + j]) isLow = false;
+    }
+    if (isHigh) resistances.push(highs[i]);
+    if (isLow) supports.push(lows[i]);
+  }
+
+  // Nearest resistance above price, nearest support below price
+  const resAbove = resistances.filter(r => r > price).sort((a, b) => a - b)[0] ?? null;
+  const supBelow = supports.filter(s => s < price).sort((a, b) => b - a)[0] ?? null;
+
+  const distToResistancePct = resAbove != null ? ((resAbove - price) / price) * 100 : null;
+  const distToSupportPct = supBelow != null ? ((price - supBelow) / price) * 100 : null;
+
+  return {
+    support: supBelow,
+    resistance: resAbove,
+    // "near" = within 2% — at resistance is a sell signal, at support is a bounce zone
+    nearResistance: distToResistancePct != null && distToResistancePct <= 2,
+    nearSupport: distToSupportPct != null && distToSupportPct <= 2,
+    distToSupportPct: distToSupportPct != null ? Number(distToSupportPct.toFixed(2)) : null,
+    distToResistancePct: distToResistancePct != null ? Number(distToResistancePct.toFixed(2)) : null,
+  };
+}
+
+/**
+ * Volume profile — trend + spike + buy pressure from kline volumes.
+ *   volumeTrend  = "rising" | "falling" | "flat"  (recent vs prior window)
+ *   volumeSpike  = boolean (last candle volume > 2.5× recent avg)
+ *   buyVolRatio  = 0-1 estimate of buy volume (uses close>open as proxy)
+ * @param {Array} klines - {open, close, volume} or {o,c,v}
+ * @returns {{volumeTrend, volumeSpike, buyVolRatio, lastVsAvg}|null}
+ */
+export function calculateVolumeProfile(klines, window = 10) {
+  if (!Array.isArray(klines) || klines.length < window + 1) return null;
+  const vols = klines.map(k => Number(k.volume ?? k.v ?? 0));
+  const recent = vols.slice(-window);
+  const prior = vols.slice(-window * 2, -window);
+  if (prior.length === 0) return null;
+
+  const avg = (a) => a.reduce((s, v) => s + v, 0) / (a.length || 1);
+  const recentAvg = avg(recent);
+  const priorAvg = avg(prior);
+  const lastVol = vols[vols.length - 1];
+
+  let volumeTrend = "flat";
+  if (priorAvg > 0) {
+    const change = (recentAvg - priorAvg) / priorAvg;
+    if (change > 0.2) volumeTrend = "rising";
+    else if (change < -0.2) volumeTrend = "falling";
+  }
+
+  const volumeSpike = recentAvg > 0 && lastVol > recentAvg * 2.5;
+
+  // Buy-volume proxy: candles where close > open carry "buy" volume
+  let buyVol = 0, totalVol = 0;
+  for (const k of klines.slice(-window)) {
+    const o = Number(k.open ?? k.o ?? 0);
+    const c = Number(k.close ?? k.c ?? 0);
+    const v = Number(k.volume ?? k.v ?? 0);
+    totalVol += v;
+    if (c >= o) buyVol += v;
+  }
+  const buyVolRatio = totalVol > 0 ? Number((buyVol / totalVol).toFixed(3)) : 0.5;
+
+  return {
+    volumeTrend,
+    volumeSpike,
+    buyVolRatio,
+    lastVsAvg: recentAvg > 0 ? Number((lastVol / recentAvg).toFixed(2)) : null,
+  };
+}
+
+/**
  * Calculate Token Volatility from klines
  * @param {Array} klines - Array of {high, low, close, open} candles
  * @param {number} period - Lookback period (default 24 for 24h with 1h candles)
