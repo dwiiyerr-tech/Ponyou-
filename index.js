@@ -1630,7 +1630,7 @@ async function executePendingIntent(id) {
       },
       wallet_address: walletAddress,
       chain: (args.chain || "sol").toLowerCase(),
-      paper_trade: config.dryRun || config.paperTrading,
+      paper_trade: process.env.DRY_RUN === 'true' || process.env.PAPER_TRADING === 'true',
     });
     if (_rugMonitor) {
       const positionKey = walletAddress ? `${args.token_out}::${walletAddress}` : args.token_out;
@@ -2526,7 +2526,7 @@ async function checkStagedEntries(tokens, balance) {
           signal_snapshot: buy.tracked.signal_snapshot,
           wallet_address: buy.wallet_address,
           chain: buy.chain || buy.tracked?.chain || "sol",
-          paper_trade: config.dryRun || config.paperTrading,
+          paper_trade: process.env.DRY_RUN === 'true' || process.env.PAPER_TRADING === 'true',
         });
 
         recordCounter("swaps_executed");
@@ -4578,7 +4578,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
                 },
               },
               wallet_address: exec.wallet_address || null,
-              paper_trade: config.dryRun || config.paperTrading,
+              paper_trade: process.env.DRY_RUN === 'true' || process.env.PAPER_TRADING === 'true',
             });
           }
           recordTrade(null);
@@ -4734,7 +4734,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                     },
                   },
                   wallet_address: exec.wallet_address || null,
-                  paper_trade: config.dryRun || config.paperTrading,
+                  paper_trade: process.env.DRY_RUN === 'true' || process.env.PAPER_TRADING === 'true',
                 });
               }
               recordTrade(null); // outcome unknown yet
