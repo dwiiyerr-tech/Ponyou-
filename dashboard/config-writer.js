@@ -60,7 +60,7 @@ const ALLOWED_KEYS = new Set([
   "darwinEnabled", "darwinFastMode",
   "darwinWindowDays", "darwinRecalcEvery", "darwinBoost", "darwinDecay",
   "darwinFloor", "darwinCeiling", "darwinMinSamples",
-  "chartIndicators",
+  "chartIndicators", "exitOnTrendBreak",
   "killSwitchDailyLossSol", "killSwitchDrawdownPct",
   "partialTPEnabled", "partialTPThreshold", "partialTPFraction",
   "kellyFractionCap", "maxDailyTrades", "maxOpenPositions",

@@ -10,7 +10,7 @@ import { calculateRSI, calculateSuperTrend } from "./utils/indicators.js";
  * Returns RSI, SuperTrend, and trend status
  */
 export function analyzeMomentum(klines) {
-  if (!klines || klines.length < 50) {
+  if (!klines || klines.length < 30) {
     return { valid: false, reason: "Insufficient kline data" };
   }
 

@@ -76,6 +76,7 @@ import {
 } from "./intents.js";
 import { trackPosition, recordClose, getTrackedPosition, getState, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl, cleanStaleTestPositions, flushState, listTrackedPositions } from "./state.js";
 import { pruneClosedPositions } from "./state-pruner.js";
+import { pruneOldSnapshots } from "./tools/holder-dump-monitor.js";
 import { atomicWriteJson } from "./atomic-write.js";
 import { calculateRSI, calculateSuperTrend, calculateVolatilityPercentile } from "./utils/indicators.js";
 import {
@@ -180,7 +181,7 @@ import {
 } from "./daily-report.js";
 import { getTokenInfo } from "./tools/token.js";
 import {
-  analyzeMomentum, checkEntryConfirmation, adjustSizeByRSI,
+  analyzeMomentum, checkEntryConfirmation,
   checkTrendBreakExit, getMomentumScore,
 } from "./momentum-analysis.js";
 import { resolveExecutionMode, demoStrictGates } from "./runtime-mode.js";
@@ -2486,6 +2487,48 @@ async function checkDeterministicExits(tokens) {
       exits.push({ mint: token.mint, symbol: token.symbol, reason: roiCheck.reason, pnl_pct: currentPnlPct, is_loss: currentPnlPct < 0, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint, chain: token.chain || tracked.chain || "sol" });
       continue;
     }
+
+    // Chart-based exit: SuperTrend trend flip on in-profit positions.
+    // Gated behind config.indicators.enabled AND config.indicators.exitOnTrendBreak
+    // (defaults to false — opt-in to avoid API cost on every held position).
+    // Only fires when position is in profit (currentPnlPct >= trailingTrigger)
+    // to protect gains on trend reversal rather than accelerating losses.
+    if (
+      config.indicators?.enabled &&
+      config.indicators?.exitOnTrendBreak &&
+      currentPnlPct >= (riskPolicy.exit?.trailingTriggerPct ?? 8)
+    ) {
+      try {
+        const klineResolution = config.indicators.intervals?.[0] === "5_MINUTE" ? "5m" : "1m";
+        const klineLimit = config.indicators.candles || 100;
+        const klineData = await getTokenKlines({
+          mint: token.mint,
+          resolution: klineResolution,
+          limit: klineLimit,
+          chain: token.chain || tracked.chain || "sol",
+        });
+        if (klineData?.candles?.length >= 30) {
+          const momentum = analyzeMomentum(klineData.candles);
+          if (momentum.valid) {
+            const trendExit = checkTrendBreakExit(momentum.currentPrice, momentum.supertrend);
+            if (trendExit.shouldExit) {
+              exits.push({
+                mint: token.mint,
+                symbol: token.symbol,
+                reason: `Trend break: ${trendExit.reason}`,
+                pnl_pct: currentPnlPct,
+                is_loss: currentPnlPct < 0,
+                wallet_address: token.wallet_address || null,
+                position_key: token.position_key || token.mint,
+                chain: token.chain || tracked.chain || "sol",
+              });
+              continue;
+            }
+          }
+        }
+      } catch (_) { /* chart fetch failure must never block other exits */ }
+    }
+
     if (exitPolicy.trailingStop) {
       exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.trailingStopReason, pnl_pct: currentPnlPct, is_loss: false, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint, chain: token.chain || tracked.chain || "sol" });
     }
@@ -3396,6 +3439,18 @@ export async function runScreeningCycle({ silent = false } = {}) {
       return; // skip this screening cycle
     }
 
+    // TDZ FIX: planSummary is first used here (adaptive-risk sizing, line ~3451)
+    // but was previously only declared ~1100 lines later in the LLM block,
+    // throwing "Cannot access 'planSummary' before initialization" on every
+    // screening cycle with adaptiveRisk enabled. Declare + fetch once, early.
+    let planSummary;
+    try {
+      planSummary = getPlanSummary();
+    } catch (e) {
+      log("plan", `WARN: getPlanSummary failed in screening: ${e.message}`);
+      planSummary = null;
+    }
+
     let deployAmount = computeDeployAmount(walletSol, { solPriceUsd: balance.sol_price });
     // ── Adaptive Risk: clamp deployAmount based on intra-session state ──────
     if (config.adaptiveRisk?.enabled) {
@@ -3878,10 +3933,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
         // klines pre-fetched in parallel above — read from cache (avoids sequential await)
         const klineData = klineCache.get(token.mint) || { candles: [] };
         log("screening", klineData.candles?.length
-          ? `${token.symbol}: Klines ready (${klineData.candles.length} candles, pre-fetched)`
+          ? `${token.symbol}: Klines ready (${klineData.candles.length} candles, pre-fetched, min=30)`
           : `${token.symbol}: No klines available — skipping momentum analysis`);
 
-        if (klineData.candles && klineData.candles.length > 5) {
+        if (klineData.candles && klineData.candles.length >= 30) {
           const momentum = analyzeMomentum(klineData.candles);
 
           if (momentum.valid) {
@@ -4514,13 +4569,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         (b.conviction?.conviction_score || 0) - (a.conviction?.conviction_score || 0) ||
         (a.workflow?.caution_score || 0) - (b.workflow?.caution_score || 0)
       );
-    let planSummary;
-    try {
-      planSummary = getPlanSummary();
-    } catch (e) {
-      log("plan", `WARN: getPlanSummary failed in screening: ${e.message}`);
-      planSummary = null;
-    }
+    // planSummary already fetched early in this cycle (TDZ fix) — reuse it.
 
     if (entryBlockedByFee) {
       passingCandidates = applyFeeEntryGuard(passingCandidates, gasFee);
@@ -5588,6 +5637,11 @@ export function startCronJobs() {
         log("cron", `Wallet prune: removed ${result.removed} stale wallets, kept ${result.kept}`);
       }
     } catch (e) { /* file may not exist, OK */ }
+    // Holder snapshot pruning — prevent holder-snapshots.json bloat
+    try {
+      await pruneOldSnapshots(24);
+      log("cron", "Holder snapshot prune: removed snapshots older than 24h");
+    } catch (e) { /* snapshot store may not exist, OK */ }
   }));
 
   // Strategy degradation scan — auto-deactivate evolved strategies whose

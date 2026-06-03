@@ -712,6 +712,7 @@ jupiter: {
     rsiOverbought: indicatorUserConfig.rsiOverbought ?? 80,
     requireAllIntervals: indicatorUserConfig.requireAllIntervals ?? false,
     volatilityAdjustmentEnabled: indicatorUserConfig.volatilityAdjustmentEnabled ?? true,
+    exitOnTrendBreak: indicatorUserConfig.exitOnTrendBreak ?? false,
   },
 
   rugMonitor: buildRugMonitorConfig(u),
