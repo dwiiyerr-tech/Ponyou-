@@ -3790,6 +3790,17 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
 
       const conviction = getCoinConviction(token.mint, token, { narrativeVelocity, crossBatchVelocity });
+      // Conviction-based size multiplier: applied on the Kelly fallback path
+      // (when not enough trade history). Creates meaningful per-token differentiation
+      // based on signal quality before Kelly's sample gate is reached.
+      // When Kelly has real trade data, Kelly's own output is used instead.
+      const _convMult = (() => {
+        const s = conviction.conviction_score ?? 50;
+        if (s >= 75) return 1.30;  // strong conviction → larger entry
+        if (s >= 60) return 1.15;
+        if (s >= 40) return 1.00;  // neutral / building
+        return 0.75;                // unknown / weak → smaller entry
+      })();
       const preKellyAmount = parseFloat(((volatilityAdjustedSize || deployAmount) * (tierExec.size_multiplier || 1)).toFixed(4));
       const tokenEdgeScore = Math.max(5, Math.min(95,
         100 -
@@ -3839,7 +3850,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
             capital_usd: 0,
             capped_at: null,
       };
-      const sizedAmount = kelly.deploy_amount_sol || preKellyAmount;
+      // Use Kelly output when it has enough trade data; apply conviction multiplier
+      // on the fallback path (no trade history yet) for per-token differentiation.
+      const sizedAmount = kelly.used_fallback
+        ? parseFloat((preKellyAmount * _convMult).toFixed(4))
+        : (kelly.deploy_amount_sol || preKellyAmount);
       const narrativeTags = Array.isArray(token.narrative_tags)
         ? token.narrative_tags
         : [];

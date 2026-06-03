@@ -130,3 +130,48 @@ describe("kelly sizing", () => {
     expect(inputs.p).toBe(0.45);
   });
 });
+
+// ─── Conviction multiplier logic (mirrors index.js _convMult formula) ────────
+describe("conviction-based size multiplier (index.js _convMult)", () => {
+  function convMult(score) {
+    if (score >= 75) return 1.30;
+    if (score >= 60) return 1.15;
+    if (score >= 40) return 1.00;
+    return 0.75;
+  }
+
+  it("score >= 75 → 1.30 (strong conviction, larger entry)", () => {
+    expect(convMult(75)).toBe(1.30);
+    expect(convMult(90)).toBe(1.30);
+  });
+
+  it("score 60-74 → 1.15 (good conviction, slightly larger)", () => {
+    expect(convMult(60)).toBe(1.15);
+    expect(convMult(74)).toBe(1.15);
+  });
+
+  it("score 40-59 → 1.00 (neutral / building, base size)", () => {
+    expect(convMult(40)).toBe(1.00);
+    expect(convMult(59)).toBe(1.00);
+  });
+
+  it("score < 40 → 0.75 (weak conviction, smaller entry)", () => {
+    expect(convMult(0)).toBe(0.75);
+    expect(convMult(39)).toBe(0.75);
+  });
+
+  it("undefined/null score → treated as 50 → 1.00", () => {
+    // index.js uses: conviction.conviction_score ?? 50
+    const s = undefined ?? 50;
+    expect(convMult(s)).toBe(1.00);
+  });
+
+  it("strong conviction doubles pre-kelly amount proportionally vs weak", () => {
+    const baseAmount = 0.5;
+    const strongSize = parseFloat((baseAmount * convMult(80)).toFixed(4));
+    const weakSize   = parseFloat((baseAmount * convMult(20)).toFixed(4));
+    expect(strongSize).toBeCloseTo(0.65);  // 0.5 * 1.30
+    expect(weakSize).toBeCloseTo(0.375);   // 0.5 * 0.75
+    expect(strongSize / weakSize).toBeGreaterThan(1.7); // strong > 1.7x weak
+  });
+});
