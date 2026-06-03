@@ -43,7 +43,7 @@ const ALLOWED_SLASH_CMDS = new Set([
   "/wallets", "/pnl", "/status", "/health", "/feature", "/devcheck", "/dayphase",
   "/skills", "/promoteskill", "/rejectskill", "/skillweight",
   "/vault_proposals", "/proposals", "/proposals_status",
-  "/proposals_on", "/proposals_off",
+  "/proposals_on", "/proposals_off", "/autonomy",
   "/approve_vault", "/reject_vault",
 ]);
 
@@ -194,6 +194,30 @@ export function createApiRouter() {
     obj[parts[parts.length - 1]] = Boolean(enabled);
     writeConfig({ [rootKey]: root });
     res.json({ ok: true, feature, enabled: Boolean(enabled) });
+  });
+
+  // Autonomy mode — single control for all learning-proposal approval gates.
+  // GET → current mode + derived gate state. POST → set mode.
+  router.get("/autonomy", (req, res) => {
+    const cfg = readConfig();
+    const mode = cfg.autonomyMode || "supervised";
+    res.json({
+      ok: true,
+      mode,
+      modes: ["manual", "supervised", "full_auto"],
+      strategyGate: mode !== "full_auto" && cfg.strategyProposalEnabled !== false,
+      vaultGate:    mode !== "full_auto" && cfg.vaultProposalEnabled !== false,
+      note: "Trading safety gates (kill-switch, maxDeployAmount, DRY_RUN, slippage) always apply regardless of mode.",
+    });
+  });
+
+  router.post("/autonomy", (req, res) => {
+    const { mode } = req.body || {};
+    const VALID = new Set(["manual", "supervised", "full_auto"]);
+    if (!VALID.has(mode)) return res.status(400).json({ ok: false, error: "mode must be: manual | supervised | full_auto" });
+    const gateOn = mode !== "full_auto";
+    writeConfig({ autonomyMode: mode, strategyProposalEnabled: gateOn, vaultProposalEnabled: gateOn });
+    res.json({ ok: true, mode, strategyGate: gateOn, vaultGate: gateOn });
   });
 
   router.post("/resetplan", (req, res) => {

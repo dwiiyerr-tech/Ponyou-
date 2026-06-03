@@ -951,7 +951,7 @@ async function handleStrategyTelegramCommand(text) {
       `<b>Daily Guard</b> · ${htmlEscape(dailyGuard)}`,
       `<b>Plan</b> · ${planLine}`,
       fmt.divider(),
-      fmt.it("/strategy /strategies /stratset /health /feature /confirm /dailyguard /auto /dayphase /devcheck /agent /pending /yes /no /pnl /status /plan /resetplan /vault_proposals"),
+      fmt.it("/strategy /strategies /stratset /health /feature /confirm /dailyguard /auto /dayphase /devcheck /agent /pending /yes /no /pnl /status /plan /resetplan /vault_proposals /autonomy"),
     ];
     await sendHTML(lines.join("\n"));
     return true;
@@ -6015,15 +6015,53 @@ export async function handleIncomingTelegramMessage(msg) {
     return;
   }
 
-  // /proposals_on / /proposals_off — toggle proposal approval gate
+  // /autonomy [manual|supervised|full_auto] — set autonomy level (single control)
+  if (text === "/autonomy" || text.startsWith("/autonomy ")) {
+    const arg = text.replace(/^\/autonomy\s*/, "").trim().toLowerCase();
+    const VALID = { manual: "manual", supervised: "supervised", full_auto: "full_auto", fullauto: "full_auto", auto: "full_auto" };
+    const { writeConfig, readConfig: _rc } = await import("./dashboard/config-writer.js");
+    if (!arg) {
+      const cfg = _rc();
+      const mode = cfg.autonomyMode || "supervised";
+      await sendHTML([
+        `🎚️ <b>Autonomy Mode: ${mode.toUpperCase()}</b>`,
+        ``,
+        `<b>manual</b> — semua proposal butuh approve via Telegram`,
+        `<b>supervised</b> — high-confidence auto-approve, sisanya review (default)`,
+        `<b>full_auto</b> — bot apply semua proposal tanpa approval`,
+        ``,
+        `<i>Catatan: safety gate trading (kill-switch, maxDeployAmount, DRY_RUN, slippage) SELALU aktif apapun mode-nya.</i>`,
+        ``,
+        `Ganti: /autonomy manual | /autonomy supervised | /autonomy full_auto`,
+      ].join("\n"));
+      return;
+    }
+    const mode = VALID[arg];
+    if (!mode) {
+      await sendHTML(`⚠️ Mode tidak dikenal: "${arg}"\nGunakan: manual | supervised | full_auto`);
+      return;
+    }
+    // full_auto forces both proposal gates off; manual/supervised turn them on
+    const gateOn = mode !== "full_auto";
+    writeConfig({ autonomyMode: mode, strategyProposalEnabled: gateOn, vaultProposalEnabled: gateOn });
+    const desc = {
+      manual:     "🔒 MANUAL — semua learning proposal butuh approve kamu dulu.",
+      supervised: "🛡️ SUPERVISED — high-confidence auto-apply, low-confidence kirim ke kamu.",
+      full_auto:  "⚡ FULL AUTO — bot apply semua learning sendiri tanpa approval.\n<i>Safety trading gate tetap aktif.</i>",
+    }[mode];
+    await sendHTML(`🎚️ <b>Autonomy → ${mode.toUpperCase()}</b>\n${desc}\n\n<i>Berlaku mulai cycle berikutnya (config hot-reload).</i>`);
+    return;
+  }
+
+  // /proposals_on / /proposals_off — toggle proposal approval gate (alias)
   if (text === "/proposals_on" || text === "/proposals_off") {
     const enable = text === "/proposals_on";
     const { writeConfig } = await import("./dashboard/config-writer.js");
-    writeConfig({ strategyProposalEnabled: enable, vaultProposalEnabled: enable });
+    writeConfig({ autonomyMode: enable ? "supervised" : "full_auto", strategyProposalEnabled: enable, vaultProposalEnabled: enable });
     await sendHTML(
       enable
-        ? `✅ <b>Proposal Gate ON</b>\nStrategy & vault proposals akan meminta approve sebelum diapply.`
-        : `⚡ <b>Proposal Gate OFF</b>\nStrategy & vault proposals akan auto-apply tanpa approve.\n<i>Gunakan hati-hati — perubahan langsung aktif.</i>`
+        ? `✅ <b>Proposal Gate ON</b> (autonomy=supervised)\nStrategy & vault proposals akan meminta approve sebelum diapply.`
+        : `⚡ <b>Proposal Gate OFF</b> (autonomy=full_auto)\nStrategy & vault proposals akan auto-apply tanpa approve.\n<i>Gunakan hati-hati — perubahan langsung aktif.</i>`
     );
     return;
   }
@@ -6032,14 +6070,16 @@ export async function handleIncomingTelegramMessage(msg) {
   if (text === "/proposals_status") {
     const { readConfig: _readCfg } = await import("./dashboard/config-writer.js");
     const cfg = _readCfg();
-    const stratEnabled = cfg.strategyProposalEnabled !== false;
-    const vaultEnabled = cfg.vaultProposalEnabled !== false;
+    const mode = cfg.autonomyMode || "supervised";
+    const stratEnabled = mode !== "full_auto" && cfg.strategyProposalEnabled !== false;
+    const vaultEnabled = mode !== "full_auto" && cfg.vaultProposalEnabled !== false;
     await sendHTML([
       `📋 <b>Proposal Gate Status</b>`,
+      `Autonomy mode: <b>${mode.toUpperCase()}</b>`,
       `Strategy proposals: ${stratEnabled ? "🟢 ON (butuh approve)" : "⚡ OFF (auto-apply)"}`,
       `Vault proposals: ${vaultEnabled ? "🟢 ON (butuh approve)" : "⚡ OFF (auto-apply)"}`,
       ``,
-      `Toggle: /proposals_on | /proposals_off`,
+      `Ganti mode: /autonomy manual|supervised|full_auto`,
     ].join("\n"));
     return;
   }

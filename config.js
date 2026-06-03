@@ -98,7 +98,8 @@ export function buildVaultConfig(u = {}, env = process.env) {
     intelligenceEnabled: Boolean(u.vaultIntelligenceEnabled ?? false),
     // Proposal gate: when true, vault proposals require operator approve via Telegram.
     // When false, proposals are auto-applied immediately without approval.
-    proposalEnabled: u.vaultProposalEnabled !== false, // default: gate ON (safe)
+    // autonomyMode="full_auto" forces the gate OFF; otherwise honor explicit flag.
+    proposalEnabled: u.autonomyMode === "full_auto" ? false : (u.vaultProposalEnabled !== false),
     sweep: {
       enabled,
       sweepPct,
@@ -159,6 +160,25 @@ export function buildExecutionEdgeConfig(u = {}) {
 }
 
 export const config = {
+  // ─── Autonomy Mode ────────────────────────────────────────────────────────
+  // Controls how much human approval is required before bot applies learnings.
+  //
+  // "manual"     — all proposals require explicit Telegram approve/reject
+  //                safest: operator reviews everything before it affects bot
+  //
+  // "supervised" — high-confidence items auto-approve (conviction >= threshold)
+  //                operator only reviews low-confidence proposals (DEFAULT)
+  //
+  // "full_auto"  — bot applies all proposals immediately without approval gate
+  //                fastest: bot fully autonomous, no Telegram interaction needed
+  //
+  // Safety note: trade execution safety gates (kill-switch, maxDeployAmount,
+  // DRY_RUN, slippage cap) are NEVER affected by this — they always apply.
+  autonomyMode: u.autonomyMode ?? "supervised",
+  // Convenience booleans derived from autonomyMode
+  isFullAuto:   (u.autonomyMode ?? "supervised") === "full_auto",
+  isManual:     (u.autonomyMode ?? "supervised") === "manual",
+
   // ─── Compound Trading Plan (Pilot) ────────
   pilot: {
     enabled:                 u.pilotEnabled              ?? true,
@@ -615,7 +635,7 @@ export const config = {
       minLiveTrades:              u.strategyMinLiveTrades       ?? 20,
       paperTradeTimeoutDays:      u.strategyPaperTimeoutDays    ?? 7,
       proposalTimeoutHours:       u.strategyProposalTimeout     ?? 24,
-      proposalEnabled:            u.strategyProposalEnabled      ?? true,   // false = auto-apply without Telegram approval
+      proposalEnabled:            u.autonomyMode === "full_auto" ? false : (u.strategyProposalEnabled ?? true),   // full_auto forces gate off
       autoApproveConvictionMin:   u.strategyAutoApprove         ?? 0.95,
       degradationThreshold:       u.strategyDegradation         ?? 0.75,
       maxCandidateQueue:          u.strategyMaxQueue            ?? 5,

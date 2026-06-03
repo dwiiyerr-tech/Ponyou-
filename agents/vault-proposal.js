@@ -222,11 +222,25 @@ export class VaultProposalEngine {
     this.#getConfig = getConfig;
   }
 
-  // Check if proposal gate is enabled (requires operator approve)
-  // When false: auto-apply all proposals without Telegram approval
+  // Check if proposal gate is enabled (requires operator approve).
+  // Reads user-config.json FRESH each call so /autonomy toggle takes effect
+  // without a bot restart. Falls back to the static config object.
+  // When false: auto-apply all proposals without Telegram approval.
   #isGateEnabled() {
+    // Fresh read from disk (hot-reload path)
+    try {
+      const ucPath = path.join(__dirname, "../user-config.json");
+      if (fs.existsSync(ucPath)) {
+        const uc = JSON.parse(fs.readFileSync(ucPath, "utf8"));
+        if (uc.autonomyMode === "full_auto") return false;
+        if (uc.vaultProposalEnabled === false) return false;
+        return true;
+      }
+    } catch {}
+    // Fallback: static config object
     try {
       const cfg = this.#getConfig?.();
+      if (cfg?.autonomyMode === "full_auto") return false;
       if (cfg?.vault?.proposalEnabled === false) return false;
     } catch {}
     return true; // default: gate ON (safe)

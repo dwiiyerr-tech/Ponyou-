@@ -14,10 +14,31 @@
 // 24h timeout. Failing the maturity gate disables auto-approve entirely so
 // the operator must consciously sign off on a young agent's first strategy.
 
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __spDirname = path.dirname(fileURLToPath(import.meta.url));
+
 const DEFAULT_AUTO_APPROVE_CONVICTION = 0.95;
 const DEFAULT_AUTO_APPROVE_MIN_GATE   = 0.90;
 const DEFAULT_AUTO_APPROVE_MATURITY   = 30;
 const DEFAULT_PROPOSAL_TIMEOUT_MS     = 24 * 60 * 60 * 1000;
+
+// Fresh-read the proposal gate from user-config.json so /autonomy toggles
+// take effect without a bot restart. Falls back to the constructor default.
+function _gateEnabledFresh(fallback) {
+  try {
+    const ucPath = path.join(__spDirname, "user-config.json");
+    if (fs.existsSync(ucPath)) {
+      const uc = JSON.parse(fs.readFileSync(ucPath, "utf8"));
+      if (uc.autonomyMode === "full_auto") return false;
+      if (uc.strategyProposalEnabled === false) return false;
+      if (uc.strategyProposalEnabled === true) return true;
+    }
+  } catch {}
+  return fallback;
+}
 
 function pct(value, digits = 0) {
   if (value == null || !Number.isFinite(Number(value))) return "n/a";
@@ -142,8 +163,9 @@ export class StrategyProposal {
     const { id, conviction, scores } = candidate || {};
     const decision = this.#autoApprovalDecision(candidate);
 
-    // proposalEnabled=false: skip gate entirely, auto-approve all proposals
-    if (!this.#proposalEnabled) {
+    // proposalEnabled=false: skip gate entirely, auto-approve all proposals.
+    // Re-read fresh from disk so /autonomy full_auto applies without restart.
+    if (!_gateEnabledFresh(this.#proposalEnabled)) {
       const msg = `[AUTO-APPLIED — gate off] ${candidate.name}\nConviction ${pct(conviction)}\nUse /proposals_on to re-enable approval gate.`;
       await this.#sendTelegram(msg).catch(() => {});
       return { id, autoApproved: true, status: "approved", gateDisabled: true, decision };
