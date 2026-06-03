@@ -30,7 +30,9 @@
     "setup": "node terminal-app/src/modes/wizard-standalone.js",
     "telegram:auth": "node scripts/telegram-auth.js",
     "secondbrain:setup": "node scripts/setup-secondbrain.mjs",
-    "secondbrain:status": "node -e \"import('./secondbrain-sync.js').then(m=>console.log(m.buildSyncStatus()))\""
+    "secondbrain:status": "node -e \"import('./secondbrain-sync.js').then(m=>console.log(m.buildSyncStatus()))\"",
+    "notebooklm:export": "node scripts/export-notebooklm.js",
+    "notebooklm:watch": "node scripts/export-notebooklm.js --watch"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

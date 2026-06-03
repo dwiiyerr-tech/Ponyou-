@@ -5516,6 +5516,20 @@ export function startCronJobs() {
     } catch (e) { log("vault_proposal_error", `Cron analyze failed: ${e.message}`); }
   }));
 
+  // NotebookLM Export — generate export file setiap 6 jam (offset 30)
+  // File bisa di-upload manual ke NotebookLM atau dibaca via GitHub URL
+  tasks.push(cron.schedule("30 */6 * * *", async () => {
+    try {
+      const { execFile } = await import("child_process");
+      const { promisify } = await import("util");
+      const execFileAsync = promisify(execFile);
+      await execFileAsync("node", ["scripts/export-notebooklm.js"], {
+        cwd: process.cwd(), timeout: 30_000,
+      });
+      log("notebooklm", "Export updated: ponyou-brain/notebooklm-export.md");
+    } catch (e) { log("notebooklm_error", `Export failed: ${e.message}`); }
+  }));
+
   // Market Rug Harvester (tiap 4 jam — proactive learn rug patterns from market)
   tasks.push(cron.schedule("0 */4 * * *", () => {
     harvestMarketRugs({ source_tokens: 30, max_record: 10 })
