@@ -165,7 +165,7 @@ import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
 import { getVaultOverrides, getVaultContext } from "./tools/vault-reader.js";
-import { logScreeningDecision } from "./tools/vault-writer.js";
+import { logScreeningDecision, logTradeOutcome } from "./tools/vault-writer.js";
 import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
   isVaultDue, computeVaultAmount, executeVaultTransfer,
@@ -2846,6 +2846,14 @@ export async function runManagementCycle({ silent = false } = {}) {
             slippage: exitSlippage,
           },
         });
+        setImmediate(() => logTradeOutcome({
+          symbol: exit.symbol,
+          mint: exit.mint,
+          pnl_pct: truePnl.net_pnl_pct || tradePnl,
+          hold_minutes: holdMinutes,
+          exit_reason: exit.reason,
+          is_win: !exit.is_loss,
+        }).catch(() => {}));
         await recordTradeAttribution({
           mint: exit.mint,
           symbol: exit.symbol,

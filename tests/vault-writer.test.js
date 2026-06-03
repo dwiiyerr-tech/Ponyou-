@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-import { logScreeningDecision, _getVaultWriterDir } from "../tools/vault-writer.js";
+import { logScreeningDecision, logTradeOutcome, _getVaultWriterDir } from "../tools/vault-writer.js";
 
 let TMP_DIR;
 let NOTES_FILE;
@@ -108,6 +108,57 @@ describe("vault-writer", () => {
         marketCondition: "DEAD",
         deployAmount: 0,
       })
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("vault-writer: logTradeOutcome", () => {
+  it("appends a WIN outcome entry to the daily decision file", async () => {
+    await logTradeOutcome({
+      symbol: "PYUSD",
+      mint: "mintPY",
+      pnl_pct: 47.3,
+      hold_minutes: 23,
+      exit_reason: "Trailing Stop",
+      is_win: true,
+    });
+    const body = fs.readFileSync(autoFilePath(), "utf8");
+    expect(body).toContain("OUTCOME: PYUSD");
+    expect(body).toContain("**WIN +47.3%**");
+    expect(body).toContain("23m");
+    expect(body).toContain("Exit: Trailing Stop");
+  });
+
+  it("appends a LOSS outcome entry with negative PnL", async () => {
+    await logTradeOutcome({
+      symbol: "RUGGED",
+      mint: "mintRUG",
+      pnl_pct: -18.5,
+      hold_minutes: 7,
+      exit_reason: "Stop Loss",
+      is_win: false,
+    });
+    const body = fs.readFileSync(autoFilePath(), "utf8");
+    expect(body).toContain("OUTCOME: RUGGED");
+    expect(body).toContain("**LOSS -18.5%**");
+    expect(body).toContain("7m");
+    expect(body).toContain("Exit: Stop Loss");
+  });
+
+  it("creates the daily file if it does not exist yet", async () => {
+    const file = autoFilePath();
+    expect(fs.existsSync(file)).toBe(false);
+    await logTradeOutcome({ symbol: "NEW", mint: "mintNEW", pnl_pct: 5, hold_minutes: 2, exit_reason: "ROI", is_win: true });
+    expect(fs.existsSync(file)).toBe(true);
+    const body = fs.readFileSync(file, "utf8");
+    expect(body).toContain("auto-decision-log");
+    expect(body).toContain("OUTCOME: NEW");
+  });
+
+  it("never throws when vault dir does not exist", async () => {
+    process.env.PONYOU_VAULT_NOTES_FILE = path.join(TMP_DIR, "nonexistent", "deep", "operator-notes.md");
+    await expect(
+      logTradeOutcome({ symbol: "X", mint: "m", pnl_pct: 0, hold_minutes: 0, exit_reason: "test", is_win: false })
     ).resolves.toBeUndefined();
   });
 });
