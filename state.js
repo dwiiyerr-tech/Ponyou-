@@ -169,6 +169,7 @@ export function trackPosition({
   cast_net_slot = null,
   strategy_used = null,
   chain = "sol",
+  paper_trade = false,
 }) {
   const state = load();
   const position_key = buildPositionKey(position, wallet_address);
@@ -222,6 +223,10 @@ export function trackPosition({
     // routing (sellByChain) to pick Jupiter vs GMGN. Defaults to "sol" for
     // all pre-EVM positions loaded from state without this field.
     chain: chain || "sol",
+    // Paper/dry-run positions are never visible on-chain; sync-miss auto-close
+    // must skip them so they accumulate real P&L data via exit policy instead
+    // of being garbage-collected with pnl=0.
+    paper_trade: !!paper_trade,
   };
   pushEvent(state, { action: "deploy", position, position_key, pool_name: pool_name || pool, wallet_address });
   const saved = save(state);
@@ -423,6 +428,11 @@ export function syncOpenPositions(active_addresses) {
       }
       continue;
     }
+
+    // Paper/dry-run positions are never on-chain — skip sync-miss entirely.
+    // They accumulate P&L via exit policy (trailing stop, ROI, hard cut) and
+    // must never be garbage-collected with pnl=0 by this path.
+    if (pos.paper_trade) continue;
 
     // Grace period: newly deployed positions may not be indexed yet
     const deployedAt = pos.deployed_at ? new Date(pos.deployed_at).getTime() : 0;

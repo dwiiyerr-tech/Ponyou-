@@ -280,6 +280,53 @@ describe("state — syncOpenPositions", () => {
     // No positions to sync — should not throw
     expect(true).toBe(true);
   });
+
+  it("paper_trade=true positions are NOT auto-closed on sync-miss", async () => {
+    const { trackPosition, syncOpenPositions, getTrackedPosition, _resetStateForTests } = await import("../state.js");
+    _resetStateForTests();
+    const mint = "PaperMint111111111111111111111111111111111";
+    await trackPosition({
+      position: mint, pool: "jupiter", pool_name: "PAPER",
+      amount_sol: 0.5, initial_value_usd: 50, paper_trade: true,
+    });
+    // Simulate 10 consecutive sync cycles with mint not in active list
+    for (let i = 0; i < 10; i++) syncOpenPositions([]);
+    const pos = getTrackedPosition(mint);
+    expect(pos).not.toBeNull();
+    expect(pos.closed).toBe(false);
+    expect(pos.paper_trade).toBe(true);
+  });
+
+  it("paper_trade=false positions get sync_misses incremented (not skipped)", async () => {
+    const { trackPosition, syncOpenPositions, getTrackedPosition, getState, _resetStateForTests } = await import("../state.js");
+    _resetStateForTests();
+    const mint = "LiveMint11111111111111111111111111111111111";
+    await trackPosition({
+      position: mint, pool: "jupiter", pool_name: "LIVE",
+      amount_sol: 0.5, initial_value_usd: 50, paper_trade: false,
+    });
+    // Backdate deployed_at to bypass SYNC_GRACE_MS (5 min)
+    const state = getState();
+    const key = Object.keys(state.positions).find(k => k.includes(mint));
+    if (key) state.positions[key].deployed_at = new Date(Date.now() - 600_000).toISOString();
+    // One sync miss — counter must increment (unlike paper_trade which skips entirely)
+    syncOpenPositions([]);
+    const pos = getTrackedPosition(mint);
+    expect(pos?.paper_trade).toBe(false);
+    expect((pos?.sync_misses ?? 0)).toBeGreaterThan(0);
+  });
+
+  it("trackPosition stores paper_trade flag correctly", async () => {
+    const { trackPosition, getTrackedPosition, _resetStateForTests } = await import("../state.js");
+    _resetStateForTests();
+    const mint = "FlagMint1111111111111111111111111111111111";
+    await trackPosition({
+      position: mint, pool: "jupiter", pool_name: "FLAG",
+      amount_sol: 0.1, initial_value_usd: 10, paper_trade: true,
+    });
+    const pos = getTrackedPosition(mint);
+    expect(pos?.paper_trade).toBe(true);
+  });
 });
 
 describe("state — flushState", () => {

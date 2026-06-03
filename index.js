@@ -1627,6 +1627,7 @@ async function executePendingIntent(id) {
       },
       wallet_address: walletAddress,
       chain: (args.chain || "sol").toLowerCase(),
+      paper_trade: config.dryRun || config.paperTrading,
     });
     if (_rugMonitor) {
       const positionKey = walletAddress ? `${args.token_out}::${walletAddress}` : args.token_out;
@@ -2522,6 +2523,7 @@ async function checkStagedEntries(tokens, balance) {
           signal_snapshot: buy.tracked.signal_snapshot,
           wallet_address: buy.wallet_address,
           chain: buy.chain || buy.tracked?.chain || "sol",
+          paper_trade: config.dryRun || config.paperTrading,
         });
 
         recordCounter("swaps_executed");
@@ -4514,6 +4516,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
                 },
               },
               wallet_address: exec.wallet_address || null,
+              paper_trade: config.dryRun || config.paperTrading,
             });
           }
           recordTrade(null);
@@ -4649,6 +4652,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                     },
                   },
                   wallet_address: exec.wallet_address || null,
+                  paper_trade: config.dryRun || config.paperTrading,
                 });
               }
               recordTrade(null); // outcome unknown yet
