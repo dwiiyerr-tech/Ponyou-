@@ -165,6 +165,7 @@ import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
 import { getVaultOverrides, getVaultContext } from "./tools/vault-reader.js";
+import { logScreeningDecision } from "./tools/vault-writer.js";
 import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
   isVaultDue, computeVaultAmount, executeVaultTransfer,
@@ -4625,6 +4626,14 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
         },
       });
       screenReport = content;
+      setImmediate(() => {
+        logScreeningDecision({
+          candidates: passingCandidates,
+          decision: content,
+          marketCondition: marketIntel?.condition || "UNKNOWN",
+          deployAmount,
+        }).catch(() => {});
+      });
     }
     if (!screenReport) {
       screenReport = `No candidates passed (market: ${marketIntel.condition}).`;
