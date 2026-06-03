@@ -92,6 +92,10 @@ export function buildVaultConfig(u = {}, env = process.env) {
     pct: sweepPct,
     intervalDays: sweepIntervalDays,
     minSweepSol,
+    // Second brain / Obsidian vault intelligence. When true, getVaultIntelligenceContext()
+    // injects rich multi-source context (chain intel, narrative heat, strategy performance,
+    // operator lessons, money management rules) into the LLM screening prompt.
+    intelligenceEnabled: Boolean(u.vaultIntelligenceEnabled ?? false),
     sweep: {
       enabled,
       sweepPct,

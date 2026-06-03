@@ -164,8 +164,8 @@ import { runAllMaintenance } from "./data-maintenance.js";
 import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
-import { getVaultOverrides, getVaultContext, getDevOverrides, getWalletOverrides, getSmartMoneyContext, getPatternOverrides, getChainOverrides } from "./tools/vault-reader.js";
-import { logScreeningDecision, logTradeOutcome, refreshVaultSnapshots } from "./tools/vault-writer.js";
+import { getVaultOverrides, getVaultContext, getVaultIntelligenceContext, getDevOverrides, getWalletOverrides, getSmartMoneyContext, getPatternOverrides, getChainOverrides } from "./tools/vault-reader.js";
+import { logScreeningDecision, logTradeOutcome, refreshVaultSnapshots, ensureIntelligenceTemplates } from "./tools/vault-writer.js";
 import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
   isVaultDue, computeVaultAmount, executeVaultTransfer,
@@ -4551,15 +4551,19 @@ export async function runScreeningCycle({ silent = false } = {}) {
     }
     if (!screenReport && passingCandidates.length > 0 && !anyRuleBased) {
       log("cron", `${passingCandidates.length} passed — invoking LLM`);
-      const _vaultCtx    = getVaultContext();
-      const _smCtx       = getSmartMoneyContext();
-      const _chainOv     = getChainOverrides();
-      // Build per-chain strategy hint: "[CHAIN STRATEGY] sol=scalping base=momentum"
-      const _chainStratParts = Object.entries(_chainOv.preferred_strategy)
-        .map(([c, s]) => `${c}=${s}`);
-      const _chainStratCtx = _chainStratParts.length > 0
-        ? `[CHAIN STRATEGY] ${_chainStratParts.join(" ")} — gunakan preset ini untuk token dari chain tersebut`
-        : null;
+      // Vault context: intelligence mode (rich) or basic mode
+      const _vaultBlock = config.vault?.intelligenceEnabled
+        ? getVaultIntelligenceContext()
+        : (() => {
+            const _chainOv = getChainOverrides();
+            const _chainStratParts = Object.entries(_chainOv.preferred_strategy).map(([c, s]) => `${c}=${s}`);
+            const _vaultCtx = getVaultContext();
+            const _smCtx = getSmartMoneyContext();
+            const _chainStratCtx = _chainStratParts.length > 0
+              ? `[CHAIN STRATEGY] ${_chainStratParts.join(" ")}`
+              : null;
+            return [_vaultCtx, _smCtx, _chainStratCtx].filter(Boolean).join("\n") || null;
+          })();
       const { content } = await agentLoop(`
 SCREENING CYCLE
 Amount: ${deployAmount} SOL
@@ -4567,7 +4571,7 @@ Gas: ${gasFee.level}
 Market: ${marketIntel.condition} — ${marketIntel.description}
 ${planSummary ? `Plan: Day ${planSummary.day} | P&L: ${planSummary.today_pnl_pct}% | Target: +${planSummary.daily_target_pct}%${planSummary.profit_mode ? " | 🔥 PROFIT MODE — no trade limit" : ""}` : ""}
 Posisi aktif: ${openTokens.length}/${positionLimit}
-${_vaultCtx ? _vaultCtx + '\n' : ''}${_smCtx ? _smCtx + '\n' : ''}${_chainStratCtx ? _chainStratCtx + '\n' : ''}
+${_vaultBlock ? _vaultBlock + '\n' : ''}
 CANDIDATES (lolos 4-filter + rug check):
 ${JSON.stringify(passingCandidates)}
 ${narrativeVelocity.promptContext ? `\n${narrativeVelocity.promptContext}\n` : ""}${crossBatchVelocity.promptContext ? `${crossBatchVelocity.promptContext}\n` : ""}
@@ -5469,6 +5473,11 @@ export function startCronJobs() {
   startTurboButtons();
   // Auto-seed smart wallets after Geyser is started so refreshSubscriptions() can wire them in
   seedSmartWallets().catch(e => log("smart_wallets", `seed failed: ${e.message}`));
+  // Vault intelligence: create template files on first activation
+  if (config.vault?.intelligenceEnabled) {
+    ensureIntelligenceTemplates().catch(() => {});
+    log("vault", "Second brain intelligence ENABLED — templates created if missing");
+  }
   // Dashboard IPC — check for commands from dashboard process every 3s
   _dashboardIpcTimer = setInterval(() => checkDashboardCommands().catch(e => log("dashboard_ipc", e.message)), 3000);
   log("cron", `Jobs started: mgmt=${config.schedule.managementIntervalMin}m screen=${config.schedule.screeningIntervalMin}m vault=6h report=${reportH}:${String(reportM).padStart(2,"0")}UTC`);

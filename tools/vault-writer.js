@@ -382,6 +382,155 @@ export async function writeChainStatus() {
 }
 
 /**
+ * 01-Context/strategy-performance.md — bot-written analysis of what's working.
+ * Reads from lessons.js trade history + narrative heat. LLM uses this to pick
+ * strategies and market conditions to prioritise.
+ */
+export async function writeStrategyInsights() {
+  try {
+    const { getPerformanceSummary, getPerformanceHistory } = await import("../lessons.js");
+    const { getNarrativeHeat, getNarrativeHeatPrompt } = await import("./narratives.js");
+
+    const vaultDir = _getVaultWriterDir();
+    const dir = path.join(vaultDir, "01-Context");
+    _ensureDir(dir);
+
+    const perfSummary = getPerformanceSummary();
+    const trades = getPerformanceHistory({ limit: 50 });
+    const now = new Date().toISOString();
+
+    // Aggregate per-strategy
+    const stratStats = {};
+    const condStats = {};
+    const narrativeStats = {};
+    for (const t of trades) {
+      const s  = t.strategy_used || "scalping";
+      const c  = t.market_condition || "UNKNOWN";
+      const ns = Array.isArray(t.narrative_tags) ? (t.narrative_tags[0] || "other") : "other";
+      for (const [key, map] of [[s, stratStats], [c, condStats], [ns, narrativeStats]]) {
+        if (!map[key]) map[key] = { wins: 0, total: 0, pnl: 0 };
+        map[key].total++;
+        if (t.win) map[key].wins++;
+        map[key].pnl += (t.pnl_pct || 0);
+      }
+    }
+
+    const mkTable = (map, label, minTrades = 2) => {
+      const rows = Object.entries(map)
+        .filter(([, s]) => s.total >= minTrades)
+        .sort((a, b) => (b[1].wins / b[1].total) - (a[1].wins / a[1].total))
+        .map(([id, s]) => {
+          const wr = s.total > 0 ? ((s.wins / s.total) * 100).toFixed(0) : "?";
+          const avg = (s.pnl / Math.max(1, s.total)).toFixed(1);
+          const icon = s.total > 0 && s.wins / s.total >= 0.55 ? "✅" : "⚠️";
+          return `${icon} ${id}: ${wr}% wr | ${avg}% avg | ${s.total} trades`;
+        });
+      return rows.length > 0 ? `${label}\n${rows.join("\n")}` : "";
+    };
+
+    const stratTable  = mkTable(stratStats,  "## Strategy (win rate)", 1);
+    const condTable   = mkTable(condStats,   "## Market Condition",    1);
+    const narrTable   = mkTable(narrativeStats, "## Narrative",        2);
+    const heatPrompt  = getNarrativeHeatPrompt();
+
+    // Recommendation: best strategy + market condition
+    const bestStrat = Object.entries(stratStats)
+      .filter(([, s]) => s.total >= 3)
+      .sort((a, b) => b[1].wins / b[1].total - a[1].wins / a[1].total)[0];
+    const bestCond  = Object.entries(condStats)
+      .filter(([, s]) => s.total >= 3)
+      .sort((a, b) => b[1].wins / b[1].total - a[1].wins / a[1].total)[0];
+    const worstCond = Object.entries(condStats)
+      .filter(([, s]) => s.total >= 3)
+      .sort((a, b) => a[1].wins / a[1].total - b[1].wins / b[1].total)[0];
+
+    const recLines = [];
+    if (bestStrat)  recLines.push(`Best strategy:   ${bestStrat[0]} (${(bestStrat[1].wins/bestStrat[1].total*100).toFixed(0)}% wr, ${bestStrat[1].total} trades)`);
+    if (bestCond)   recLines.push(`Best condition:  ${bestCond[0]} (${(bestCond[1].wins/bestCond[1].total*100).toFixed(0)}% wr)`);
+    if (worstCond)  recLines.push(`Avoid condition: ${worstCond[0]} (${(worstCond[1].wins/worstCond[1].total*100).toFixed(0)}% wr — reduce size or skip)`);
+
+    const body =
+      `---\ntype: bot-snapshot\nupdated: ${now}\ntrade_count: ${trades.length}\n---\n\n` +
+      `# Strategy Performance (last ${trades.length} trades)\n\n` +
+      `_Auto-generated every 5 min. LLM reads this before each screening decision._\n\n` +
+      `**Summary:** ${typeof perfSummary === "string" ? perfSummary : JSON.stringify(perfSummary)}\n\n` +
+      (recLines.length > 0 ? `## Recommendations\n${recLines.join("\n")}\n\n` : "") +
+      (stratTable  ? `${stratTable}\n\n`  : "") +
+      (condTable   ? `${condTable}\n\n`   : "") +
+      (narrTable   ? `${narrTable}\n\n`   : "") +
+      (heatPrompt  ? `## Narrative Heat\n${heatPrompt}\n`  : "");
+
+    atomicWriteText(path.join(dir, "strategy-performance.md"), body);
+  } catch { /* best-effort */ }
+}
+
+/**
+ * Create template operator files on first vault intelligence activation.
+ * Called once; templates guide the operator on how to write lessons.
+ */
+export async function ensureIntelligenceTemplates() {
+  try {
+    const vaultDir = _getVaultWriterDir();
+
+    // operator-lessons.md
+    const lessonsFile = path.join(vaultDir, "operator-lessons.md");
+    if (!fs.existsSync(lessonsFile)) {
+      atomicWriteText(lessonsFile,
+        `# Operator Lessons\n\n` +
+        `_Tulis wisdom trading kamu di sini. Bot membaca ini sebelum setiap keputusan screening._\n` +
+        `_Format bebas — tulis seperti instruksi untuk trading assistant._\n\n` +
+        `## Kapan Entry\n` +
+        `- Market HOT + narrative AI/agent = prioritas entry, ukuran penuh\n` +
+        `- Market COLD = hanya entry jika conviction > 70 + smart money confirmed\n` +
+        `- Jam 08-16 UTC = prime window memecoin\n\n` +
+        `## Kapan Skip\n` +
+        `- Chain base atau bsc dalam kondisi DEAD atau COLD = skip\n` +
+        `- Token dengan rug_score > 45 = skip meski conviction tinggi\n` +
+        `- Narrative casino/gambling = selalu skip\n` +
+        `- Token baru < 30 menit listing = too early, skip\n\n` +
+        `## Strategi per Kondisi\n` +
+        `- HOT: scalping agresif, entry cepat\n` +
+        `- NORMAL: momentum strategy, tunggu konfirmasi\n` +
+        `- COLD: dip_buy only, ukuran sangat kecil\n` +
+        `- DEAD: no entry\n\n` +
+        `## Taktik Khusus\n` +
+        `- (tambah pelajaran kamu dari trading nyata di sini)\n` +
+        `- Contoh: "dev wallet X selalu dump dalam 30 menit — hindari"\n`
+      );
+    }
+
+    // 08-MoneyManagement/sizing-guidance.md
+    const mmDir = path.join(vaultDir, "08-MoneyManagement");
+    if (!fs.existsSync(mmDir)) fs.mkdirSync(mmDir, { recursive: true });
+    const mmFile = path.join(mmDir, "sizing-guidance.md");
+    if (!fs.existsSync(mmFile)) {
+      atomicWriteText(mmFile,
+        `# Money Management Rules\n\n` +
+        `_Rules untuk position sizing dan risk management. Bot membaca ini sebelum menentukan ukuran entry._\n\n` +
+        `## Position Sizing\n` +
+        `- Market HOT: maksimal 40% bankroll per posisi\n` +
+        `- Market NORMAL: maksimal 25% bankroll per posisi\n` +
+        `- Market COLD: maksimal 15% bankroll per posisi\n` +
+        `- Conviction < 40: pakai 75% dari ukuran normal\n` +
+        `- Conviction > 75: boleh ukuran penuh\n\n` +
+        `## Risk Limits\n` +
+        `- Stop loss maksimal: -20% per posisi\n` +
+        `- Daily loss limit: -10% dari total bankroll → berhenti trading hari itu\n` +
+        `- Maksimal 3 posisi terbuka bersamaan\n` +
+        `- Jangan hold lebih dari 2 posisi di narrative yang sama\n\n` +
+        `## Exit Rules\n` +
+        `- Trailing stop aktif setelah +5% gain\n` +
+        `- Ambil profit sebagian (50%) saat +20% untuk kurangi risiko\n` +
+        `- Jika rug signal naik saat posisi open: tutup di -15% atau lebih awal\n\n` +
+        `## Capital Preservation\n` +
+        `- Setelah 3 loss berturut-turut: pause 1 jam\n` +
+        `- Jangan revenge trade setelah rug\n`
+      );
+    }
+  } catch { /* best-effort */ }
+}
+
+/**
  * Refresh all vault snapshots. Called on the 5-min cron.
  * Each snapshot runs independently — one failure never blocks the others.
  */
@@ -392,5 +541,6 @@ export async function refreshVaultSnapshots() {
     writeNarrativeHeat(),
     writeActiveRugPatterns(),
     writeChainStatus(),
+    writeStrategyInsights(),
   ]);
 }

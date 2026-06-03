@@ -282,17 +282,25 @@ describe("state — syncOpenPositions", () => {
   });
 
   it("paper_trade=true positions are NOT auto-closed on sync-miss", async () => {
-    const { trackPosition, syncOpenPositions, getTrackedPosition, _resetStateForTests } = await import("../state.js");
+    const { trackPosition, syncOpenPositions, getState, _resetStateForTests } = await import("../state.js");
     _resetStateForTests();
     const mint = "PaperMint111111111111111111111111111111111";
     await trackPosition({
       position: mint, pool: "jupiter", pool_name: "PAPER",
       amount_sol: 0.5, initial_value_usd: 50, paper_trade: true,
     });
+    // Paper position must be in state immediately after tracking
+    const stateAfterTrack = getState();
+    const posKey = Object.keys(stateAfterTrack.positions).find(k => k.includes(mint));
+    expect(posKey).toBeTruthy();
+
     // Simulate 10 consecutive sync cycles with mint not in active list
     for (let i = 0; i < 10; i++) syncOpenPositions([]);
-    const pos = getTrackedPosition(mint);
-    expect(pos).not.toBeNull();
+
+    // Paper position must survive all sync cycles
+    const stateAfterSync = getState();
+    const pos = stateAfterSync.positions[posKey];
+    expect(pos).toBeDefined();
     expect(pos.closed).toBe(false);
     expect(pos.paper_trade).toBe(true);
   });
@@ -317,15 +325,17 @@ describe("state — syncOpenPositions", () => {
   });
 
   it("trackPosition stores paper_trade flag correctly", async () => {
-    const { trackPosition, getTrackedPosition, _resetStateForTests } = await import("../state.js");
+    const { trackPosition, getState, _resetStateForTests } = await import("../state.js");
     _resetStateForTests();
     const mint = "FlagMint1111111111111111111111111111111111";
     await trackPosition({
       position: mint, pool: "jupiter", pool_name: "FLAG",
       amount_sol: 0.1, initial_value_usd: 10, paper_trade: true,
     });
-    const pos = getTrackedPosition(mint);
-    expect(pos?.paper_trade).toBe(true);
+    const state = getState();
+    const key = Object.keys(state.positions).find(k => k.includes(mint));
+    expect(key).toBeTruthy();
+    expect(state.positions[key]?.paper_trade).toBe(true);
   });
 });
 

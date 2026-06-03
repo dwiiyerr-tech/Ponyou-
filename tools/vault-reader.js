@@ -263,6 +263,169 @@ export function getPatternOverrides() {
 }
 export function _resetPatOvCache() { _patOvCache = null; _patOvTs = 0; }
 
+// ─── Vault Intelligence Context (opt-in, vaultIntelligenceEnabled: true) ─────
+// Full rich context block for LLM: chain intel, narrative heat, strategy
+// performance, smart money, operator lessons, money management rules.
+// Falls back gracefully: each section is silent on missing files/data.
+let _intelCache = null, _intelCacheTs = 0;
+
+function _readFileBody(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    // Strip YAML frontmatter (between first --- delimiters)
+    return raw.replace(/^---[\s\S]*?---\r?\n/, "").trim();
+  } catch { return null; }
+}
+
+function _readFileFrontmatter(filePath) {
+  try { return parseFrontmatter(fs.readFileSync(filePath, "utf8")); }
+  catch { return {}; }
+}
+
+export function getVaultIntelligenceContext() {
+  if (_intelCacheTs && (Date.now() - _intelCacheTs) < CACHE_TTL_MS) return _intelCache;
+
+  try {
+    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const vaultDir  = path.dirname(notesFile);
+    const sections  = [];
+
+    // ── 1. Market ────────────────────────────────────────────────────────────
+    try {
+      const chainFm = _readFileFrontmatter(path.join(vaultDir, "50-Chains", "_status.md"));
+      const CHAINS  = ["sol", "base", "bsc", "eth"];
+      const chainParts = [];
+      const ICONS = { HOT:"🔥", EXTREME:"🚀", NORMAL:"⚪", COLD:"❄️", DEAD:"💀", UNKNOWN:"❓", OFF:"⬛" };
+      for (const c of CHAINS) {
+        const raw = typeof chainFm[`chain_${c}`] === "string" ? chainFm[`chain_${c}`] : null;
+        if (!raw) continue;
+        const [cond, score] = raw.split("|");
+        if (!cond || cond === "OFF") continue;
+        chainParts.push(`${ICONS[cond] ?? ""}${c}=${cond}(${score ?? "?"})`);
+      }
+      if (chainParts.length > 0) sections.push(`Chain: ${chainParts.join(" | ")}`);
+    } catch { /* skip */ }
+
+    // Narrative heat — compact from _heat.md
+    try {
+      const heatFm = _readFileFrontmatter(path.join(vaultDir, "30-Narratives", "_heat.md"));
+      // heat.md doesn't have hot/cold in frontmatter; read the file body for the heat line
+      const body = _readFileBody(path.join(vaultDir, "30-Narratives", "_heat.md"));
+      if (body) {
+        // Extract table rows from hot/cold sections
+        const hotSection  = body.match(/##\s*🔥 Hot[\s\S]*?(?=##|$)/)?.[0] || "";
+        const coldSection = body.match(/##\s*❄️ Cold[\s\S]*?(?=##|$)/)?.[0] || "";
+        const hotRows  = (hotSection.match(/\|\s*(\w[\w-]*)\s*\|[^|]+\|[^|]+\|[^|]+\|/g) || [])
+          .slice(0, 3).map(r => r.match(/\|\s*([\w-]+)\s*\|([^|]+)\|([^|]+)/)?.[1]).filter(Boolean);
+        const coldRows = (coldSection.match(/\|\s*(\w[\w-]*)\s*\|[^|]+\|[^|]+\|[^|]+\|/g) || [])
+          .slice(0, 2).map(r => r.match(/\|\s*([\w-]+)\s*\|([^|]+)\|([^|]+)/)?.[1]).filter(Boolean);
+        const parts = [];
+        if (hotRows.length > 0)  parts.push(`🔥 ${hotRows.join(",")}`);
+        if (coldRows.length > 0) parts.push(`❄️ ${coldRows.join(",")}`);
+        if (parts.length > 0) sections.push(`Narrative: ${parts.join(" | ")}`);
+      }
+    } catch { /* skip */ }
+
+    // ── 2. Strategy Performance ───────────────────────────────────────────────
+    try {
+      const perfBody = _readFileBody(path.join(vaultDir, "01-Context", "strategy-performance.md"));
+      if (perfBody) {
+        // Extract just the Recommendations + first table (brief)
+        const recSection = perfBody.match(/##\s*Recommendations\n([\s\S]*?)(?=##|$)/)?.[1]?.trim();
+        const heatLine   = perfBody.match(/##\s*Narrative Heat\n(.+)/)?.[1]?.trim();
+        if (recSection) sections.push(`Performance:\n${recSection.split("\n").slice(0, 3).map(l => "  " + l).join("\n")}`);
+        if (heatLine)   sections.push(`Heat: ${heatLine}`);
+      }
+    } catch { /* skip */ }
+
+    // ── 3. Smart Money ────────────────────────────────────────────────────────
+    try {
+      const smFm = _readFileFrontmatter(path.join(vaultDir, "10-SmartMoney", "_live.md"));
+      const count = Number(smFm.wallet_count) || 0;
+      const wr    = Number(smFm.avg_winrate)  || 0;
+      const syms  = typeof smFm.top_symbols === "string" ? smFm.top_symbols.trim() : "";
+      if (count > 0) {
+        const wrPart  = wr > 0 ? ` avg wr ${(wr*100).toFixed(0)}%` : "";
+        const symPart = syms ? ` | recent: ${syms}` : "";
+        sections.push(`Smart money: ${count} wallets${wrPart}${symPart}`);
+      }
+    } catch { /* skip */ }
+
+    // ── 4. Risk ───────────────────────────────────────────────────────────────
+    try {
+      const rugFm = _readFileFrontmatter(path.join(vaultDir, "40-RugPatterns", "_active.md"));
+      const blFm  = _readFileFrontmatter(path.join(vaultDir, "20-Devs", "_blacklist.md"));
+      const rugCount = (Number(rugFm.seed_count) || 0) + (Number(rugFm.learned_count) || 0);
+      const blCount  = Number(blFm.total) || 0;
+      const pending  = Number(rugFm.pending_review) || 0;
+      const critical = Number(blFm.critical) || 0;
+      const riskParts = [];
+      if (rugCount > 0) riskParts.push(`${rugCount} rug patterns${pending > 0 ? ` (${pending} pending review)` : ""}`);
+      if (blCount > 0)  riskParts.push(`${blCount} dev blacklist${critical > 0 ? ` (${critical} CRITICAL)` : ""}`);
+      if (riskParts.length > 0) sections.push(`Risk: ${riskParts.join(" | ")}`);
+    } catch { /* skip */ }
+
+    // ── 5. Operator config ────────────────────────────────────────────────────
+    try {
+      const fm = parseFrontmatter(fs.readFileSync(notesFile, "utf8"));
+      const parts = [];
+      if (fm.pause_trading === true) parts.push("⛔ TRADING PAUSED");
+      if (typeof fm.focus_narrative === "string" && fm.focus_narrative) parts.push(`focus=${fm.focus_narrative}`);
+      if (Array.isArray(fm.blacklist_tokens) && fm.blacklist_tokens.length > 0)
+        parts.push(`blacklist=${fm.blacklist_tokens.join(",")}`);
+      if (Array.isArray(fm.blacklist_narratives) && fm.blacklist_narratives.length > 0)
+        parts.push(`avoid=${fm.blacklist_narratives.join(",")}`);
+      if (typeof fm.notes === "string" && fm.notes.trim()) parts.push(fm.notes.trim());
+      if (parts.length > 0) sections.push(`Operator: ${parts.join(" | ")}`);
+    } catch { /* skip */ }
+
+    // ── 6. Operator Lessons ───────────────────────────────────────────────────
+    try {
+      const lessonsBody = _readFileBody(path.join(vaultDir, "operator-lessons.md"));
+      if (lessonsBody && lessonsBody.length > 20) {
+        // Cap at 1200 chars to keep prompt manageable
+        const capped = lessonsBody.length > 1200 ? lessonsBody.slice(0, 1197) + "…" : lessonsBody;
+        sections.push(`OPERATOR LESSONS:\n${capped}`);
+      }
+    } catch { /* skip */ }
+
+    // ── 7. Money Management Rules ─────────────────────────────────────────────
+    try {
+      const mmBody = _readFileBody(path.join(vaultDir, "08-MoneyManagement", "sizing-guidance.md"));
+      if (mmBody && mmBody.length > 20) {
+        const capped = mmBody.length > 800 ? mmBody.slice(0, 797) + "…" : mmBody;
+        sections.push(`MONEY MANAGEMENT:\n${capped}`);
+      }
+    } catch { /* skip */ }
+
+    // ── 8. Recent decisions ───────────────────────────────────────────────────
+    try {
+      const decDir = path.join(vaultDir, "05-Decisions");
+      const files  = fs.readdirSync(decDir)
+        .filter(f => f.endsWith(".md") && !f.startsWith("_"))
+        .sort().reverse().slice(0, 2);
+      const parts = [];
+      for (const f of files) {
+        const dm = f.match(/(\d{4}-\d{2}-\d{2})/);
+        const date = dm ? dm[1] : f.replace(/\.md$/, "");
+        parts.push(date);
+      }
+      if (parts.length > 0) sections.push(`Decision log: ${parts.join(", ")}`);
+    } catch { /* skip */ }
+
+    _intelCache = sections.length === 0
+      ? null
+      : `[VAULT INTELLIGENCE]\n${sections.join("\n")}\n[/VAULT INTELLIGENCE]`;
+    _intelCacheTs = Date.now();
+  } catch {
+    _intelCache = null;
+    _intelCacheTs = Date.now();
+  }
+  return _intelCache;
+}
+
+export function _resetVaultIntelligenceCache() { _intelCache = null; _intelCacheTs = 0; }
+
 // ─── Chain overrides (50-Chains/) ────────────────────────────────────────────
 // Reads 50-Chains/chain-overrides.md frontmatter.
 // preferred_strategy_<chain> → use this strategy preset for that chain's tokens
