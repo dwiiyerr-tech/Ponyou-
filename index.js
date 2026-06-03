@@ -197,6 +197,7 @@ import { StrategyEvolutionBus } from "./strategy-evolution-bus.js";
 import { StrategyRegistry } from "./strategy-registry.js";
 import { StrategyGate } from "./strategy-gate.js";
 import { StrategyProposal } from "./strategy-proposal.js";
+import { VaultProposalEngine } from "./agents/vault-proposal.js";
 import { StrategyComposer } from "./strategy-composer.js";
 import { FundamentalStrategyProducer } from "./fundamental-strategy-producer.js";
 import { StrategyRuntimeSelector, setRuntimeSelector } from "./strategy-runtime-selector.js";
@@ -468,6 +469,12 @@ let _fundamentalProducer = null;
 let _evolutionEngine = null; // module-level for degradation cron access
 let _strategyRegistry = null; // module-level so Telegram + dashboard can read evolved list
 let _strategyProposal = null; // module-level for /approve_UUID /reject_UUID Telegram handlers
+let _vaultProposal = null;    // module-level for /approve_vault_* /reject_vault_* handlers
+
+// ── Vault Proposal Engine — bot mengajukan lesson/insight baru ke operator ──
+_vaultProposal = new VaultProposalEngine({ sendTelegram: sendHTML });
+_vaultProposal.restorePending();
+
 if (config.strategy?.evolution?.enabled) {
   _strategyRegistry = new StrategyRegistry({ persistPath: "./data/strategy-registry.json" });
   const _strategyBus = new StrategyEvolutionBus({ maxQueue: config.strategy.evolution.maxCandidateQueue ?? 5 });
@@ -939,7 +946,7 @@ async function handleStrategyTelegramCommand(text) {
       `<b>Daily Guard</b> · ${htmlEscape(dailyGuard)}`,
       `<b>Plan</b> · ${planLine}`,
       fmt.divider(),
-      fmt.it("/strategy /strategies /stratset /health /feature /confirm /dailyguard /auto /dayphase /devcheck /agent /pending /yes /no /pnl /status /plan /resetplan"),
+      fmt.it("/strategy /strategies /stratset /health /feature /confirm /dailyguard /auto /dayphase /devcheck /agent /pending /yes /no /pnl /status /plan /resetplan /vault_proposals"),
     ];
     await sendHTML(lines.join("\n"));
     return true;
@@ -5499,6 +5506,16 @@ export function startCronJobs() {
   // Continuous Learning (setiap 30 menit, offset +2 agar tidak tabrakan)
   tasks.push(cron.schedule("2,32 * * * *", runContinuousLearningCycle));
 
+  // Vault Proposal Engine — bot analyze data, generate proposals ke operator via Telegram
+  // Setiap 6 jam (offset 15 agar tidak bertabrakan dengan cron lain)
+  tasks.push(cron.schedule("15 */6 * * *", async () => {
+    if (!_vaultProposal) return;
+    try {
+      const count = await _vaultProposal.analyze();
+      if (count > 0) log("vault_proposal", `Cron: submitted ${count} proposal(s) to operator`);
+    } catch (e) { log("vault_proposal_error", `Cron analyze failed: ${e.message}`); }
+  }));
+
   // Market Rug Harvester (tiap 4 jam — proactive learn rug patterns from market)
   tasks.push(cron.schedule("0 */4 * * *", () => {
     harvestMarketRugs({ source_tokens: 30, max_record: 10 })
@@ -5913,6 +5930,41 @@ export async function handleIncomingTelegramMessage(msg) {
       `Signal Source · ${tgSignalLine}`,
     ].join("\n");
     await sendHTML(message);
+    return;
+  }
+
+  // ── Vault Proposal Approval ──
+  // Format: /approve_vault_XXXXXXXX or /reject_vault_XXXXXXXX
+  if (text.startsWith("/approve_vault_") || text.startsWith("/reject_vault_")) {
+    const approved = text.startsWith("/approve_vault_");
+    const id = text.replace(/^\/(approve|reject)_vault_/, "vault_");
+    if (_vaultProposal) {
+      const handled = await _vaultProposal.handleResponse(id, approved);
+      if (!handled) await sendHTML(`⚠️ Vault proposal <code>${id}</code> tidak ditemukan atau sudah resolved.`);
+    } else {
+      await sendHTML("Vault Proposal Engine tidak aktif.");
+    }
+    return;
+  }
+
+  // ── /vault_proposals — list pending vault proposals ──
+  if (text === "/vault_proposals" || text === "/proposals") {
+    if (_vaultProposal) {
+      const dash = _vaultProposal.getDashboard();
+      const lines = [`📚 <b>Vault Proposals</b>`, ``];
+      if (dash.pending_count === 0) {
+        lines.push(`Tidak ada proposal pending.`);
+      } else {
+        lines.push(`<b>${dash.pending_count} pending:</b>`);
+        for (const p of dash.pending) {
+          lines.push(`• [${p.type}] ${p.lesson_preview}…`);
+          lines.push(`  <code>/approve_${p.id}</code> | <code>/reject_${p.id}</code>`);
+        }
+      }
+      lines.push(``);
+      lines.push(`History: ${dash.approved} approved, ${dash.rejected} rejected`);
+      await sendHTML(lines.join("\n"));
+    }
     return;
   }
 

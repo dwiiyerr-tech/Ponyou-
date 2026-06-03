@@ -42,6 +42,8 @@ const ALLOWED_SLASH_CMDS = new Set([
   "/pending", "/no", "/yes", "/metrics", "/kill", "/unkill", "/killstate",
   "/wallets", "/pnl", "/status", "/health", "/feature", "/devcheck", "/dayphase",
   "/skills", "/promoteskill", "/rejectskill", "/skillweight",
+  "/vault_proposals", "/proposals",
+  "/approve_vault", "/reject_vault",
 ]);
 
 export function createApiRouter() {
