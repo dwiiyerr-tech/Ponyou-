@@ -215,9 +215,93 @@ async function analyzeAdaptiveRisk() {
 export class VaultProposalEngine {
   #sendTelegram;
   #pending = new Map(); // id → { resolve, timer, proposal }
+  #getConfig;           // optional fn() → config — for proposal gate check
 
-  constructor({ sendTelegram }) {
+  constructor({ sendTelegram, getConfig = null }) {
     this.#sendTelegram = sendTelegram;
+    this.#getConfig = getConfig;
+  }
+
+  // Check if proposal gate is enabled (requires operator approve)
+  // When false: auto-apply all proposals without Telegram approval
+  #isGateEnabled() {
+    try {
+      const cfg = this.#getConfig?.();
+      if (cfg?.vault?.proposalEnabled === false) return false;
+    } catch {}
+    return true; // default: gate ON (safe)
+  }
+
+  // ── NotebookLM query → generate proposals from AI analysis ──────────────
+  async analyzeWithNotebookLM(notebookId) {
+    try {
+      const { nlmAsk, isNlmConfigured } = await import("../tools/notebooklm.js");
+      if (!isNlmConfigured()) {
+        log("vault_proposal", "NotebookLM not configured — skipping NLM analysis");
+        return 0;
+      }
+
+      const questions = [
+        "Berdasarkan data ini, pola atau karakteristik token apa yang paling konsisten menguntungkan? Jawab dalam 1-2 kalimat singkat.",
+        "Apakah ada narrative atau kategori token yang harus dihindari karena sering rugi atau rug? Jawab dalam 1 kalimat.",
+        "Instruksi spesifik apa yang harus ditambahkan ke operator lessons untuk meningkatkan win rate? Jawab dalam 1-2 instruksi konkret.",
+        "Apakah ada peringatan risiko yang terdeteksi dari data trading ini? Jawab singkat.",
+      ];
+
+      const proposals = [];
+      for (const q of questions) {
+        const result = await nlmAsk(notebookId, q);
+        if (!result?.answer || result.answer.length < 20) continue;
+
+        const lesson = `[NotebookLM] ${result.answer.trim()}`;
+        proposals.push({
+          type: "lesson",
+          tag: `nlm:${contentHash(q).slice(0, 6)}`,
+          confidence: 0.75,
+          trades: 0,
+          lesson,
+          reason: `Analisis NotebookLM atas pertanyaan: "${q.slice(0, 60)}..."`,
+          data: { question: q, answer: result.answer },
+        });
+      }
+
+      if (proposals.length === 0) return 0;
+
+      let submitted = 0;
+      const state = loadState();
+      const gateEnabled = this.#isGateEnabled();
+      const now = Date.now();
+
+      for (const p of proposals) {
+        const hash = contentHash(p.lesson);
+        if (state.history.some(h => h.hash === hash)) continue;
+        if (Object.values(state.pending).some(pend => pend.hash === hash)) continue;
+
+        const id = `vault_${crypto.randomUUID().slice(0, 8)}`;
+        const proposal = { id, hash, ...p, ts: now, status: "pending", source: "notebooklm" };
+
+        if (!gateEnabled) {
+          proposal.status = "auto_approved";
+          proposal.resolvedAt = now;
+          state.history.push(proposal);
+          saveState(state);
+          await this._applyProposal(proposal);
+          submitted++;
+          continue;
+        }
+
+        state.pending[id] = proposal;
+        saveState(state);
+        await this._sendProposal(proposal);
+        submitted++;
+      }
+
+      log("vault_proposal", `NotebookLM analysis: ${submitted} proposals from ${questions.length} questions`);
+      return submitted;
+    } catch (e) {
+      log("vault_proposal_error", `analyzeWithNotebookLM failed: ${e.message}`);
+      return 0;
+    }
   }
 
   // ── Analyze + propose ────────────────────────────────────────────────────
@@ -234,6 +318,7 @@ export class VaultProposalEngine {
       ...(await analyzeAdaptiveRisk()),
     ];
 
+    const gateEnabled = this.#isGateEnabled();
     let submitted = 0;
     for (const p of rawProposals) {
       const hash = contentHash(p.lesson);
@@ -252,6 +337,18 @@ export class VaultProposalEngine {
 
       const id = `vault_${crypto.randomUUID().slice(0, 8)}`;
       const proposal = { id, hash, ...p, ts: now, status: "pending" };
+
+      // Gate OFF → auto-apply immediately without Telegram approval
+      if (!gateEnabled) {
+        proposal.status = "auto_approved";
+        proposal.resolvedAt = now;
+        state.history.push(proposal);
+        saveState(state);
+        await this._applyProposal(proposal);
+        log("vault_proposal", `Auto-applied (gate off): "${proposal.lesson.slice(0, 60)}"`);
+        submitted++;
+        continue;
+      }
 
       state.pending[id] = proposal;
       saveState(state);

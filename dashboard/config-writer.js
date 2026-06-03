@@ -72,6 +72,7 @@ const ALLOWED_KEYS = new Set([
   "dayPhaseScreenerEnabled",
   "stagedEntryEnabled", "stagedEntryStages", "stagedEntryTrigger",
   "strategyEvolutionEnabled", "runtimeSelectorMode",
+  "strategyProposalEnabled", "vaultProposalEnabled",
   "menuEnabled", "logLevel",
   "screening", "execution", "filters",
   "blocklist", "watchlist", "wallets", "trashWallets",

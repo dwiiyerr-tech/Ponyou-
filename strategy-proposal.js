@@ -49,6 +49,7 @@ export class StrategyProposal {
   #autoApproveMinGateRate;
   #autoApproveMinMaturityDays;
   #proposalTimeoutMs;
+  #proposalEnabled;   // when false: skip Telegram gate, auto-approve everything
   #pending = new Map();
 
   constructor({
@@ -57,12 +58,14 @@ export class StrategyProposal {
     autoApproveMinGateRate = DEFAULT_AUTO_APPROVE_MIN_GATE,
     autoApproveMinMaturityDays = DEFAULT_AUTO_APPROVE_MATURITY,
     proposalTimeoutMs = DEFAULT_PROPOSAL_TIMEOUT_MS,
+    proposalEnabled = true,
   }) {
     this.#sendTelegram = sendTelegram;
     this.#autoApproveConvictionMin = autoApproveConvictionMin;
     this.#autoApproveMinGateRate = autoApproveMinGateRate;
     this.#autoApproveMinMaturityDays = autoApproveMinMaturityDays;
     this.#proposalTimeoutMs = proposalTimeoutMs;
+    this.#proposalEnabled = proposalEnabled;
   }
 
   formatMessage({ id, name, type, conviction, scores, evidence, regime, reason } = {}) {
@@ -138,6 +141,13 @@ export class StrategyProposal {
   async submit(candidate) {
     const { id, conviction, scores } = candidate || {};
     const decision = this.#autoApprovalDecision(candidate);
+
+    // proposalEnabled=false: skip gate entirely, auto-approve all proposals
+    if (!this.#proposalEnabled) {
+      const msg = `[AUTO-APPLIED — gate off] ${candidate.name}\nConviction ${pct(conviction)}\nUse /proposals_on to re-enable approval gate.`;
+      await this.#sendTelegram(msg).catch(() => {});
+      return { id, autoApproved: true, status: "approved", gateDisabled: true, decision };
+    }
 
     if (decision.ok) {
       const msg = [

@@ -1,5 +1,8 @@
 import { Router } from "express";
 import crypto from "crypto";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { readConfig, writeConfig } from "../config-writer.js";
 import { writeWalletKeys, walletKeyStatus, WALLET_ENV_PATTERN, gmgnKeyStatus, writeGmgnPrivateKey } from "../env-writer.js";
 import { stripSensitive } from "../sensitive.js";
@@ -106,6 +109,63 @@ export function createWizardRouter() {
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
+  });
+
+  // GET /wizard/notebooklm-status
+  // Returns: { configured: bool, email: string|null, storage_path: string }
+  router.get("/notebooklm-status", async (req, res) => {
+    const storagePath = process.env.PONYOU_NLM_STORAGE
+      || path.join(os.homedir(), ".notebooklm", "profiles", "default", "storage_state.json");
+    try {
+      if (!fs.existsSync(storagePath)) {
+        return res.json({ configured: false, email: null, storage_path: storagePath });
+      }
+      let email = null;
+      try {
+        const raw = fs.readFileSync(storagePath, "utf8");
+        const state = JSON.parse(raw);
+        // Playwright storage_state: cookies or origins may contain account info
+        const cookies = state?.cookies ?? [];
+        const accountCookie = cookies.find(c => c.name && c.name.toLowerCase().includes("email"));
+        if (accountCookie) email = accountCookie.value;
+        // Also try origins → localStorage for email-like values
+        if (!email && Array.isArray(state?.origins)) {
+          for (const origin of state.origins) {
+            for (const entry of (origin.localStorage ?? [])) {
+              if (typeof entry.value === "string" && entry.value.includes("@")) {
+                email = entry.value;
+                break;
+              }
+            }
+            if (email) break;
+          }
+        }
+      } catch {
+        // Ignore parse errors; file exists = configured
+      }
+      res.json({ configured: true, email, storage_path: storagePath });
+    } catch (e) {
+      res.status(500).json({ configured: false, email: null, storage_path: storagePath, error: e.message });
+    }
+  });
+
+  // POST /wizard/notebooklm-auth-guide
+  // Returns: { ok: true, guide: string[], storage_path: string }
+  // Explains HOW to do auth (step by step instructions)
+  router.post("/notebooklm-auth-guide", (req, res) => {
+    const storagePath = process.env.PONYOU_NLM_STORAGE
+      || path.join(os.homedir(), ".notebooklm", "profiles", "default", "storage_state.json");
+    res.json({
+      ok: true,
+      storage_path: storagePath,
+      guide: [
+        "1. Install playwright: pip3 install playwright && playwright install chromium",
+        "2. Run: notebooklm auth login",
+        "3. Browser akan terbuka → login dengan Google account kamu",
+        "4. Setelah login berhasil → close browser",
+        "5. Kembali ke wizard dan klik 'Check Auth Status'",
+      ],
+    });
   });
 
   router.get("/test-telegram", async (req, res) => {

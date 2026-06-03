@@ -96,6 +96,9 @@ export function buildVaultConfig(u = {}, env = process.env) {
     // injects rich multi-source context (chain intel, narrative heat, strategy performance,
     // operator lessons, money management rules) into the LLM screening prompt.
     intelligenceEnabled: Boolean(u.vaultIntelligenceEnabled ?? false),
+    // Proposal gate: when true, vault proposals require operator approve via Telegram.
+    // When false, proposals are auto-applied immediately without approval.
+    proposalEnabled: u.vaultProposalEnabled !== false, // default: gate ON (safe)
     sweep: {
       enabled,
       sweepPct,
@@ -612,6 +615,7 @@ export const config = {
       minLiveTrades:              u.strategyMinLiveTrades       ?? 20,
       paperTradeTimeoutDays:      u.strategyPaperTimeoutDays    ?? 7,
       proposalTimeoutHours:       u.strategyProposalTimeout     ?? 24,
+      proposalEnabled:            u.strategyProposalEnabled      ?? true,   // false = auto-apply without Telegram approval
       autoApproveConvictionMin:   u.strategyAutoApprove         ?? 0.95,
       degradationThreshold:       u.strategyDegradation         ?? 0.75,
       maxCandidateQueue:          u.strategyMaxQueue            ?? 5,

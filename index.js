@@ -472,7 +472,10 @@ let _strategyProposal = null; // module-level for /approve_UUID /reject_UUID Tel
 let _vaultProposal = null;    // module-level for /approve_vault_* /reject_vault_* handlers
 
 // ── Vault Proposal Engine — bot mengajukan lesson/insight baru ke operator ──
-_vaultProposal = new VaultProposalEngine({ sendTelegram: sendHTML });
+_vaultProposal = new VaultProposalEngine({
+  sendTelegram: sendHTML,
+  getConfig: () => config,  // allows proposal gate toggle without restart
+});
 _vaultProposal.restorePending();
 
 if (config.strategy?.evolution?.enabled) {
@@ -484,6 +487,8 @@ if (config.strategy?.evolution?.enabled) {
     autoApproveConvictionMin:   config.strategy.evolution.autoApproveConvictionMin ?? 0.95,
     autoApproveMinMaturityDays: config.strategy.fundamentalProducer?.minDataAgeDays ?? 30,
     proposalTimeoutMs:          (config.strategy.evolution.proposalTimeoutHours ?? 24) * 60 * 60 * 1000,
+    // proposalEnabled gate: when false, strategy proposals auto-apply without Telegram approval
+    proposalEnabled:            config.strategy.evolution.proposalEnabled !== false,
   });
   const _strategyComposer = new StrategyComposer({
     registry: _strategyRegistry,
@@ -5516,10 +5521,13 @@ export function startCronJobs() {
     } catch (e) { log("vault_proposal_error", `Cron analyze failed: ${e.message}`); }
   }));
 
-  // NotebookLM Export — generate export file setiap 6 jam (offset 30)
-  // File bisa di-upload manual ke NotebookLM atau dibaca via GitHub URL
+  // NotebookLM Export + Query cycle (setiap 6 jam, offset 30)
+  // 1. Generate export markdown
+  // 2. Upload ke NotebookLM notebook "Ponyou Brain" (jika auth tersedia)
+  // 3. Query NotebookLM → generate vault proposals dari analisis AI
   tasks.push(cron.schedule("30 */6 * * *", async () => {
     try {
+      // Step 1: generate export file
       const { execFile } = await import("child_process");
       const { promisify } = await import("util");
       const execFileAsync = promisify(execFile);
@@ -5527,7 +5535,32 @@ export function startCronJobs() {
         cwd: process.cwd(), timeout: 30_000,
       });
       log("notebooklm", "Export updated: ponyou-brain/notebooklm-export.md");
-    } catch (e) { log("notebooklm_error", `Export failed: ${e.message}`); }
+
+      // Step 2+3: upload + query NotebookLM if configured
+      const { isNlmConfigured, nlmFindOrCreate, nlmUploadText, nlmAsk } = await import("./tools/notebooklm.js");
+      if (!isNlmConfigured()) {
+        log("notebooklm", "Not authenticated — skipping NotebookLM upload/query");
+        return;
+      }
+
+      const fs = await import("fs");
+      const exportPath = "/home/ubuntu/ponyou-brain/notebooklm-export.md";
+      const exportContent = fs.readFileSync(exportPath, "utf8");
+
+      // Find or create the Ponyou notebook
+      const nb = await nlmFindOrCreate("Ponyou Brain");
+      if (!nb?.notebook_id) { log("notebooklm_error", "Could not find/create notebook"); return; }
+
+      // Upload latest export (replace if exists)
+      const uploaded = await nlmUploadText(nb.notebook_id, `Ponyou Export ${new Date().toISOString().slice(0, 10)}`, exportContent);
+      if (uploaded) {
+        log("notebooklm", `Uploaded export to notebook ${nb.notebook_id.slice(0, 8)}`);
+        // Step 3: query and generate proposals
+        if (_vaultProposal) {
+          await _vaultProposal.analyzeWithNotebookLM(nb.notebook_id);
+        }
+      }
+    } catch (e) { log("notebooklm_error", `Cycle failed: ${e.message}`); }
   }));
 
   // Market Rug Harvester (tiap 4 jam — proactive learn rug patterns from market)
@@ -5979,6 +6012,35 @@ export async function handleIncomingTelegramMessage(msg) {
       lines.push(`History: ${dash.approved} approved, ${dash.rejected} rejected`);
       await sendHTML(lines.join("\n"));
     }
+    return;
+  }
+
+  // /proposals_on / /proposals_off — toggle proposal approval gate
+  if (text === "/proposals_on" || text === "/proposals_off") {
+    const enable = text === "/proposals_on";
+    const { writeConfig } = await import("./dashboard/config-writer.js");
+    writeConfig({ strategyProposalEnabled: enable, vaultProposalEnabled: enable });
+    await sendHTML(
+      enable
+        ? `✅ <b>Proposal Gate ON</b>\nStrategy & vault proposals akan meminta approve sebelum diapply.`
+        : `⚡ <b>Proposal Gate OFF</b>\nStrategy & vault proposals akan auto-apply tanpa approve.\n<i>Gunakan hati-hati — perubahan langsung aktif.</i>`
+    );
+    return;
+  }
+
+  // /proposals_status — lihat status proposal gate
+  if (text === "/proposals_status") {
+    const { readConfig: _readCfg } = await import("./dashboard/config-writer.js");
+    const cfg = _readCfg();
+    const stratEnabled = cfg.strategyProposalEnabled !== false;
+    const vaultEnabled = cfg.vaultProposalEnabled !== false;
+    await sendHTML([
+      `📋 <b>Proposal Gate Status</b>`,
+      `Strategy proposals: ${stratEnabled ? "🟢 ON (butuh approve)" : "⚡ OFF (auto-apply)"}`,
+      `Vault proposals: ${vaultEnabled ? "🟢 ON (butuh approve)" : "⚡ OFF (auto-apply)"}`,
+      ``,
+      `Toggle: /proposals_on | /proposals_off`,
+    ].join("\n"));
     return;
   }
 

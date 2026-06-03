@@ -42,7 +42,8 @@ const ALLOWED_SLASH_CMDS = new Set([
   "/pending", "/no", "/yes", "/metrics", "/kill", "/unkill", "/killstate",
   "/wallets", "/pnl", "/status", "/health", "/feature", "/devcheck", "/dayphase",
   "/skills", "/promoteskill", "/rejectskill", "/skillweight",
-  "/vault_proposals", "/proposals",
+  "/vault_proposals", "/proposals", "/proposals_status",
+  "/proposals_on", "/proposals_off",
   "/approve_vault", "/reject_vault",
 ]);
 
@@ -177,6 +178,8 @@ export function createApiRouter() {
       sellSim: "sellSimEnabled",
       rugAnomaly: "rugAnomalyEnabled",
       darwin: "darwinEnabled",
+      strategyProposal: "strategy.evolution.proposalEnabled",
+      vaultProposal: "vault.proposalEnabled",
     };
     if (!FEATURES[feature]) return res.status(400).json({ error: "Unknown feature" });
     const current = readConfig();
