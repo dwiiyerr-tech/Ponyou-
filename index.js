@@ -23,20 +23,20 @@ import { initOrchestratorAgent, runOrchestratorCycle, setFullAutomationMode, get
 import { runAutomationQualification, checkAutomationQualification, isAutomationActive, guardAutomatedDecision, getAutomationState, approveAutomation, rejectAutomation, revokeAutomation } from "./agents/automation-rules.js";
 import { initProOrchestrator, isProModeActive, isProValidationMode, getProDashboard, proBuyDecision, proSellDecision, proCutlossDecision, proCastNetDecision, runProAnalysis, validateStrategyReadiness } from "./agents/pro-orchestrator.js";
 import { checkWalletSignals, getWalletTierStats, discoverWalletTiers, TIER_CONFIG } from "./tools/wallet-tiers.js";
-import { log } from "./logger.js";
+import { log, captureUncaught } from "./logger.js";
+captureUncaught(); // register process-level error handlers for Doctor diagnostics
 import { getWalletBalances } from "./tools/wallet.js";
 import { applyFeeEntryGuard, getSolanaGasFee, shouldSkipEntriesForGasFee } from "./tools/solana-rpc.js";
 import { discoverTokens, getTokenSecurityDetails, getTokenKlines } from "./tools/dexscreener.js";
 import { preSwapGuard, swapToken } from "./tools/jupiter.js";
-import { executeGmgnSwap } from "./tools/gmgnSwap.js";
 import { GMGN_CHAINS } from "./tools/gmgn.js";
 
-// Chain-aware sell for deterministic exits (SL/TP/trailing). These bypass the
-// executeTool dispatcher and call the DEX directly, so they must route EVM
-// positions to GMGN themselves. Solana (chain absent/"sol") stays on Jupiter.
+// Chain-aware sell for deterministic exits (SL/TP/trailing/rug).
+// _bypass_kill_switch: deterministic exits are PROTECTIVE — they must close
+// positions even when the operator has triggered /kill (which was likely
+// triggered because of the same rug/loss that's being exited now).
 function sellByChain(args) {
-  const chain = (args?.chain || "sol").toLowerCase();
-  return chain === "sol" ? swapToken(args) : executeGmgnSwap(args);
+  return executeTrade({ ...args, _bypass_kill_switch: true });
 }
 import { config, computeDeployAmount, computeVolatilityAdjustedSize } from "./config.js";
 import { computeRegimeSizeMultiplier } from "./market-safety.js";
@@ -48,7 +48,7 @@ import {
 import { analyzeHolderStructure } from "./holder-memory.js";
 import { summarizeSmartWalletHistory } from "./smart-wallet-history.js";
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
-import { executeTool, registerCronRestarter, registerPonyouControls, selectFilledExecutions } from "./tools/executor.js";
+import { executeTool, executeTrade, registerCronRestarter, registerPonyouControls, selectFilledExecutions } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape, handleCallMessage } from "./telegram.js";
 import { startUserClient, stopUserClient, isUserClientEnabled, getUserClientStatus } from "./telegram-user-client.js";
 import { startHunter, stopHunter, getSocialScore } from "./social-hunter.js";
@@ -184,7 +184,7 @@ import {
   analyzeMomentum, checkEntryConfirmation,
   checkTrendBreakExit, getMomentumScore,
 } from "./momentum-analysis.js";
-import { resolveExecutionMode, demoStrictGates } from "./runtime-mode.js";
+import { resolveExecutionMode } from "./runtime-mode.js";
 import {
   recordTrade as recordTradingPlanTrade, isSessionComplete,
   getTradingPlanStatus, resetTradingPlan, isTradingPlanEnabled,
@@ -219,11 +219,7 @@ log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " — paper
 import("./paper-wallet.js").then(({ isPaperMode, getPaperStartSol }) => {
   if (isPaperMode()) {
     log("startup", `📝 PAPER WALLET active — virtual balance ${getPaperStartSol()} SOL (fake). Trades simulate; balance derives from open positions.`);
-    log("startup", "🧪 Learning isolated to demo/ — paper trades train a separate corpus; live memory untouched.");
-  }
-  // Independent of paper mode: strict gates can be on with a real-wallet demo too.
-  if (executionMode.isDemo && demoStrictGates()) {
-    log("startup", "🔒 DEMO_STRICT_GATES on — confirmMode approval + balance safety-check run in demo (live-fidelity).");
+    log("startup", "🧠 Learning shared with live — lessons, rug-memory, conviction, patterns accumulate here. Switch to live when readiness gate passes.");
   }
 }).catch(() => {});
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
@@ -1550,16 +1546,53 @@ async function handleStrategyTelegramCommand(text) {
   }
 
   if (cmd === "/wallets") {
+    // Subcommand: /wallets on|off → toggle multi-wallet mode (persists to
+    // user-config.json; takes effect after restart since config is pinned at start).
+    const sub = (parts[1] || "").toLowerCase();
+    if (sub === "on" || sub === "off") {
+      const enable = sub === "on";
+      // Persist to user-config.json (same direct pattern as /chains).
+      // Config is pinned at process start, so this takes effect after restart.
+      try {
+        const { default: fs } = await import("fs");
+        const { default: path } = await import("path");
+        const { fileURLToPath } = await import("url");
+        const ucPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "user-config.json");
+        let uc = {};
+        try { if (fs.existsSync(ucPath)) uc = JSON.parse(fs.readFileSync(ucPath, "utf8")); } catch {}
+        uc.multiWalletEnabled = enable;
+        atomicWriteJson(ucPath, uc);
+      } catch (e) {
+        await sendHTML(`❌ Gagal menyimpan: ${htmlEscape(e.message)}`);
+        return true;
+      }
+      const cfgWallets = Array.isArray(config.multiWallet?.wallets) ? config.multiWallet.wallets : [];
+      const lines = [
+        `💼 <b>Multi-Wallet: ${enable ? "ON" : "OFF"}</b>`,
+        ``,
+        enable
+          ? (cfgWallets.length >= 2
+              ? `✓ ${cfgWallets.length} wallet slot terkonfigurasi`
+              : `⚠️ Hanya ${cfgWallets.length} slot — tambahkan minimal 2 wallet di <code>user-config.json</code> "wallets" + set key di .env (WALLET_KEY_1..10)`)
+          : `Mode single-wallet aktif (pakai WALLET_PRIVATE_KEY)`,
+        ``,
+        fmt.it("⟳ RESTART bot agar perubahan berlaku — config di-pin saat start."),
+      ];
+      await sendHTML(lines.join("\n"));
+      return true;
+    }
+
     const wallets = getAllWallets();
     if (!wallets.length || !isMultiWalletEnabled()) {
       const active = getActiveWallet();
       await sendHTML(
         `💼 <b>Wallets</b> · Single-wallet mode\n` +
-        (active ? `<code>${htmlEscape(active.address.slice(0, 20))}…</code>` : fmt.it("tidak terkonfigurasi"))
+        (active ? `<code>${htmlEscape(active.address.slice(0, 20))}…</code>` : fmt.it("tidak terkonfigurasi")) +
+        `\n\n${fmt.it("/wallets on — aktifkan multi-wallet")}`
       );
       return true;
     }
-    const lines = [`💼 <b>Wallets</b>`, fmt.divider()];
+    const lines = [`💼 <b>Wallets</b> · Multi-wallet`, fmt.divider()];
     for (const w of wallets) {
       const icon = w.status === "hot" ? "🟢" : w.status === "cold" ? "🔴" : "⚫";
       const activeTag = w.is_active ? " ← <b>aktif</b>" : "";
@@ -1569,6 +1602,7 @@ async function handleStrategyTelegramCommand(text) {
       lines.push(`${icon} ${htmlEscape(w.label)} · ${w.capital_pct}% · err:${w.error_count}${coldStr}${activeTag}`);
       lines.push(`   <code>${htmlEscape(w.address.slice(0, 20))}…</code>`);
     }
+    lines.push(``, fmt.it("/wallets off — kembali ke single-wallet"));
     await sendHTML(lines.join("\n"));
     return true;
   }
@@ -3249,6 +3283,8 @@ TUGAS:
               // Demo returns it raw too (JUP-DRY-1), so the simulated exit PnL is
               // accurate — the bot LEARNS from paper trades as well as live. We
               // only require valid entry/exit USD; mode no longer gates learning.
+              // T3-13: amount_out is in lamports (SOL = 9 decimals). Safe here
+              // because this branch is inside tokenOut === "SOL" check above.
               const exitSolAmount = Number(result.amount_out || 0) / 1e9;
               const exitUsd = exitSolAmount * solPriceUsd;
               const entryUsd = Number(trackedPos?.initial_value_usd) || 0;
@@ -3286,6 +3322,25 @@ TUGAS:
             }
             // Check if this is a BUY (token_in is SOL/wSOL)
             if (tokenIn === "SOL" || tokenIn === "So11111111111111111111111111111111111111112") {
+              // T1-1: management-LLM entries were emitted but never trackPosition'd,
+              // so SL/TP/trailing/rug-exit never applied to these positions.
+              // Track now using the same data available in this closure.
+              const mgmtSolPrice = Number(remainingBalance?.sol_price) || 0;
+              await trackPosition({
+                position: tokenOut,
+                pool: "management-llm",
+                pool_name: result.symbol || tokenOut?.slice(0, 8),
+                amount_sol: result.amount,
+                initial_value_usd: (result.amount || 0) * mgmtSolPrice,
+                wallet_address: walletAddress,
+                signal_snapshot: {
+                  mint: tokenOut,
+                  symbol: result.symbol,
+                  entry_reason: "management_llm_decision",
+                  market_condition: getMarketIntelligence()?.condition || "UNKNOWN",
+                },
+              }).catch(e => log("management_warn", `trackPosition failed for LLM buy ${tokenOut?.slice(0, 8)}: ${e.message}`));
+
               // MGMT-4: include dry_run flag in entry events too, so downstream
               // listeners can distinguish demo paper-fills from real entries.
               agentBus.emit("management:llm_entry_executed", {
@@ -3703,11 +3758,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
     );
 
     // ─── Pre-fetch klines in parallel (before sequential analysis) ─────────
-    // klines were sequential (one await per token) because of Helius rate-limits.
-    // When Helius is OFF (GeckoTerminal path), there is no per-call rate-limit, so
-    // parallelizing saves ~(N-1)×15s per cycle and prevents the 90s timeout from
-    // killing the cycle mid-analysis. We fire all klines now, cache results in a
-    // Map, then consume them in the per-token loop below without re-awaiting.
+    // Klines are fired concurrently; GeckoTerminal's internal _gtQueue serializes
+    // them with a 3.1s gap so the 30/min rate-limit is respected. Parallelizing
+    // here saves ~(N-1)×3s per cycle vs sequential awaits and prevents the 90s
+    // cron timeout from killing mid-analysis. Results are cached in a Map and
+    // consumed in the per-token loop below without re-awaiting.
     const klineCache = new Map();
     if (config.indicators?.enabled) {
       const klineResolution = config.indicators.intervals?.[0] === "5_MINUTE" ? "5m" : "1m";
@@ -3929,6 +3984,24 @@ export async function runScreeningCycle({ silent = false } = {}) {
       }
       const enhancedToken = { ...token, chain: token.chain || "sol", global_fees_sol: globalFees, tier: tierInfo, _trash_flags: token._trash_flags || [] };
 
+      // ATH-proxy: compute dip_from_ath_pct from kline window-high when CoinGecko
+      // data is unavailable (most new memecoins). This makes the dip_buy preset's
+      // max_ath_distance_pct gate enforceable instead of silently skipped.
+      // Tagged _ath_estimate_source="kline_high" so it's distinguishable from the
+      // true-ATH path (CoinGecko overwrites this at line ~4155 if available).
+      if (enhancedToken.dip_from_ath_pct == null) {
+        const kc = klineCache.get(token.mint);
+        const candles = Array.isArray(kc?.candles) ? kc.candles : [];
+        const price = Number(enhancedToken.price) || 0;
+        if (candles.length > 0 && price > 0) {
+          const maxHigh = candles.reduce((m, c) => Math.max(m, Number(c.high) || 0), 0);
+          if (maxHigh > 0) {
+            enhancedToken.dip_from_ath_pct = Number(((price / maxHigh - 1) * 100).toFixed(1));
+            enhancedToken._ath_estimate_source = "kline_high";
+          }
+        }
+      }
+
       const filterResult = await run4FilterProtocol(enhancedToken, security, gasFee);
 
       // ─── Technical Indicators & Momentum Analysis ────────
@@ -4076,7 +4149,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         narrativeTags,
         // social_buzz: gate-filtered Reddit/Discord/Telegram/Twitter score
         socialBuzz: config.useSocialHunter !== false
-          ? getSocialScore(token.symbol || enhancedToken?.symbol || "")
+          ? getSocialScore(token.symbol || enhancedToken?.symbol || "", token.mint || null)
           : 0,
       });
 
@@ -5002,6 +5075,10 @@ async function handleSmartWalletSwap(event) {
       return;
     }
 
+    // B4: tag the token with the active strategy so fast-track trackPosition
+    // records strategy_used correctly (analytics: geyser entries were always null).
+    if (!token.selected_strategy) token.selected_strategy = getActiveStrategyId();
+
     const activeWallet = getActiveWallet();
     const balance = await getWalletBalances(activeWallet?.address || null).catch(() => ({ sol: 0 }));
     const walletSol = isMultiWalletEnabled() && activeWallet
@@ -5010,6 +5087,26 @@ async function handleSmartWalletSwap(event) {
     const deployAmountSol = computeDeployAmount(walletSol);
     if (!(deployAmountSol > 0)) {
       log("geyser_handler_warn", `deployAmountSol=${deployAmountSol} — skip`);
+      return;
+    }
+
+    // T2-2: geyser path previously skipped canEnterToken, preSwapGuard, and
+    // simulateSell — the three safety gates the screening path runs before
+    // runFastTrackBatch. Add them here so geyser entries get the same protection.
+    const geyserStratId = getActiveStrategyId();
+    const posCheck = canEnterToken(token.mint, geyserStratId);
+    if (!posCheck.allowed) {
+      log("geyser_smart_buy", `position limit: ${posCheck.reason}`);
+      return;
+    }
+    const geyserGuard = await preSwapGuard({ mint: token.mint, amountSol: deployAmountSol });
+    if (!geyserGuard.allowed) {
+      log("geyser_smart_buy", `pre-swap guard: ${geyserGuard.reason}`);
+      return;
+    }
+    const geyserSellSim = await simulateSell(token.mint, { timeoutMs: 5000 });
+    if (geyserSellSim.can_sell === false) {
+      log("geyser_smart_buy", `sell-sim blocked: ${geyserSellSim.reason}`);
       return;
     }
 

@@ -246,7 +246,7 @@ export class StrategyRuntimeSelector {
     }
     if (!strategy) return this.#cacheAndReturn(cacheKey, null);
     if (!meetsFloor(strategy, this.#config)) {
-      this.#logger.info?.(`runtime selector: ${strategy.id} below floor (live=${strategy.scores?.live}, trades=${strategy.evidence?.live?.trades ?? "?"})`);
+      this.#logger.debug?.(`runtime selector: ${strategy.id} below floor (live=${strategy.scores?.live ?? "—"}/${strategy.evidence?.live?.trades ?? 0}tr, paper=${strategy.scores?.paper ?? "—"}/${strategy.evidence?.paper?.trades ?? 0}tr, backtest=${strategy.scores?.backtest ?? "—"}/${strategy.evidence?.backtest?.trades ?? 0}tr)`);
       return this.#cacheAndReturn(cacheKey, null);
     }
 

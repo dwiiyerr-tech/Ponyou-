@@ -9,7 +9,7 @@ import { getSharedConnection } from "./solana-rpc.js";
 import { listSmartWallets } from "../smart-wallets.js";
 import { recordSmartWalletSnapshot, summarizeSmartWalletHistory } from "../smart-wallet-history.js";
 import { analyzeHolderStructure } from "../holder-memory.js";
-import { detectBundledLaunch, gatherRugSignals, heliusAcquire, heliusRelease, heliusCircuitOpen } from "./rug-signals.js";
+import { detectBundledLaunch, gatherRugSignals, heliusAcquire, heliusRelease, heliusCircuitOpen, helius429Hit, heliusSuccess } from "./rug-signals.js";
 import { classifyNarrative, summarizeNarrative } from "./narratives.js";
 import { createCachedFetcher } from "../cache-util.js";
 import { discoverBirdeyeTokens, enrichTokensWithBirdeye, isBirdeyeEnabled } from "./birdeye.js";
@@ -89,6 +89,8 @@ function tfBucket(tf) {
 }
 
 function mapPair(pair, boostAmount = 0, timeframe = "1h") {
+  // T1-2: guard malformed pairs that crash the whole discovery loop
+  if (!pair?.baseToken?.address) return null;
   const b = tfBucket(timeframe);
   const buys  = pair.txns?.[b]?.buys  || 0;
   const sells = pair.txns?.[b]?.sells || 0;
@@ -235,12 +237,14 @@ export async function discoverTokens({ timeframe = "1m", limit = 20 } = {}) {
     // Step 3: Deduplicate by mint + enrich with pump.fun priority
     const tokenMap = new Map();
     for (const pair of pairs) {
+      if (!pair?.baseToken?.address) continue; // T1-2: skip malformed pairs
       const mint = pair.baseToken.address;
       if (mint === SOL_MINT) continue;
       const liq = pair.liquidity?.usd || 0;
       const meta = tokenSet.get(mint) || { boost: 0, source: "unknown" };
       if (!tokenMap.has(mint) || liq > (tokenMap.get(mint).liquidity || 0)) {
         const token = mapPair(pair, meta.boost, timeframe);
+        if (!token) continue; // T1-2: mapPair returned null for malformed pair
         token._discovery_source = meta.source;
         token._is_pumpfun = meta.source.includes("pumpfun") || (pair.dexId || "").toLowerCase().includes("pump");
         // pump.fun tokens get hot_level boost for being from the primary memecoin launchpad
@@ -315,11 +319,13 @@ async function discoverJupiterTokens() {
     const solPairs = pairData.pairs.filter(p => p.chainId === "solana");
     const result = [];
     for (const pair of solPairs) {
+      if (!pair?.baseToken?.address) continue; // T1-2: skip malformed pairs
       const mint = pair.baseToken.address;
       if (mint === SOL_MINT) continue;
       const liq = pair.liquidity?.usd || 0;
       if (liq < MIN_DISCOVERY_LIQUIDITY) continue;
-      result.push(mapPair(pair, 0, "24h"));
+      const mapped = mapPair(pair, 0, "24h");
+      if (mapped) result.push(mapped); // T1-2: filter nulls
     }
     return result;
   } catch {
@@ -351,6 +357,7 @@ async function discoverPumpFunTokens() {
       if (result.status !== "fulfilled" || !result.value?.pairs) continue;
       const pairs = result.value.pairs.filter(p => p.chainId === "solana");
       for (const pair of pairs) {
+        if (!pair?.baseToken?.address) continue; // T1-2: skip malformed pairs
         const dexId = (pair.dexId || "").toLowerCase();
         const isPumpFun = PUMPFUN_DEX_IDS.some(id => dexId.includes(id));
         if (!isPumpFun) continue;
@@ -360,6 +367,7 @@ async function discoverPumpFunTokens() {
         const liq = pair.liquidity?.usd || 0;
         if (liq < MIN_DISCOVERY_LIQUIDITY) continue;
         const token = mapPair(pair, 50, "1m");
+        if (!token) continue; // T1-2: filter nulls
         token._discovery_source = "pumpfun";
         token._is_pumpfun = true;
         token.hot_level = Math.max(token.hot_level, 2);
@@ -380,6 +388,7 @@ async function discoverPumpFunTokens() {
         const pairData = await fetchDS(`${DS_BASE}/latest/dex/tokens/${mintStr}`).catch(() => null);
         if (pairData?.pairs) {
           for (const pair of pairData.pairs.filter(p => p.chainId === "solana")) {
+            if (!pair?.baseToken?.address) continue; // T1-2: skip malformed pairs
             const dexId = (pair.dexId || "").toLowerCase();
             const isPumpFun = PUMPFUN_DEX_IDS.some(id => dexId.includes(id));
             if (!isPumpFun) continue;
@@ -389,6 +398,7 @@ async function discoverPumpFunTokens() {
             const liq = pair.liquidity?.usd || 0;
             if (liq < MIN_DISCOVERY_LIQUIDITY) continue;
             const token = mapPair(pair, 50, "1m");
+            if (!token) continue; // T1-2: filter nulls
             token._discovery_source = "pumpfun-profile";
             token._is_pumpfun = true;
             token.hot_level = Math.max(token.hot_level, 2);
@@ -635,6 +645,7 @@ const POOL_TTL_MS = 5 * 60_000;
 // the gap check simultaneously.
 let _gtLastCall = 0;
 let _gtQueue = Promise.resolve();
+const _klineWarnSeen = new Set();
 const GT_MIN_GAP_MS = 3100;  // ~19 req/min — safe headroom below GeckoTerminal's 30/min free limit
 
 async function gtAcquireSlot() {
@@ -661,7 +672,7 @@ async function gtFetch(url, retries = 3) {
       const res = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8000) });
       if (res.status === 429) {
         if (attempt < retries) {
-          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+          await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
           continue;
         }
         throw new Error(`HTTP 429`);
@@ -731,7 +742,11 @@ export async function getTokenKlines({ mint, pair_address = null, resolution = "
       })).sort((a, b) => a.time - b.time),
     };
   } catch (e) {
-    log("kline_warn", `GeckoTerminal kline failed for ${mint}: ${e.message}`);
+    const is429 = /429/.test(e?.message || "");
+    if (!is429 || !_klineWarnSeen.has(mint)) {
+      if (is429) _klineWarnSeen.add(mint);
+      log("kline_warn", `GeckoTerminal kline failed for ${mint}: ${e.message}`);
+    }
     return { mint, resolution, candles: [], error: e.message };
   }
 }
@@ -838,6 +853,7 @@ export async function fetchHeliusTxns(address, apiKey, limit = 50) {
       try {
         const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
         if (res.status === 429 || res.status >= 500) {
+          if (res.status === 429) helius429Hit();
           lastErr = new Error(`Helius ${res.status}`);
           if (attempt < MAX_ATTEMPTS) {
             await new Promise(r => setTimeout(r, 800 * attempt)); // 0.8s, 1.6s
@@ -846,6 +862,7 @@ export async function fetchHeliusTxns(address, apiKey, limit = 50) {
           throw lastErr;
         }
         if (!res.ok) throw new Error(`Helius ${res.status}`);
+        heliusSuccess();
         return res.json();
       } catch (e) {
         lastErr = e;
