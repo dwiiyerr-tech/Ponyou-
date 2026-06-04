@@ -703,7 +703,7 @@ export function scoreBatch(tokens, ctx = {}) {
   }
   if (stats.warned > 0) {
     const warnedSamples = tiers.WARN.slice(0, 5)
-      .map(t => `${t.symbol || t.mint?.slice(0, 6)}(${t._trash_flags?.[0] || "?"})`).join(", ");
+      .map(t => `${t.symbol || t.mint?.slice(0, 6)}(${t._trash_flags?.[0] || t._trash_reasons?.[0] || `score:${t._trash_score}`})`).join(", ");
     const warnSuffix = tiers.WARN.length > 5 ? ` +${tiers.WARN.length - 5} more` : "";
     log("trash_filter", `WARNED ${stats.warned}/${stats.total}: ${warnedSamples}${warnSuffix}`);
   }
@@ -969,7 +969,7 @@ export async function outerShieldScreen(tokens, ctx = {}) {
   }
   if (stats.warned > 0) {
     const warnedSamples2 = tiers.WARN.slice(0, 5)
-      .map(t => `${t.symbol || t.mint?.slice(0, 6)}(${t._trash_flags?.[0] || "?"})`).join(", ");
+      .map(t => `${t.symbol || t.mint?.slice(0, 6)}(${t._trash_flags?.[0] || t._trash_reasons?.[0] || `score:${t._trash_score}`})`).join(", ");
     const warnSuffix2 = tiers.WARN.length > 5 ? ` +${tiers.WARN.length - 5} more` : "";
     log("trash_filter", `WARNED ${stats.warned} tokens: ${warnedSamples2}${warnSuffix2}`);
   }
