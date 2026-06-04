@@ -134,8 +134,12 @@ export function heliusCircuitOpen() {
 export function helius429Hit() {
   _helius429Streak++;
   if (_helius429Streak >= HELIUS_CB_THRESHOLD && !heliusCircuitOpen()) {
-    _heliusCBOpenUntil = Date.now() + HELIUS_CB_COOLDOWN_MS;
-    log("helius_cb", `Circuit OPEN — ${_helius429Streak} consecutive 429s. Pausing Helius calls for 5 min.`);
+    // Exponential backoff: each re-open doubles the cooldown, capped at 30 min.
+    // Prevents burning 1-2 real 429s per cycle just to re-confirm rate-limiting.
+    const opens = Math.max(0, Math.floor(_helius429Streak / HELIUS_CB_THRESHOLD) - 1);
+    const cooldown = Math.min(HELIUS_CB_COOLDOWN_MS * (2 ** opens), 30 * 60 * 1000);
+    _heliusCBOpenUntil = Date.now() + cooldown;
+    log("helius_cb", `Circuit OPEN — ${_helius429Streak} consecutive 429s. Pausing Helius calls for ${Math.round(cooldown / 60000)} min.`);
   }
 }
 
@@ -548,9 +552,11 @@ export function normalizeGmgnSecurity(sec) {
   const numOr = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const frac = (v) => { const n = numOr(v); return n == null ? null : (n > 1 ? n / 100 : n); };
   return {
-    honeypot:        sec.honeypot === 1 || sec.is_honeypot === true,
-    cannot_sell:     sec.can_not_sell === 1,
-    blacklist:       sec.blacklist === 1 || sec.is_blacklist === true,
+    // T3-10: GMGN may return boolean-flags as strings ("1"/"0") or booleans.
+    // Use Number() coercion so "1", 1, and true all register correctly.
+    honeypot:        Number(sec.honeypot) === 1 || sec.is_honeypot === true,
+    cannot_sell:     Number(sec.can_not_sell) === 1,
+    blacklist:       Number(sec.blacklist) === 1 || sec.is_blacklist === true,
     // Only flag when EXPLICITLY not renounced (false); null/true are not a risk.
     mint_not_renounced:   sec.renounced_mint === false,
     freeze_not_renounced: sec.renounced_freeze_account === false,
@@ -607,6 +613,15 @@ export async function gatherRugSignals({ mint, connection, holderOwners = [], la
   let gmgnSecurity = null;
   let criticalRugTelemetryDegraded = false;
   let criticalRugTelemetryReason = null;
+
+  // T2-3: For EVM chains, GMGN is the SOLE rug-signal source — there is no
+  // Helius fallback for Base/BSC/Eth. If the GMGN circuit is open, we have
+  // zero rug data and the token must be treated as unverifiable, not clean.
+  if (!isSol && gmgnCircuitIsOpen) {
+    criticalRugTelemetryDegraded = true;
+    criticalRugTelemetryReason = "GMGN circuit open — EVM rug telemetry unavailable (no Helius fallback for non-SOL)";
+    log("rug_telemetry_block", `${mint.slice(0, 8)} chain=${chain} telemetry_block=true reason="${criticalRugTelemetryReason}"`);
+  }
 
   // ── Layer 2a: GMGN-powered signals (primary — no rate-limit cost on Helius) ──
   // GMGN top-holder tags encode exactly what Helius txn-parsing was computing:

@@ -702,7 +702,10 @@ export function scoreBatch(tokens, ctx = {}) {
     log("trash_filter", `BLOCKED ${stats.blocked}/${stats.total}: ${blockedSamples}${suffix}`);
   }
   if (stats.warned > 0) {
-    log("trash_filter", `WARNED ${stats.warned}/${stats.total} — proceed with caution`);
+    const warnedSamples = tiers.WARN.slice(0, 5)
+      .map(t => `${t.symbol || t.mint?.slice(0, 6)}(${t._trash_flags?.[0] || "?"})`).join(", ");
+    const warnSuffix = tiers.WARN.length > 5 ? ` +${tiers.WARN.length - 5} more` : "";
+    log("trash_filter", `WARNED ${stats.warned}/${stats.total}: ${warnedSamples}${warnSuffix}`);
   }
 
   return {
@@ -964,7 +967,12 @@ export async function outerShieldScreen(tokens, ctx = {}) {
     const blockedSamples = tiers.BLOCK.slice(0, 3).map(t => `${t.symbol || t.mint?.slice(0, 6)}(${t._trash_reasons?.[0] || "?"})`).join(", ");
     log("trash_filter", `FINAL: ${stats.blocked}/${stats.total} BLOCKED (${stats.rugBlocked} via RugCheck)${blockedSamples ? ` — ${blockedSamples}` : ""}`);
   }
-  if (stats.warned > 0) log("trash_filter", `WARNED ${stats.warned} tokens — proceed with caution`);
+  if (stats.warned > 0) {
+    const warnedSamples2 = tiers.WARN.slice(0, 5)
+      .map(t => `${t.symbol || t.mint?.slice(0, 6)}(${t._trash_flags?.[0] || "?"})`).join(", ");
+    const warnSuffix2 = tiers.WARN.length > 5 ? ` +${tiers.WARN.length - 5} more` : "";
+    log("trash_filter", `WARNED ${stats.warned} tokens: ${warnedSamples2}${warnSuffix2}`);
+  }
   if (stats.passed > 0 || stats.flagged > 0) log("trash_filter", `PASSED ${stats.passed + stats.flagged}/${stats.total} — ${stats.passed} clean, ${stats.flagged} flagged`);
 
   return {
