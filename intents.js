@@ -123,6 +123,46 @@ export function consumeIntent(id, status, extra = {}) {
 }
 
 /**
+ * Atomically claim a pending intent before executing — prevents double-execution.
+ * Transitions "pending" → "executing" under a file lock.
+ * Returns the intent or null if already claimed / not found.
+ */
+export function claimIntent(id) {
+  return withFileLock(FILE, async () => {
+    const intents = loadAll();
+    const idx = intents.findIndex(i => Number(i.id) === Number(id));
+    if (idx === -1) return null;
+    const intent = intents[idx];
+    if (intent.status !== "pending") return null;
+    intent.status = "executing";
+    intent.claimed_at = new Date().toISOString();
+    saveAll(intents);
+    log("intent", `Intent #${id} → executing`);
+    return intent;
+  });
+}
+
+/**
+ * Finalize a claimed intent (executing → executed/failed/...).
+ * Companion to claimIntent — use after the swap completes.
+ */
+export function finalizeIntent(id, status, extra = {}) {
+  return withFileLock(FILE, async () => {
+    const intents = loadAll();
+    const idx = intents.findIndex(i => Number(i.id) === Number(id));
+    if (idx === -1) return null;
+    const intent = intents[idx];
+    if (intent.status !== "executing") return null;
+    intent.status = status;
+    intent.resolved_at = new Date().toISOString();
+    Object.assign(intent, extra);
+    saveAll(intents);
+    log("intent", `Intent #${id} → ${status}`);
+    return intent;
+  });
+}
+
+/**
  * Garbage-collect intents older than `keep_hours` (default 24).
  */
 export function gcIntents(keep_hours = 24) {

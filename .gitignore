@@ -3,6 +3,22 @@ node_modules/
 .env
 .env.local
 
+# Log files — never commit runtime logs
+*.log
+codex-coleader*.md
+*.pid
+
+# Audit/session reports — security-sensitive, generated during dev sessions
+BUG_REPORT.md
+FULL_AUDIT_REPORT.md
+PRE_LIVE_AUDIT.md
+
+# vault-proposals runtime state
+vault-proposals.json
+
+# Rug circuit-breaker persisted lock state — runtime only
+rug-circuit-breaker-state.json
+
 # Per-user Claude Code permissions/config — must not be shared,
 # can contain credentials.
 .claude/settings.local.json
@@ -143,3 +159,4 @@ episodic-memory.json
 prompt-evolution.json
 data/memory.db
 test-database-provider.rvf
+error-log.jsonl

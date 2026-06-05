@@ -6,15 +6,43 @@
  * This is independent of the learning-mode / consecutive-loss system.
  */
 
+import fs from "fs";
+import { atomicWriteJson } from "./atomic-write.js";
+
 export function createRugCircuitBreaker({
   maxEvents = 3,
   windowMs = 30 * 60 * 1000,
   lockDurationMs = 4 * 60 * 60 * 1000,
+  persistPath = null,
   log = () => {},
 } = {}) {
   const events = [];
   let lockedUntil = 0;
   let lockReason = null;
+
+  // Restore persisted state so a restart doesn't reset an active lock
+  if (persistPath) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(persistPath, "utf8"));
+      if (raw.lockedUntil && Date.now() < raw.lockedUntil) {
+        lockedUntil = raw.lockedUntil;
+        lockReason = raw.lockReason || null;
+        if (Array.isArray(raw.events)) events.push(...raw.events);
+        log("rug_circuit_breaker", `Restored lock from disk — ${Math.ceil((lockedUntil - Date.now()) / 60000)}min remaining`);
+      }
+    } catch {
+      // No persisted state — start fresh
+    }
+  }
+
+  function _persist() {
+    if (!persistPath) return;
+    try {
+      atomicWriteJson(persistPath, { lockedUntil, lockReason, events });
+    } catch (e) {
+      log("rug_circuit_breaker", `persist failed: ${e.message}`);
+    }
+  }
 
   function _prune(now = Date.now()) {
     const cutoff = now - windowMs;
@@ -29,8 +57,10 @@ export function createRugCircuitBreaker({
       lockedUntil = now + lockDurationMs;
       lockReason = `${events.length} rug exits in ${Math.round(windowMs / 60000)}min window`;
       log("rug_circuit_breaker", `TRIPPED: ${lockReason}`);
+      _persist();
       return { tripped: true, lockReason };
     }
+    _persist();
     return { tripped: false };
   }
 
@@ -56,6 +86,7 @@ export function createRugCircuitBreaker({
     events.length = 0;
     lockedUntil = 0;
     lockReason = null;
+    _persist();
   }
 
   return { recordExit, isLocked, getStatus, reset };

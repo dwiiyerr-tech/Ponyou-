@@ -72,7 +72,7 @@ import { planExit } from "./tools/exit-timing-optimizer.js";
 import { checkHolderExitSignals } from "./holder-exit-checks.js";
 import { enrichHolderData } from "./tools/holder-data-enricher.js";
 import {
-  listPendingIntents, getIntent, consumeIntent,
+  listPendingIntents, getIntent, consumeIntent, claimIntent, finalizeIntent,
 } from "./intents.js";
 import { trackPosition, recordClose, getTrackedPosition, getState, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl, cleanStaleTestPositions, flushState, listTrackedPositions } from "./state.js";
 import { pruneClosedPositions } from "./state-pruner.js";
@@ -1619,15 +1619,18 @@ async function handleStrategyTelegramCommand(text) {
 async function executePendingIntent(id) {
   const intent = getIntent(id);
   if (!intent) return sendHTML(`❌ #${id} ${fmt.it("not found")}`);
-  if (intent.status !== "pending") return sendHTML(`⚠️ #${id} ${fmt.it("already " + intent.status)}`);
   if (intent.expires_at && Date.now() > new Date(intent.expires_at).getTime()) {
     await consumeIntent(id, "expired");
     return sendHTML(`⏰ #${id} ${fmt.it("expired")}`);
   }
 
+  // Atomically claim before swap — prevents double-execution if two /yes arrive simultaneously
+  const claimed = await claimIntent(id);
+  if (!claimed) return sendHTML(`⚠️ #${id} ${fmt.it("already " + (intent.status || "claimed"))}`);
 
   const gate = await checkAllGates("pending-intent");
   if (gate.blocked) {
+    await finalizeIntent(id, "failed", { error: gate.reason });
     return sendHTML("⛔ #" + id + " blocked\n" + fmt.code(gate.reason));
   }
 
@@ -1641,7 +1644,7 @@ async function executePendingIntent(id) {
     // instead of Jupiter. Was: swapToken(...) directly which ignores chain field.
     result = await sellByChain({ ...args, executionContext: { source: "pending-intent", approvedIntent: true } });
   } catch (e) {
-    await consumeIntent(id, "failed", { error: e.message });
+    await finalizeIntent(id, "failed", { error: e.message });
     recordSwapOutcome({ success: false });
     await recordExecutionQuality({
       walletAddress: args.wallet_address || getActiveWallet()?.address || null,
@@ -1675,7 +1678,7 @@ async function executePendingIntent(id) {
     ? result.executions.filter(e => e.success || e.dry_run)
     : [];
   if (!succeeded && filledLegs.length === 0) {
-    await consumeIntent(id, "failed", { error: result?.error || "unknown" });
+    await finalizeIntent(id, "failed", { error: result?.error || "unknown" });
     return sendHTML(`❌ #${id} swap rejected\n${fmt.code(JSON.stringify(result).slice(0, 200))}`);
   }
 
@@ -1746,7 +1749,7 @@ async function executePendingIntent(id) {
   }
   recordTrade(null);
   const partialFill = !succeeded && filledLegs.length > 0;
-  await consumeIntent(id, "executed", {
+  await finalizeIntent(id, "executed", {
     result: result?.hash || result?.signature || "ok",
     ...(partialFill ? { partial_fill: true, error: result?.error || "partial split fill" } : {}),
   });
@@ -4643,6 +4646,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
           && portfolioShadow.allocation?.totalSizeSol > 0) {
         recommendedAmount = Number(portfolioShadow.allocation.totalSizeSol.toFixed(4));
       }
+      // Hard cap: stacked multipliers (regime × Kelly × portfolio) can exceed maxDeployAmount.
+      // Clamp here as a final safety net regardless of which path set the size.
+      recommendedAmount = Number(Math.min(recommendedAmount, config.risk?.maxDeployAmount ?? 35).toFixed(4));
       // Skills (active + shadow) whose filters this entry cleared — persisted so
       // the exit can attribute the trade's P&L back to them. Active skills get
       // live credit; shadow skills accrue the PAPER sample that earns promotion
@@ -5153,6 +5159,7 @@ const _rugCircuitBreaker = createRugCircuitBreaker({
   maxEvents: config.risk?.rugCircuitBreaker?.maxEvents ?? 3,
   windowMs: (config.risk?.rugCircuitBreaker?.windowMinutes ?? 30) * 60 * 1000,
   lockDurationMs: (config.risk?.rugCircuitBreaker?.lockHours ?? 4) * 60 * 60 * 1000,
+  persistPath: path.join(__dirname, "rug-circuit-breaker-state.json"),
   log,
 });
 const _geyserLastByMint = new Map();
