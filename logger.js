@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { atomicWriteText } from "./atomic-write.js";
 
 // telegram.js is loaded lazily on first error log to avoid a static cycle
 // (logger → telegram → social-trash-gate → logger). Cached after first call.
@@ -12,8 +13,13 @@ async function getTelegram() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LOG_DIR = process.env.PONYOU_LOG_DIR || path.join(__dirname, "logs");
+const LOG_DIR   = process.env.PONYOU_LOG_DIR || path.join(__dirname, "logs");
 const LOG_LEVEL = process.env.LOG_LEVEL || "info";
+
+// Structured error log — one JSON object per line (JSONL).
+// Doctor screen reads this to surface recurring errors with location + count.
+export const ERROR_LOG_FILE = process.env.PONYOU_ERROR_LOG
+  || path.join(__dirname, "error-log.jsonl");
 
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const currentLevel = LEVELS[LOG_LEVEL] || 1;
@@ -46,6 +52,11 @@ function sanitizeLogText(s, max = 2000) {
   out = out.replace(/\r\n|\r|\n/g, " ");
   out = out.replace(CTRL_RE, "");
   if (out.length > max) out = out.slice(0, max) + "…";
+  // Redact credential patterns AFTER truncation so a run of repeated chars
+  // does not match the key pattern (e.g. "x".repeat(5000) would match base58).
+  out = out.replace(/[1-9A-HJ-NP-Za-km-z]{87,88}/g, "[REDACTED]");
+  out = out.replace(/sk-[A-Za-z0-9\-_]{20,}/g, "[REDACTED]");
+  out = out.replace(/Bearer [A-Za-z0-9\-.+\/]{20,}/gi, "Bearer [REDACTED]");
   return out;
 }
 
@@ -55,6 +66,7 @@ function sanitizeLogText(s, max = 2000) {
 export function log(category, message) {
   const level = category.includes("error") ? "error"
     : category.includes("warn") ? "warn"
+    : category.includes("debug") ? "debug"
     : "info";
 
   if (LEVELS[level] < currentLevel) return;
@@ -80,6 +92,83 @@ export function log(category, message) {
   const dateStr = timestamp.split("T")[0];
   const logFile = path.join(LOG_DIR, `agent-${dateStr}.log`);
   fs.appendFile(logFile, line + "\n", () => { /* best-effort */ });
+
+  // Structured error log — Doctor screen reads this for real-time diagnostics.
+  // Only write for error-level categories; warn categories are captured in the
+  // daily log file and surfaced separately.
+  if (level === "error") {
+    // Infer which cycle/component produced this error from the category name.
+    const cycle = safeCategory.includes("management") ? "management"
+      : safeCategory.includes("screening")  ? "screening"
+      : safeCategory.includes("cron")       ? "cron"
+      : safeCategory.includes("learning")   ? "learning"
+      : safeCategory.includes("geyser")     ? "geyser"
+      : safeCategory.includes("vault")      ? "vault"
+      : safeCategory.includes("gmgn")       ? "gmgn"
+      : safeCategory.includes("jupiter")    ? "jupiter"
+      : "unknown";
+    const entry = JSON.stringify({
+      ts:       timestamp,
+      category: safeCategory,
+      msg:      safeMessage.slice(0, 300),
+      cycle,
+    });
+    fs.appendFile(ERROR_LOG_FILE, entry + "\n", () => { /* best-effort */ });
+  }
+}
+
+/**
+ * Register process-level uncaught exception and unhandled rejection handlers.
+ * Call once at bot startup. Errors are written to error-log.jsonl so Doctor
+ * can surface them even when the cycle that caused them is long gone.
+ */
+// G2: trim error-log.jsonl to MAX_ERROR_LOG_LINES on startup so it never grows
+// unboundedly. Called once by captureUncaught(); also safe to call manually.
+const MAX_ERROR_LOG_LINES = 1000;
+export function trimErrorLog() {
+  try {
+    if (!fs.existsSync(ERROR_LOG_FILE)) return;
+    const raw = fs.readFileSync(ERROR_LOG_FILE, "utf8");
+    const lines = raw.split("\n").filter(Boolean);
+    if (lines.length > MAX_ERROR_LOG_LINES) {
+      atomicWriteText(ERROR_LOG_FILE, lines.slice(-MAX_ERROR_LOG_LINES).join("\n") + "\n");
+    }
+  } catch { /* best-effort — don't crash the process trying to trim a log */ }
+}
+
+export function captureUncaught() {
+  // G2: trim on startup so the file stays bounded across restarts.
+  trimErrorLog();
+
+  process.on("uncaughtException", (err) => {
+    const entry = JSON.stringify({
+      ts:       new Date().toISOString(),
+      category: "UNCAUGHT_EXCEPTION",
+      msg:      (err?.message || String(err)).slice(0, 300),
+      stack:    (err?.stack || "").split("\n").slice(1, 4).join(" | ").slice(0, 400),
+      cycle:    "process",
+    });
+    // B2: wrap in try/catch — blocking I/O in shutdown path must not deadlock.
+    try { fs.appendFileSync(ERROR_LOG_FILE, entry + "\n"); } catch { /* disk full / locked */ }
+    console.error("[UNCAUGHT_EXCEPTION]", err);
+  });
+
+  process.on("unhandledRejection", (reason) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const stack = reason instanceof Error
+      ? (reason.stack || "").split("\n").slice(1, 4).join(" | ").slice(0, 400)
+      : "";
+    const entry = JSON.stringify({
+      ts:       new Date().toISOString(),
+      category: "UNHANDLED_REJECTION",
+      msg:      msg.slice(0, 300),
+      stack,
+      cycle:    "process",
+    });
+    // B2: try/catch so a write failure never hides the original rejection.
+    try { fs.appendFileSync(ERROR_LOG_FILE, entry + "\n"); } catch { /* disk full / locked */ }
+    console.error("[UNHANDLED_REJECTION]", reason);
+  });
 }
 
 /**

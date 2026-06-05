@@ -202,8 +202,8 @@ export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
     if (dipRaw == null) {
       if (!_athWarnSeen.has(tokenData?.mint)) {
         _athWarnSeen.add(tokenData?.mint);
-        log("strategy_warn",
-          `ATH-distance gate skipped for ${tokenData?.symbol || tokenData?.mint?.slice(0, 8)}: dip_from_ath_pct missing — upstream enrichment didn't populate the field`,
+        log("strategy_debug",
+          `ATH-distance gate skipped for ${tokenData?.symbol || tokenData?.mint?.slice(0, 8)}: dip_from_ath_pct missing — expected for fresh/illiquid tokens`,
         );
       }
     } else {
