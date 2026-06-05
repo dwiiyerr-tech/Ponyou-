@@ -2626,6 +2626,7 @@ async function checkStagedEntries(tokens, balance) {
         wallet_address: token.wallet_address || null,
         amount_sol: trigger.next_amount_sol,
         reason: trigger.reason,
+        chain: tracked.chain || "sol",
         staged,
         tracked,
         currentPrice,
@@ -2652,6 +2653,24 @@ async function checkStagedEntries(tokens, balance) {
         // Update staged entry tracking
         const updated = advanceStagedEntry(buy.staged, buy.currentPrice);
         buy.tracked.signal_snapshot.staged_entry = updated;
+
+        // Accumulate this stage's entry fees into entry_fee_breakdown so
+        // calcTruePnl sees total fees, not just stage-1 fees.
+        const stageFees = computeTradeFeeBreakdown({
+          amountSol: buy.amount_sol,
+          dexId: buy.tracked.signal_snapshot?.entry_dex || "unknown",
+          isEntry: true,
+          expectedPrice: buy.currentPrice || 0,
+          actualPrice: buy.currentPrice || 0,
+          liquidity: buy.tracked.signal_snapshot?.liquidity || 0,
+          volume: 0,
+        });
+        const existingFees = buy.tracked.signal_snapshot?.entry_fee_breakdown;
+        if (existingFees && stageFees) {
+          existingFees.total_fee_sol  = (existingFees.total_fee_sol  || 0) + (stageFees.total_fee_sol  || 0);
+          existingFees.dex_fee_sol    = (existingFees.dex_fee_sol    || 0) + (stageFees.dex_fee_sol    || 0);
+          existingFees.platform_fee_sol = (existingFees.platform_fee_sol || 0) + (stageFees.platform_fee_sol || 0);
+        }
 
         // Update position: add SOL amount, recompute avg entry value
         const oldAmount = buy.tracked.amount_sol || 0;
@@ -2738,7 +2757,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     const totalUsd = (balance.sol_usd || 0) + tokens.reduce((s, t) => s + (t.usd || 0), 0);
     await refreshSessionPnl(totalUsd);
 
-    syncOpenPositions(tokens.map(t => t.position_key || t.mint));
+    await syncOpenPositions(tokens.map(t => t.position_key || t.mint));
 
     if (tokens.length === 0) {
       mgmtReport = "No open token positions.";
@@ -2822,6 +2841,8 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (_exitPlan.split && _exitPlan.splitCount > 1 && Number(_balance) > 0) {
         const chunkAmt = _balance / _exitPlan.splitCount;
         let _lastRes = null, _lastAttempt = 1, _allFailed = true;
+        // Accumulate proceeds across all chunks so PnL isn't understated from only the last chunk.
+        let _proceedsRaw = 0;
         for (let _c = 0; _c < _exitPlan.splitCount; _c++) {
           if (_c > 0) {
             const jitter = Math.floor(Math.random() * (_exitPlan.splitDelayMs * 0.5));
@@ -2836,12 +2857,15 @@ export async function runManagementCycle({ silent = false } = {}) {
               wallet: exit.wallet_address ? getWalletByAddress(exit.wallet_address)?.keypair || null : null,
             })
           );
+          if ((cR?.success || cR?.dry_run) && cR?.amount_out != null) _proceedsRaw += Number(cR.amount_out);
           _lastRes = cR; _lastAttempt = cA;
           log("exit_timing", `${exit.symbol} split ${_c + 1}/${_exitPlan.splitCount}: ${cR?.success || cR?.dry_run ? "OK" : "FAIL"}`);
           if (!cS) _allFailed = false;
           if (cS) break; // pool depth gone — abort remaining chunks
         }
-        res = _lastRes; exitAttempt = _lastAttempt; exitStuck = _allFailed;
+        // Merge aggregated proceeds into the final result object for PnL calculation
+        res = { ..._lastRes, amount_out: _proceedsRaw || _lastRes?.amount_out || null };
+        exitAttempt = _lastAttempt; exitStuck = _allFailed;
       } else {
         const _r = await withProgressiveSlippage(
           (slippage) => sellByChain({
@@ -2938,7 +2962,9 @@ export async function runManagementCycle({ silent = false } = {}) {
           tokenData,
           executionQuality,
         });
-        const exitSolReceived = res?.amount_out != null ? Number(res.amount_out) / 1e9 : null;
+        // Use chain-native decimals: SOL = 9, EVM (ETH/BNB/Base) = 18.
+        const _exitDecimals = (exit.chain && exit.chain !== "sol") ? 1e18 : 1e9;
+        const exitSolReceived = res?.amount_out != null ? Number(res.amount_out) / _exitDecimals : null;
         const entrySolSpent = tracked?.amount_sol ?? null;
         const swapFeeSol = res?.tx_fee_lamports != null ? Number(res.tx_fee_lamports) / 1e9 : null;
         const realizedPnlPct = entrySolSpent > 0 && exitSolReceived != null
@@ -2947,7 +2973,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
         // ─── Fee Tracking: Exit + True PnL ──────────────
         const entryFees = tracked?.signal_snapshot?.entry_fee_breakdown;
-        const exitSlippage = extractSlippageFromSwapResult(res, exitSolReceived || 0);
+        const exitSlippage = extractSlippageFromSwapResult(res, exitSolReceived || 0, { isExit: true });
         const exitFeeBreakdown = computeTradeFeeBreakdown({
           amountSol: exitSolReceived || 0,
           dexId: tracked?.signal_snapshot?.entry_dex || tokenData?.dex || "unknown",

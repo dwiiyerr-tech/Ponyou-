@@ -425,14 +425,20 @@ export function getFeeTrackerDashboard() {
  */
 import { normalizePriceImpactToPercent } from "./jupiter.js";
 
-export function extractSlippageFromSwapResult(swapResult, amountInSol) {
+export function extractSlippageFromSwapResult(swapResult, amountInSol, { isExit = false } = {}) {
   if (!swapResult) return { slippage_bps: 0, slippage_sol: 0 };
 
   const priceImpactPct = normalizePriceImpactToPercent(swapResult?.priceImpactPct) || 0;
   const slippageBps = Math.round(Math.abs(priceImpactPct) * 100); // percent → bps
-  const actualOut = Number(swapResult?.outAmount || 0) / 1e9;
-  const expectedOut = amountInSol || 0;
-  const slippageSol = actualOut > 0 ? Math.abs(expectedOut - actualOut) : 0;
+
+  // slippage_sol is only meaningful on exits (token → SOL) where outAmount is
+  // in lamports (SOL decimals). On entries (SOL → token), outAmount is in token
+  // units (6 decimals for pump.fun) — comparing it against SOL amountIn is wrong.
+  let slippageSol = 0;
+  if (isExit) {
+    const actualOut = Number(swapResult?.outAmount || 0) / 1e9;
+    slippageSol = actualOut > 0 ? Math.abs((amountInSol || 0) - actualOut) : 0;
+  }
 
   return {
     slippage_bps: slippageBps,
