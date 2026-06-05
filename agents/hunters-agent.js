@@ -32,6 +32,8 @@ const HUNTER_SCHEDULE = {
 
 let _currentSchedule = null;
 let _initialized = false;
+// T3-12: unsubscribe refs for safe re-init cleanup.
+let _unsubscribers = [];
 
 // Source-level minScore overrides from learning agent.
 // Key = source string (e.g. "social", "pumpfun"), value = adjusted minScore.
@@ -53,23 +55,25 @@ export function getSourceMinScore(source, baseMinScore) {
 }
 
 export function initHuntersAgent() {
+  // Guard first so re-init never wipes already-registered listeners without
+  // re-registering them (which would leave the agent permanently deaf).
   if (_initialized) return;
   _initialized = true;
 
   setAgentStatus(AGENT_NAME, "running", "Hunters agent initialized");
 
   // Listen for Screening Agent commands
-  agentBus.subscribe("hunters:command", (cmd) => {
+  _unsubscribers.push(agentBus.subscribe("hunters:command", (cmd) => {
     log("hunters", `Command received: active=${cmd.active} sources=${cmd.sources} market=${cmd.marketCondition}`);
     _currentSchedule = cmd;
     updateAgentHealth(AGENT_NAME, {
       lastCommand: cmd,
       commandedAt: new Date().toISOString(),
     });
-  });
+  }));
 
   // Listen for market updates to adjust hunting
-  agentBus.subscribe("market:update", (update) => {
+  _unsubscribers.push(agentBus.subscribe("market:update", (update) => {
     const condition = update?.condition || "NORMAL";
     const schedule = HUNTER_SCHEDULE[condition] || HUNTER_SCHEDULE.NORMAL;
     _currentSchedule = {
@@ -81,19 +85,19 @@ export function initHuntersAgent() {
       reason: schedule.reason,
     };
     log("hunters", `Market ${condition}: ${schedule.active ? `hunting (${schedule.sources.join(",")})` : `paused — ${schedule.reason}`}`);
-  });
+  }));
 
   // Listen for gate blocks — stop hunting immediately if kill switch or rug breaker trips
-  agentBus.subscribe("hunters:gate_blocked", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("hunters:gate_blocked", (payload) => {
     log("hunters", `Gate blocked — pausing: ${payload?.reason}`);
     _currentSchedule = { active: false, sources: [], reason: payload?.reason || "gate_blocked" };
     updateAgentHealth(AGENT_NAME, { lastGateBlock: payload?.reason, gateBlockedAt: new Date().toISOString() });
-  });
+  }));
 
   // ── Learning feedback loop — adjust per-source minScore based on rug rates ──
   // High rug-rate source → raise threshold (harder to pass)
   // High win-rate source → lower threshold slightly (easier to pass)
-  agentBus.subscribe("learning:hunter_weights", ({ ranking } = {}) => {
+  _unsubscribers.push(agentBus.subscribe("learning:hunter_weights", ({ ranking } = {}) => {
     if (!Array.isArray(ranking) || ranking.length === 0) return;
 
     // HA-1: previously cached `baseMinScore` from whatever `_currentSchedule`
@@ -141,7 +145,7 @@ export function initHuntersAgent() {
         thresholds_updated_at: new Date().toISOString(),
       });
     }
-  });
+  }));
 }
 
 export async function runHuntersExpedition({ strategy = null } = {}) {

@@ -112,8 +112,14 @@ async function researchTokenOnline(token) {
           severity: "critical",
         });
       }
-      // Partial match with suffix
-      if (symbol.startsWith(legit.toLowerCase()) && symbol !== legit.toLowerCase() && token.liquidity < 5000) {
+      // Partial match: skip very short tickers (≤3 chars) to avoid false positives
+      // like "RAY..." vs "RAYDIUM" or "JUP..." vs "JUPITER". Require the legit
+      // ticker to appear as a whole-word prefix (followed by non-alpha or end).
+      const legitLower = legit.toLowerCase();
+      const isLongEnough = legitLower.length > 3;
+      const nextChar = symbol[legitLower.length];
+      const hasBoundary = nextChar === undefined || /[^a-z]/i.test(nextChar);
+      if (isLongEnough && symbol.startsWith(legitLower) && symbol !== legitLower && hasBoundary && token.liquidity < 5000) {
         flags.push({
           type: "copycat_variant",
           detail: `${token.symbol} — variant of legitimate ${legit}`,
@@ -240,6 +246,10 @@ async function filterPreyAdvanced(preyTokens, marketCondition = "NORMAL") {
     log("trash_layer", `RugCheck batch: ${batchBlocked.size}/${solTokens.length} pre-blocked (score≥70 or critical risk)`);
   }
 
+  // Hoist once before the loop — file reads inside a per-token loop are redundant
+  const _rugMemoryHoisted = getRugMemory();
+  const _recentRugsHoisted = getPerformanceHistory({ limit: 20 }).filter(t => t.rug_detected);
+
   for (const token of preyTokens) {
     // Step 0a: Batch RugCheck pre-screen result (already fetched above, zero extra API calls)
     if (batchBlocked.has(token.mint)) {
@@ -312,9 +322,7 @@ async function filterPreyAdvanced(preyTokens, marketCondition = "NORMAL") {
     }
 
     // Step 3: Basic quality pre-screen (existing)
-    const rugMemory = getRugMemory();
-    const recentRugs = getPerformanceHistory({ limit: 20 }).filter(t => t.rug_detected);
-    const preScreen = preScreenBatch([token], { marketCondition, rugMemory, recentRugs });
+    const preScreen = preScreenBatch([token], { marketCondition, rugMemory: _rugMemoryHoisted, recentRugs: _recentRugsHoisted });
 
     if (preScreen.stats.blocked > 0) {
       _stats.blocked++;

@@ -36,6 +36,8 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PERFORMANCE_FILE   = path.join(__dirname, "../hunter-performance.json");
 const STRATEGY_PERF_FILE = path.join(__dirname, "../strategy-performance.json");
+// T3-1: persist _openTrades so source attribution survives process restart.
+const OPEN_TRADES_FILE   = path.join(__dirname, "../open-trades-learning.json");
 const AGENT_NAME = "learning";
 
 // Recompile name patterns after this many new rugs accumulated
@@ -43,10 +45,34 @@ const COMPILE_EVERY_N_RUGS = 3;
 
 let _initialized = false;
 let _rugsSinceLastCompile = 0;
+// T3-12: unsubscribe refs for safe re-init cleanup.
+let _unsubscribers = [];
 
 // In-memory map: mint → { source, social_source, entry_ts }
 // Populated when a BUY happens, consumed when EXIT happens.
+// T3-1: also persisted to OPEN_TRADES_FILE so restart doesn't lose attribution.
 const _openTrades = new Map();
+
+function _loadOpenTrades() {
+  try {
+    if (!fs.existsSync(OPEN_TRADES_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(OPEN_TRADES_FILE, "utf8"));
+    if (raw && typeof raw === "object") {
+      for (const [mint, entry] of Object.entries(raw)) {
+        _openTrades.set(mint, entry);
+      }
+    }
+  } catch { /* non-critical: fall through with empty map */ }
+}
+
+function _saveOpenTrades() {
+  const obj = Object.fromEntries(_openTrades);
+  atomicWriteJson(OPEN_TRADES_FILE, obj).catch((e) => {
+    // B1: log instead of swallowing — silent failure loses source attribution
+    // permanently on next restart. Operator can investigate disk/permission.
+    log("learning_error", `_saveOpenTrades failed: ${e.message}`);
+  });
+}
 
 // ─── Strategy performance persistence ─────────────────────────────────────
 
@@ -113,13 +139,17 @@ function getSourceRanking() {
 // ─── Init ────────────────────────────────────────────────────────────────────
 
 export function initLearningAgent() {
+  // Guard first so re-init never wipes listeners without re-registering them.
   if (_initialized) return;
   _initialized = true;
 
   setAgentStatus(AGENT_NAME, "running", "Learning agent — continuous pattern learning from all hunters");
 
+  // T3-1: reload persisted open trades from previous session.
+  _loadOpenTrades();
+
   // ── Track open trades so we can attribute exits to their source ──
-  agentBus.subscribe("management:llm_buy", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("management:llm_buy", (payload) => {
     const mint = payload?.token || payload?.mint;
     if (!mint) return;
     _openTrades.set(mint, {
@@ -129,16 +159,18 @@ export function initLearningAgent() {
       name: payload?.name || null,
       entry_ts: Date.now(),
     });
+    _saveOpenTrades();
     log("learning", `Tracking open trade: ${payload?.symbol || mint.slice(0, 8)} source=${payload?._hunt_source || "unknown"}`);
-  });
+  }));
 
   // ── Process exit: learn from outcome ──
-  agentBus.subscribe("management:llm_exit_executed", async (payload) => {
+  _unsubscribers.push(agentBus.subscribe("management:llm_exit_executed", async (payload) => {
     const mint = payload?.mint;
     if (!mint) return;
 
     const trade = _openTrades.get(mint) || {};
     _openTrades.delete(mint);
+    _saveOpenTrades();
 
     // LA-1: classify rug from multiple signals because the LLM exit path
     // always reports reason="LLM Manager Decision" — using only that string
@@ -209,18 +241,18 @@ export function initLearningAgent() {
       last_source: source,
       source_ranking: ranking.slice(0, 5),
     });
-  });
+  }));
 
   // ── Manual force-compile trigger ──
-  agentBus.subscribe("learning:force_compile", async () => {
+  _unsubscribers.push(agentBus.subscribe("learning:force_compile", async () => {
     log("learning", "Force compile triggered");
     await _recompileAndPatch();
-  });
+  }));
 
   // ── Strategy performance feedback loop ──
   // Receives management:strategy_outcome when a position closes so we can
   // track per-preset win/loss/rug rates and surface degrading strategies.
-  agentBus.subscribe("management:strategy_outcome", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("management:strategy_outcome", (payload) => {
     const stratId = payload?.strategy_id;
     if (!stratId) return;
     const perf = loadStratPerf();
@@ -248,10 +280,10 @@ export function initLearningAgent() {
       strategies: perf.strategies,
       updated_at: new Date().toISOString(),
     });
-  });
+  }));
 
   // ── Trash-layer block feedback — free learning from prevented trades ──
-  agentBus.subscribe("learning:trash_blocked", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("learning:trash_blocked", (payload) => {
     const { symbol = "", name = "", type = "unknown" } = payload;
     if (!symbol && !name) return;
     const source = payload._hunt_source || "unknown";
@@ -267,10 +299,10 @@ export function initLearningAgent() {
       bumpSource(source, "rug");
     }
     log("learning", `TRASH BLOCK free learn: ${symbol} type=${type} source=${source}`);
-  });
+  }));
 
   // ── Periodic health report every 30 minutes ──
-  setInterval(() => {
+  const _reportTimer = setInterval(() => {
     const ranking = getSourceRanking();
     if (ranking.length > 0) {
       log("learning", `Hunter performance: ${ranking.map(s => `${s.source} rug=${(s.rug_rate * 100).toFixed(0)}% win=${(s.win_rate * 100).toFixed(0)}%`).join(" | ")}`);
@@ -282,9 +314,10 @@ export function initLearningAgent() {
       log("learning", `Strategy performance: ${stratRanking.map(s => `${s.id} WR=${(s.win_rate * 100).toFixed(0)}% avg=${s.avg_pnl_pct}%`).join(" | ")}`);
     }
   }, 30 * 60 * 1000);
+  _unsubscribers.push(() => clearInterval(_reportTimer));
 
   // ── Shadow watchlist rugs → free learning without buying ──
-  agentBus.subscribe("shadow:rug_detected", async (payload) => {
+  _unsubscribers.push(agentBus.subscribe("shadow:rug_detected", async (payload) => {
     const symbol = payload?.symbol || "";
     const name   = payload?.name   || "";
     const source = payload?.hunt_source || "unknown";
@@ -347,10 +380,11 @@ export function initLearningAgent() {
       last_shadow_symbol: symbol,
       shadow_stats: getShadowStats(),
     });
-  });
+  }));
 
   // Start shadow watchlist price monitor
   startShadowWatchlist();
+  _unsubscribers.push(() => stopShadowWatchlist());
 
   log("learning", "Learning agent initialized — watching all trade exits + shadow watchlist");
 }

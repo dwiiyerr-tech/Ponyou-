@@ -10,7 +10,6 @@ import {
 import { swapToken as executeJupiterSwap } from "./jupiter.js";
 import { executeGmgnSwap } from "./gmgnSwap.js";
 import { getWalletBalances } from "./wallet.js";
-import { demoStrictGates } from "../runtime-mode.js";
 import { scanRefundableTokenAccounts, closeRefundableTokenAccounts } from "../rent-refund.js";
 import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory, pinLesson, unpinLesson, listLessons, recordRug, scoreRugRisk, getRugMemorySummary } from "../lessons.js";
 import { setPositionInstruction, getTrackedPosition, flushState } from "../state.js";
@@ -263,7 +262,9 @@ async function adaptiveSwap(args = {}) {
           wallet_address: slot.address,
           wallet: getWalletByAddress(slot.address)?.keypair || null,
         });
-        executions.push({ wallet_address: slot.address, amount: slot.amount_sol, ...result });
+        // R2: include chain on each leg so callers tracking executions[]
+        // don't need to infer it — mirrors normalizeSwapResult guarantee.
+        executions.push({ wallet_address: slot.address, amount: slot.amount_sol, chain: (args.chain || "sol").toLowerCase(), ...result });
         if (!(result.success || result.dry_run)) {
           // Partial fill: legs before this one may have already executed real
           // swaps (SOL spent, tokens held). Surface them so the caller can
@@ -413,9 +414,12 @@ const toolMap = {
     if (!ok) return { error: `Position ${position_address} not found in state` };
     return { saved: true, position: position_address, instruction: instruction || null };
   },
-  self_update: async () => {
+  self_update: async ({ commit_hash } = {}) => {
     try {
-      const result = execSync("git pull", { cwd: process.cwd(), encoding: "utf8" }).trim();
+      // Fetch remote then checkout the exact reviewed commit to avoid blind pulls
+      execSync("git fetch origin", { cwd: process.cwd(), encoding: "utf8" });
+      const target = commit_hash || "origin/HEAD";
+      const result = execSync(`git checkout ${target}`, { cwd: process.cwd(), encoding: "utf8" }).trim();
       if (result.includes("Already up to date")) {
         return { success: true, updated: false, message: "Already up to date — no restart needed." };
       }
@@ -804,9 +808,7 @@ export async function executeTool(name, args) {
  */
 async function maybeParkAsConfirmIntent(args) {
   if (!config.trading?.confirmMode) return null;
-  // Demo bypasses parking by default; with strict gates on it parks too so the
-  // /yes approval flow is exercised in demo.
-  if (process.env.DRY_RUN === "true" && !demoStrictGates()) return null;
+  if (process.env.DRY_RUN === "true") return null;
   if (args?.token_in !== "SOL") return null;
   if (!args?.token_out || args.token_out === "SOL") return null;
 
@@ -888,65 +890,99 @@ export function checkManagedGuard(args = {}, getTrackedPositionFn = getTrackedPo
   return { pass: true };
 }
 
+// ── Unified swap guards — applied by ALL execution paths (LLM, fast-buy,
+// deterministic exits). Extracted so every caller gets the same protections
+// without duplicating logic. Returns { pass, reason? }.
+//
+// _bypass_kill_switch: pass true for deterministic exits (SL/TP/trailing/rug).
+// Those are PROTECTIVE — blocking them on kill-switch would prevent closing a
+// position after the operator hits /kill in response to a rug or bad signal.
+async function sharedSwapGuards(args) {
+  const chain = (args.chain || "sol").toLowerCase();
+
+  // P0-2: kill-switch re-check — skip only for protective deterministic exits.
+  if (!args._bypass_kill_switch && isKilled()) {
+    return { pass: false, reason: "Kill-switch is active — swap blocked." };
+  }
+
+  // P2-12: reject invalid amount before any downstream logic.
+  const rawAmount = Number(args.amount);
+  if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
+    return { pass: false, reason: `Invalid swap amount: ${args.amount} — must be a finite positive number.` };
+  }
+
+  if (chain !== "sol") {
+    // EVM: kill-switch + amount validated above. GMGN handles its own balance/gas.
+    return { pass: true };
+  }
+
+  // P0-1: maxDeployAmount cap — LLM amount not pre-clamped by computeDeployAmount.
+  // P1-8: also covers token→token swaps (SOL-equivalent notional).
+  const maxDeploy = config.risk?.maxDeployAmount ?? 35;
+  if (args.token_in === "SOL" && rawAmount > maxDeploy) {
+    return { pass: false, reason: `Amount ${rawAmount} SOL exceeds maxDeployAmount limit of ${maxDeploy} SOL.` };
+  }
+
+  if (process.env.DRY_RUN !== "true") {
+    const balance = await getWalletBalances();
+    const gasReserve = config.management.gasReserve;
+    if (args.token_in === "SOL" && balance.sol < rawAmount + gasReserve) {
+      return { pass: false, reason: `Insufficient SOL: have ${balance.sol} SOL, need ${rawAmount + gasReserve} SOL.` };
+    }
+    if (args.token_in && !isSolMint(args.token_in)) {
+      const tokenBal = (balance.tokens || []).find(t => t.mint === args.token_in);
+      if (!tokenBal || tokenBal.balance <= 0) {
+        return { pass: false, reason: `Token not held: ${args.token_in?.slice(0, 8)} not found in wallet.` };
+      }
+    }
+  }
+
+  return { pass: true };
+}
+
+// Normalize any swap result to a consistent shape so callers never need to
+// know which execution path was used. Key guarantees:
+//   - chain is always set (prevents the "13/14 exits missing chain" class of bug)
+//   - indeterminate defaults to false (prevents accidental undefined truthiness)
+//   - execution_provider is always a string
+function normalizeSwapResult(raw, chain = "sol") {
+  if (!raw) {
+    return { success: false, hash: null, chain, execution_provider: "unknown", amount_out: null, indeterminate: false, dry_run: false };
+  }
+  return {
+    ...raw,
+    chain:              raw.chain              ?? chain,
+    execution_provider: raw.execution_provider ?? (chain === "sol" ? "jupiter" : "gmgn"),
+    hash:               raw.hash               ?? raw.tx_hash ?? null,
+    amount_out:         raw.amount_out         ?? null,
+    indeterminate:      raw.indeterminate      === true,
+    dry_run:            raw.dry_run            === true,
+  };
+}
+
+// ── executeTrade — unified entry point for non-LLM swap callers ──────────────
+// Applies sharedSwapGuards, routes via adaptiveSwap, and returns a normalized
+// result. Use this instead of calling swapToken/executeGmgnSwap directly so
+// every caller gets kill-switch, amount validation, maxDeploy, and consistent
+// output without duplicating guards.
+export async function executeTrade(args = {}) {
+  const chain = (args.chain || "sol").toLowerCase();
+  const guard = await sharedSwapGuards(args);
+  if (!guard.pass) {
+    return { success: false, blocked: true, error: guard.reason, chain, dry_run: false, indeterminate: false };
+  }
+  const raw = await adaptiveSwap(args);
+  return normalizeSwapResult(raw, chain);
+}
+
 async function runSafetyChecks(name, args) {
   switch (name) {
     case "swap_token":
     case "jupiter_swap": {
-      // P0-2: Re-check kill-switch at call site — cycle-start gate may be stale
-      // if operator triggered /kill while LLM was running (30-90s window).
-      if (isKilled()) {
-        return { pass: false, reason: "Kill-switch is active — swap blocked." };
-      }
-
-      // P2-12: reject invalid amount before any downstream logic.
-      // Negative/NaN amount passes balance checks silently and sends invalid
-      // amountRaw to Jupiter (relying on the external API to reject it).
-      const rawAmount = Number(args.amount);
-      if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
-        return { pass: false, reason: `Invalid swap amount: ${args.amount} — must be a finite positive number.` };
-      }
-
-      // EVM swaps route through GMGN (separate wallet/gas model). The SOL balance
-      // safety-check below is Solana-specific; GMGN's own balance/gas handling +
-      // the execEnabled flag + dry-run gate cover EVM. Skip the SOL check for non-sol.
-      if ((args.chain || "sol").toLowerCase() !== "sol") {
-        return { pass: true };
-      }
-
-      // P0-1: Enforce maxDeployAmount cap on SOL buys — LLM amount is not
-      // pre-clamped by computeDeployAmount() so we guard here.
-      // P1-8: also apply to token→token swaps using SOL-equivalent notional.
-      const maxDeploy = config.risk?.maxDeployAmount ?? 35;
-      if (args.token_in === "SOL" && rawAmount > maxDeploy) {
-        return {
-          pass: false,
-          reason: `Amount ${rawAmount} SOL exceeds maxDeployAmount limit of ${maxDeploy} SOL.`,
-        };
-      }
-
-      // Live always runs the balance safety-check; demo runs it too when strict
-      // gates are on (checks the virtual balance covers amount+gas / token held).
-      if (process.env.DRY_RUN !== "true" || demoStrictGates()) {
-        const balance = await getWalletBalances();
-        const gasReserve = config.management.gasReserve;
-        const amount = args.amount || 0;
-        if (args.token_in === "SOL" && balance.sol < amount + gasReserve) {
-          return {
-            pass: false,
-            reason: `Insufficient SOL: have ${balance.sol} SOL, need ${amount + gasReserve} SOL.`,
-          };
-        }
-        // Check token balance for sells (token_in is a non-SOL mint)
-        if (args.token_in && !isSolMint(args.token_in)) {
-          const tokenBal = (balance.tokens || []).find(t => t.mint === args.token_in);
-          if (!tokenBal || tokenBal.balance <= 0) {
-            return {
-              pass: false,
-              reason: `Token not held: ${args.token_in?.slice(0, 8)} not found in wallet.`,
-            };
-          }
-        }
-      }
+      // Shared guards (kill-switch, amount, maxDeploy, balance) — same checks
+      // that executeTrade applies on the non-LLM path.
+      const shared = await sharedSwapGuards(args);
+      if (!shared.pass) return shared;
 
       // ── MGMT-3: managed-position guard ───────────────────────
       // Reject LLM-driven sells of positions still in their managed

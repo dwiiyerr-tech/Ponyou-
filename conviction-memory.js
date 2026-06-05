@@ -55,7 +55,30 @@ function loadStore() {
   } catch { return { coins: {}, narratives: {} }; }
 }
 
-function saveStore(data) { atomicWriteJson(CONVICTION_FILE, data); }
+const MAX_COIN_ENTRIES = 5000;
+const COIN_STALE_DAYS = 30;
+
+function saveStore(data) {
+  // Prune stale / low-observation coins to prevent unbounded growth.
+  const coinKeys = Object.keys(data.coins || {});
+  if (coinKeys.length > MAX_COIN_ENTRIES) {
+    const cutoff = Date.now() - COIN_STALE_DAYS * 24 * 60 * 60 * 1000;
+    const sorted = coinKeys
+      .map(k => ({ k, c: data.coins[k] }))
+      .sort((a, b) =>
+        (new Date(b.c.last_seen_at || 0).getTime() - new Date(a.c.last_seen_at || 0).getTime()) ||
+        (b.c.observation_count - a.c.observation_count)
+      );
+    // Always keep the most recent MAX_COIN_ENTRIES entries
+    const keep = new Set(sorted.slice(0, MAX_COIN_ENTRIES).map(x => x.k));
+    for (const k of coinKeys) {
+      if (!keep.has(k) && new Date(data.coins[k].last_seen_at || 0).getTime() < cutoff) {
+        delete data.coins[k];
+      }
+    }
+  }
+  atomicWriteJson(CONVICTION_FILE, data);
+}
 
 function loadProfitPatterns() {
   if (!fs.existsSync(PROFIT_PATTERNS_FILE)) return { patterns: [] };
@@ -926,7 +949,10 @@ export async function recordCoinObservation(token = {}, { minIntervalMs = 30 * 6
 
 // ─── Record Observation Outcomes ──────────────────────────────────────────────
 
-export function recordObservationOutcomes(results = []) {
+// P1-6: must be async — it returns withFileLock(...) which is a Promise.
+// Non-async callers treating the return value synchronously got a truthy
+// Promise object instead of the actual count.
+export async function recordObservationOutcomes(results = []) {
   if (!Array.isArray(results) || results.length === 0) return 0;
   // CM-2: serialize observations through the same lock the rest of the
   // module uses. Previously this skipped the lock and could race against

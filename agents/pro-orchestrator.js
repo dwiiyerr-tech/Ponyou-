@@ -53,6 +53,8 @@ let _validationMode = false;
 let _tradesSinceLastAnalysis = 0;
 let _analysisCache = null;
 let _analysisCacheTime = 0;
+// T3-12: unsubscribe refs for safe re-init cleanup.
+let _unsubscribers = [];
 let _consecutiveErrors = 0;
 const ANALYSIS_CACHE_TTL_MS = 120_000; // 2 min — matches orchestrator cycle
 const MAX_CONSECUTIVE_ERRORS = 5;      // auto-suspend pro mode after this many errors
@@ -208,10 +210,12 @@ export function runProAnalysis() {
       gems,
       rugs,
       riskScore: rugRate,
+      // T3-8: AVOID must be evaluated BEFORE BUY — a 45% WR narrative with
+      // 15% rug rate should be AVOID, not BUY. Prior order let wr>=0.40 win.
       recommendation: !hasSample ? "INSUFFICIENT_DATA"
         : wr >= 0.50 && rugRate === 0 ? "STRONG_BUY"
+        : rugRate >= HIGH_RUG_RATE ? "AVOID"
         : wr >= 0.40 ? "BUY"
-        : rugRate >= HIGH_RUG_RATE ? "AVOID"   // PO-5: rate, not absolute count
         : "NEUTRAL",
     };
   }
@@ -292,6 +296,13 @@ export function runProAnalysis() {
       _proModeActive = false;
       setAgentStatus(AGENT_NAME, "stopped", `Auto-suspended after ${MAX_CONSECUTIVE_ERRORS} consecutive analysis errors`);
       log("pro_orchestrator", "AUTO-SUSPEND: pro mode disabled — screening pipeline continues without pro gate");
+      // Auto-recover after 30 min: reset error counter and re-arm pro mode
+      setTimeout(() => {
+        _consecutiveErrors = 0;
+        _proModeActive = true;
+        setAgentStatus(AGENT_NAME, "running", "Pro mode re-armed after 30-min cooldown");
+        log("pro_orchestrator", "AUTO-RECOVER: pro mode re-enabled after 30-min cooldown");
+      }, 30 * 60 * 1000);
     }
     return null;
   }
@@ -1106,6 +1117,9 @@ export async function proCastNetDecision({
 // ─── Pro Mode Lifecycle ───────────────────────────────────────
 
 export function initProOrchestrator() {
+  // T3-12: clean up previous listeners before re-registering.
+  for (const fn of _unsubscribers) { try { fn(); } catch { /* already removed */ } }
+  _unsubscribers = [];
   if (_initialized) return;
   _initialized = true;
 
@@ -1134,7 +1148,7 @@ export function initProOrchestrator() {
   }
 
   // Listen for automation activation — upgrade to pro mode
-  agentBus.subscribe("automation:activated", () => {
+  _unsubscribers.push(agentBus.subscribe("automation:activated", () => {
     _proModeActive = true;
     setAgentStatus(AGENT_NAME, "running", "PRO MODE activated — elite decisions online");
     log("pro_orchestrator", "PRO MODE ENGAGED — automation approved, elite engine online");
@@ -1143,10 +1157,10 @@ export function initProOrchestrator() {
     if (intel) {
       agentBus.emit("pro:intelligence_ready", intel);
     }
-  });
+  }));
 
   // Listen for automation revocation — downgrade from pro mode
-  agentBus.subscribe("automation:revoked", () => {
+  _unsubscribers.push(agentBus.subscribe("automation:revoked", () => {
     _validationMode = proValidationModeEnabled();
     _proModeActive = _validationMode;
     if (_proModeActive) {
@@ -1156,14 +1170,14 @@ export function initProOrchestrator() {
     }
     setAgentStatus(AGENT_NAME, "stopped", "Pro mode revoked — back to manual");
     log("pro_orchestrator", "Pro mode disengaged — automation revoked");
-  });
+  }));
 
   // Listen for trade outcomes → continuous learning
   // PO-6: previously this incremented `_tradesSinceLastAnalysis` but never
   // acted on it. Now actually refreshes pro-intel every N trades and emits
   // the result so the orchestrator-agent's selector consumes it.
   const ANALYSIS_REFRESH_EVERY = 10;
-  agentBus.subscribe("management:llm_exit_executed", () => {
+  _unsubscribers.push(agentBus.subscribe("management:llm_exit_executed", () => {
     if (!_proModeActive) return;
     _tradesSinceLastAnalysis += 1;
     updateAgentHealth(AGENT_NAME, { tradesSinceLastAnalysis: _tradesSinceLastAnalysis });
@@ -1177,7 +1191,7 @@ export function initProOrchestrator() {
         log("pro_orchestrator", `Auto-refreshed analysis after ${ANALYSIS_REFRESH_EVERY} trades`);
       }
     }
-  });
+  }));
 }
 
 export function isProModeActive() {

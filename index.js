@@ -4919,6 +4919,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
         ? getLearnedRulesBlock()
         : null;
 
+      // Track how many positions this LLM cycle opens — hard-enforced in onToolFinish.
+      let deployedThisCycle = 0;
+
       const { content } = await agentLoop(`
 SCREENING CYCLE
 Amount: ${deployAmount} SOL
@@ -4980,6 +4983,12 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                 )
               : null;
             if (token) {
+              // Hard position-limit guard: LLM is told the limit in the prompt
+              // but is not structurally prevented from calling swap_token N times.
+              // Enforce here so the system never opens more slots than allowed.
+              if (openTokens.length + deployedThisCycle >= positionLimit) {
+                log("protection", `Screener limit guard: ${openTokens.length}+${deployedThisCycle}/${positionLimit} — LLM over-entry blocked`);
+              } else {
               for (const exec of executions) {
                 // Staged entry: only deploy stage-1 amount, not full allocation
                 const activeStrat = getStrategy(null, { regime: marketIntel.condition });
@@ -5045,8 +5054,10 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                   wallet_address: exec.wallet_address || null,
                   paper_trade: process.env.DRY_RUN === 'true' || process.env.PAPER_TRADING === 'true',
                 });
+                deployedThisCycle++;
               }
               recordTrade(null); // outcome unknown yet
+              } // end else (position limit guard)
             }
           }
         },
@@ -5637,7 +5648,11 @@ export function startCronJobs() {
       }
 
       if (heartbeatActions > 0) {
-        log("mgmt_heartbeat", `${heartbeatActions} emergency signals detected`);
+        log("mgmt_heartbeat", `${heartbeatActions} emergency signals detected — triggering out-of-band management cycle`);
+        // Fire an out-of-band management cycle immediately instead of waiting
+        // for the next scheduled cron tick (which could be minutes away).
+        // _managementBusy guard prevents double-execution with a running cycle.
+        runManagementCycle({ silent: true }).catch(() => {});
       }
       agentBus.emit("management:heartbeat", {
         positions: tokens.length,
