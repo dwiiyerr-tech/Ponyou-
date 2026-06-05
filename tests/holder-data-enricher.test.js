@@ -27,7 +27,7 @@ vi.mock("../tools/rug-signals.js", () => ({
 vi.mock("../logger.js", () => ({ log: () => {} }));
 vi.mock("../metrics.js", () => ({ recordCounter: () => {} }));
 
-const { enrichHolderData, _resetHolderEnricherCache } = await import("../tools/holder-data-enricher.js");
+const { enrichHolderData, _resetHolderEnricherCache, detectMultiWalletClusters } = await import("../tools/holder-data-enricher.js");
 
 const MINT = "MintZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"; // 36 chars
 const ALL_ON = {
@@ -131,6 +131,25 @@ describe("enrichHolderData — fetch + cache", () => {
     expect(fetchHeliusTxns).not.toHaveBeenCalled();
   });
 
+  it("attaches clusterAnalysis when holders are available", async () => {
+    // 5 wallets each holding ~3% — should form a cluster
+    getTokenSecurityDetails.mockResolvedValue({
+      holders: [
+        { address: "ta1", owner: "w1", token_amount: 300, pct: 3.0 },
+        { address: "ta2", owner: "w2", token_amount: 310, pct: 3.1 },
+        { address: "ta3", owner: "w3", token_amount: 295, pct: 2.95 },
+        { address: "ta4", owner: "w4", token_amount: 305, pct: 3.05 },
+        { address: "ta5", owner: "w5", token_amount: 290, pct: 2.9 },
+      ],
+    });
+
+    const r = await enrichHolderData({ mint: MINT, featureFlags: ALL_ON });
+    expect(r.clusterAnalysis).not.toBeNull();
+    expect(r.clusterAnalysis.clusterRisk).not.toBe("CLEAN");
+    expect(r.clusterAnalysis.clusters.length).toBeGreaterThan(0);
+    expect(r.clusterAnalysis.largestClusterPct).toBeGreaterThanOrEqual(10);
+  });
+
   it("probes sells only when a top holder's share dropped since last snapshot", async () => {
     getTokenSecurityDetails.mockResolvedValue({
       holders: [{ address: "ta1", owner: "own1", token_amount: 400, pct: 4 }],
@@ -145,5 +164,64 @@ describe("enrichHolderData — fetch + cache", () => {
     expect(fetchHeliusTxns).toHaveBeenCalled();
     expect(r.recentSells.length).toBeGreaterThan(0);
     expect(r.recentSells[0].address).toBe("own1");
+  });
+});
+
+describe("detectMultiWalletClusters", () => {
+  const h = (address, pct) => ({ address, wallet: address, balance: pct * 100, pct });
+
+  it("returns CLEAN and no clusters for a natural distribution", () => {
+    const holders = [h("w1", 15), h("w2", 8), h("w3", 5), h("w4", 3), h("w5", 1.5)];
+    const r = detectMultiWalletClusters(holders);
+    expect(r.clusterRisk).toBe("CLEAN");
+    expect(r.clusters).toHaveLength(0);
+  });
+
+  it("detects SUSPICIOUS cluster when 3+ wallets share similar pct", () => {
+    // 3 wallets at ~5% → combined 15% → SUSPICIOUS
+    const holders = [h("w1", 5.1), h("w2", 5.0), h("w3", 4.9), h("w4", 20), h("w5", 2)];
+    const r = detectMultiWalletClusters(holders);
+    expect(r.clusters.length).toBeGreaterThan(0);
+    expect(r.largestClusterPct).toBeCloseTo(15, 0);
+    expect(r.clusterRisk).toBe("SUSPICIOUS");
+    expect(r.clusters[0].walletCount).toBe(3);
+    expect(r.clusters[0].signal).toBe("uniform_split");
+  });
+
+  it("detects HIGH cluster when combined pct >= 25%", () => {
+    // 5 wallets at ~5% → combined 25%
+    const holders = [h("a", 5.0), h("b", 5.1), h("c", 4.8), h("d", 5.2), h("e", 5.0), h("f", 1)];
+    const r = detectMultiWalletClusters(holders);
+    expect(r.clusterRisk).toBe("HIGH");
+    expect(r.largestClusterPct).toBeGreaterThanOrEqual(25);
+    expect(r.same_funder_holders).toBe(r.clusters[0].walletCount);
+  });
+
+  it("detects CRITICAL cluster when combined pct >= 40%", () => {
+    // 8 wallets each at 5% → combined 40%
+    const holders = Array.from({ length: 8 }, (_, i) => h(`w${i}`, 5.0));
+    const r = detectMultiWalletClusters(holders);
+    expect(r.clusterRisk).toBe("CRITICAL");
+    expect(r.largestClusterPct).toBeGreaterThanOrEqual(40);
+  });
+
+  it("does not flag when only 2 wallets match (below MIN_CLUSTER_SIZE=3)", () => {
+    const holders = [h("a", 5.0), h("b", 5.1), h("c", 2), h("d", 3), h("e", 1)];
+    const r = detectMultiWalletClusters(holders);
+    // Only a+b match, which is 2 wallets < MIN_CLUSTER_SIZE
+    expect(r.clusterRisk).toBe("CLEAN");
+  });
+
+  it("returns CLEAN and no cluster when fewer than 3 holders total", () => {
+    const holders = [h("a", 30), h("b", 20)];
+    const r = detectMultiWalletClusters(holders);
+    expect(r.clusterRisk).toBe("CLEAN");
+    expect(r.clusters).toHaveLength(0);
+  });
+
+  it("correctly reports same_funder_holders as largest cluster size", () => {
+    const holders = [h("w1", 3.0), h("w2", 3.1), h("w3", 2.9), h("w4", 3.05), h("w5", 10)];
+    const r = detectMultiWalletClusters(holders);
+    expect(r.same_funder_holders).toBe(r.clusters[0]?.walletCount ?? 0);
   });
 });

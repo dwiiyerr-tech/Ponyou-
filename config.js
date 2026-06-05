@@ -775,6 +775,13 @@ jupiter: {
         Number(u.holderAnalysis?.rugPatternDetector?.confidenceThreshold ?? 70)
       )),
     },
+
+    // D) Multi-wallet entity detection — blocks tokens where one entity splits
+    // supply across many wallets to disguise concentration. Pure-math, zero RPC.
+    // blockRisk: minimum risk level to hard-block entry ("SUSPICIOUS"|"HIGH"|"CRITICAL").
+    multiWalletDetection: {
+      blockRisk: u.holderAnalysis?.multiWalletDetection?.blockRisk ?? "HIGH",
+    },
   },
 };
 

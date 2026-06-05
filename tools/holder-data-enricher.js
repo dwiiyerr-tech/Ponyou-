@@ -44,7 +44,7 @@ function gmgnHolderOn() {
 
 const { parseSolanaSwap } = _internalSmartMoney;
 
-const EMPTY = { topHolders: [], recentSells: [], holderTransactions: [], priceHistory: [], fromCache: false };
+const EMPTY = { topHolders: [], recentSells: [], holderTransactions: [], priceHistory: [], clusterAnalysis: null, fromCache: false };
 
 // Per-mint TTL cache. Keyed by mint → { ts, data }.
 const _cache = new Map();
@@ -186,6 +186,89 @@ async function probeRecentSells(mint, topHolders) {
   return sells;
 }
 
+// ─── Multi-wallet cluster detector ────────────────────────────────
+//
+// Detects one entity hiding behind multiple wallets by checking whether
+// several holders have nearly-identical token percentages — a telltale sign
+// of a scripted supply split (devs run a script that sends token to N wallets
+// each receiving supply / N, producing pct values within a tight band).
+//
+// Pure math — zero extra RPC calls. Runs on the topHolders data already
+// fetched from GMGN / Shyft / Helius in step A.
+//
+// Union-Find approach: holders whose pct is within PCT_TOLERANCE of each other
+// are merged into the same cluster. Any cluster with ≥ MIN_CLUSTER_SIZE wallets
+// controlling ≥ MIN_COMBINED_PCT of supply is reported as a hidden entity.
+
+const CLUSTER_PCT_TOLERANCE = 0.6;  // wallets within 0.6 pct-points → same entity
+const CLUSTER_MIN_SIZE = 3;          // need ≥3 matching wallets to flag
+const CLUSTER_MIN_COMBINED_PCT = 10; // cluster must control ≥10% to matter
+
+function detectMultiWalletClusters(topHolders = []) {
+  const holders = topHolders.filter(h => (h.pct || 0) >= 0.5);
+  if (holders.length < CLUSTER_MIN_SIZE) {
+    return { clusters: [], largestClusterPct: 0, totalClusteredWallets: 0, clusterRisk: "CLEAN", same_funder_holders: 0 };
+  }
+
+  // Union-Find
+  const parent = Array.from({ length: holders.length }, (_, i) => i);
+  function find(i) {
+    if (parent[i] !== i) parent[i] = find(parent[i]);
+    return parent[i];
+  }
+  function union(i, j) { parent[find(i)] = find(j); }
+
+  for (let i = 0; i < holders.length; i++) {
+    for (let j = i + 1; j < holders.length; j++) {
+      if (Math.abs((holders[i].pct || 0) - (holders[j].pct || 0)) <= CLUSTER_PCT_TOLERANCE) {
+        union(i, j);
+      }
+    }
+  }
+
+  const groups = new Map();
+  for (let i = 0; i < holders.length; i++) {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(i);
+  }
+
+  const clusters = [];
+  for (const indices of groups.values()) {
+    if (indices.length < CLUSTER_MIN_SIZE) continue;
+    const combinedPct = indices.reduce((s, i) => s + (holders[i].pct || 0), 0);
+    if (combinedPct < CLUSTER_MIN_COMBINED_PCT) continue;
+    const wallets = indices.map(i => holders[i].address || holders[i].wallet).filter(Boolean);
+    const avgPct = combinedPct / indices.length;
+    // Confidence: increases with cluster size and combined holdings
+    const confidence = Math.min(95, 45 + indices.length * 5 + Math.round(combinedPct / 2));
+    clusters.push({
+      wallets,
+      combinedPct: parseFloat(combinedPct.toFixed(2)),
+      avgPct: parseFloat(avgPct.toFixed(2)),
+      walletCount: wallets.length,
+      signal: "uniform_split",
+      confidence,
+    });
+  }
+
+  clusters.sort((a, b) => b.combinedPct - a.combinedPct);
+  const largestClusterPct = clusters[0]?.combinedPct || 0;
+
+  let clusterRisk = "CLEAN";
+  if (largestClusterPct >= 40) clusterRisk = "CRITICAL";
+  else if (largestClusterPct >= 25) clusterRisk = "HIGH";
+  else if (largestClusterPct >= 15) clusterRisk = "SUSPICIOUS";
+
+  return {
+    clusters,
+    largestClusterPct,
+    totalClusteredWallets: clusters.reduce((s, c) => s + c.walletCount, 0),
+    clusterRisk,
+    same_funder_holders: clusters[0]?.walletCount || 0,
+  };
+}
+
 /**
  * Build a price-history series for the entry-price (B) fallback from free
  * sources (GeckoTerminal klines via dexscreener.js). Returns [{timestamp, priceUsd}].
@@ -284,7 +367,7 @@ export async function enrichHolderData({ mint, currentPrice = 0, featureFlags = 
     return { ...cached.data, fromCache: true };
   }
 
-  const result = { topHolders: [], recentSells: [], holderTransactions: [], priceHistory: [], fromCache: false };
+  const result = { topHolders: [], recentSells: [], holderTransactions: [], priceHistory: [], clusterAnalysis: null, fromCache: false };
 
   // ── A) top holders (Shyft-first, Helius fallback; both carry pct) ──
   try {
@@ -292,6 +375,19 @@ export async function enrichHolderData({ mint, currentPrice = 0, featureFlags = 
   } catch (e) {
     recordCounter("holder_enrich_holders_error");
     log("holder_enrich_warn", `holders fetch ${mint.slice(0, 8)}: ${e.message}`);
+  }
+
+  // ── D) multi-wallet cluster detection — zero extra RPC ──
+  if (result.topHolders.length >= CLUSTER_MIN_SIZE) {
+    try {
+      result.clusterAnalysis = detectMultiWalletClusters(result.topHolders);
+      if (result.clusterAnalysis.clusterRisk !== "CLEAN") {
+        recordCounter(`holder_cluster_${result.clusterAnalysis.clusterRisk.toLowerCase()}`);
+        log("holder_cluster", `${mint.slice(0, 8)}: risk=${result.clusterAnalysis.clusterRisk} largestPct=${result.clusterAnalysis.largestClusterPct}% across ${result.clusterAnalysis.clusters[0]?.walletCount} wallets`);
+      }
+    } catch (e) {
+      log("holder_enrich_warn", `cluster detect ${mint.slice(0, 8)}: ${e.message}`);
+    }
   }
 
   // ── B) price history (free) for the underwater-holder fallback ──
@@ -315,3 +411,6 @@ export async function enrichHolderData({ mint, currentPrice = 0, featureFlags = 
 export function _resetHolderEnricherCache() {
   _cache.clear();
 }
+
+/** Exported for unit testing. */
+export { detectMultiWalletClusters };

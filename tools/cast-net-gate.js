@@ -141,13 +141,29 @@ async function checkHolderAnalysis(token) {
   // fetch yields nothing we still soft-pass below — never hard-block on missing data.
   let topHolders = token?.top_holders || token?.holders || [];
   let recentSells = token?.recent_sells || [];
+  let clusterAnalysis = token?.clusterAnalysis || null;
   if (topHolders.length === 0 && recentSells.length === 0) {
     try {
       const enriched = await enrichHolderData({ mint, featureFlags: cfg });
       topHolders = enriched.topHolders || [];
       recentSells = enriched.recentSells || [];
+      clusterAnalysis = enriched.clusterAnalysis || null;
     } catch (err) {
       log("cast_net_warn", `holder enrich failed: ${err.message}`);
+    }
+  }
+
+  // D) Multi-wallet cluster — detect single entity hiding behind many wallets
+  if (clusterAnalysis && clusterAnalysis.clusterRisk !== "CLEAN") {
+    const mwCfg = cfg.multiWalletDetection || {};
+    const blockAt = mwCfg.blockRisk ?? "HIGH"; // default: block at HIGH or CRITICAL
+    const riskOrder = { CLEAN: 0, SUSPICIOUS: 1, HIGH: 2, CRITICAL: 3 };
+    if ((riskOrder[clusterAnalysis.clusterRisk] || 0) >= (riskOrder[blockAt] || 2)) {
+      const top = clusterAnalysis.clusters[0];
+      return {
+        ok: false,
+        reason: `multi-wallet: ${top?.walletCount ?? "?"}  wallets control ${clusterAnalysis.largestClusterPct}% (${clusterAnalysis.clusterRisk})`,
+      };
     }
   }
 
