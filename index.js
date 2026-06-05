@@ -2680,7 +2680,8 @@ async function checkStagedEntries(tokens, balance) {
         buy.tracked.amount_sol = newAmount;
         buy.tracked.initial_value_usd = newValue;
 
-        // Persist updated position
+        // Persist updated position — preserve strategy/cast-net fields so exit policy,
+        // strategy-outcome learning, and cast-net coordination keep working.
         await trackPosition({
           position: buy.mint,
           pool: buy.tracked.pool || "jupiter",
@@ -2690,6 +2691,9 @@ async function checkStagedEntries(tokens, balance) {
           signal_snapshot: buy.tracked.signal_snapshot,
           wallet_address: buy.wallet_address,
           chain: buy.chain || buy.tracked?.chain || "sol",
+          strategy_used:     buy.tracked.strategy_used || null,
+          cast_net_group_id: buy.tracked.cast_net_group_id || null,
+          cast_net_slot:     buy.tracked.cast_net_slot ?? null,
           paper_trade: process.env.DRY_RUN === 'true' || process.env.PAPER_TRADING === 'true',
         });
 
@@ -3111,6 +3115,19 @@ export async function runManagementCycle({ silent = false } = {}) {
           });
         }
 
+        // Emit to learning-agent so hunt-source attribution, rug name-pattern learning,
+        // and per-source win/loss stats are updated on deterministic exits (not just
+        // LLM-tool-driven sells, which previously were the only emit site).
+        agentBus.emit("management:llm_exit_executed", {
+          mint:          exit.mint,
+          reason:        exit.reason,
+          walletAddress: exit.wallet_address || null,
+          pnl_pct:       tradePnl,
+          is_win:        tradePnl > 0,
+          rug_detected:  /rug/i.test(exit.reason || ""),
+          timestamp:     Date.now(),
+        });
+
         const tpTriggered = /immediate tp|roi|trailing stop/i.test(exit.reason || "") && (exit.pnl_pct || 0) >= (config.management.autoTakeProfitPct ?? 50);
         if (tpTriggered) {
           const cooldownHours = config.management.antiGreedCooldownHours ?? 12;
@@ -3296,6 +3313,8 @@ TUGAS:
               dry_run: result.dry_run,
               success: !!(result?.success || result?.dry_run),
               timestamp: Date.now(),
+              _hunt_source: "management-llm",
+              _social_source: null,
             });
           }
           if (name === "swap_token" && (result.success || result.dry_run)) {
@@ -4874,6 +4893,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
               amount_sol: stage1Amount,
               initial_value_usd: entryUsd,
               chain: best.chain || "sol",
+              strategy_used: best.selected_strategy || getActiveStrategyId(),
               signal_snapshot: {
                 mint: best.mint,
                 symbol: best.symbol,
@@ -4887,6 +4907,8 @@ export async function runScreeningCycle({ silent = false } = {}) {
                 kelly: best.kelly || null,
                 staged_entry: stagedTracking,
                 portfolio_skill_votes: best.portfolio_skill_votes || [],
+                _hunt_source: best._hunt_source || null,
+                _social_source: best._social_source || null,
                 execution_context: {
                   wallet_address: exec.wallet_address || null,
                   provider: result?.execution_provider || "auto",
@@ -5077,6 +5099,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                       slippage: Number(result?.slippage || entrySlippage.slippage_bps / 100 || 0),
                     },
                   },
+                  strategy_used: token.selected_strategy || getActiveStrategyId(),
                   wallet_address: exec.wallet_address || null,
                   paper_trade: process.env.DRY_RUN === 'true' || process.env.PAPER_TRADING === 'true',
                 });

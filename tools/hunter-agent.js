@@ -997,6 +997,13 @@ export function getCachedPrey() {
   return _preyCache;
 }
 
+// Allow external callers (e.g. trash-layer → screening-agent) to overwrite the
+// cache with an already-filtered set so screening reads cleaned prey, not raw.
+export function setCachedPrey(tokens) {
+  _preyCache = Array.isArray(tokens) ? tokens : [];
+  _preyCachedAt = new Date().toISOString();
+}
+
 /**
  * Run a hunting expedition. Called by the main loop on its own schedule.
  * Returns tokens sorted by hunter score (highest first).

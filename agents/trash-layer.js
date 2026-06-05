@@ -103,12 +103,16 @@ async function researchTokenOnline(token) {
     const symbol = (token.symbol || "").toLowerCase();
     const name = (token.name || "").toLowerCase();
 
+    // Normalize numeric fields before comparisons — some hunter sources send undefined
+    const tokenMcap = Number(token.mcap) || 0;
+    const tokenLiq  = Number(token.liquidity) || 0;
+
     // Check for impersonation of legitimate projects
     for (const legit of LEGITIMATE_PROJECTS) {
-      if (symbol === legit.toLowerCase() && token.mcap < 100000) {
+      if (symbol === legit.toLowerCase() && tokenMcap < 100000) {
         flags.push({
           type: "impersonation",
-          detail: `${token.symbol} impersonates ${legit} — micro-cap copycat (mcap $${token.mcap})`,
+          detail: `${token.symbol} impersonates ${legit} — micro-cap copycat (mcap $${tokenMcap})`,
           severity: "critical",
         });
       }
@@ -119,7 +123,7 @@ async function researchTokenOnline(token) {
       const isLongEnough = legitLower.length > 3;
       const nextChar = symbol[legitLower.length];
       const hasBoundary = nextChar === undefined || /[^a-z]/i.test(nextChar);
-      if (isLongEnough && symbol.startsWith(legitLower) && symbol !== legitLower && hasBoundary && token.liquidity < 5000) {
+      if (isLongEnough && symbol.startsWith(legitLower) && symbol !== legitLower && hasBoundary && tokenLiq < 5000) {
         flags.push({
           type: "copycat_variant",
           detail: `${token.symbol} — variant of legitimate ${legit}`,

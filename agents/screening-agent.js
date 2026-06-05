@@ -13,6 +13,7 @@
 import { agentBus } from "./agent-bus.js";
 import { setAgentStatus, updateAgentHealth } from "./agent-registry.js";
 import { log } from "../logger.js";
+import { setCachedPrey } from "../tools/hunter-agent.js";
 
 const AGENT_NAME = "screening";
 
@@ -40,17 +41,21 @@ export function initScreeningAgent({ runScreeningCycle, checkAllGates }) {
 
   setAgentStatus(AGENT_NAME, "running", "Screening agent initialized");
 
-  // Listen for cleaned prey from Trash Layer → inject into pipeline
-  // Trash Layer already filtered: no supply_invalid, no dust, no RugCheck blocks
+  // Listen for cleaned prey from Trash Layer → write back into the prey cache
+  // so the screening cycle reads already-filtered tokens (not raw hunter output).
+  // This closes the pipeline gap where trash-layer ran but its output was discarded.
   agentBus.subscribe("trash:cleaned_prey", (payload) => {
     const tokens = payload?.tokens || [];
     const stats = payload?.stats || {};
+    if (tokens.length > 0) {
+      setCachedPrey(tokens);
+    }
     updateAgentHealth(AGENT_NAME, {
       lastPreyReceived: new Date().toISOString(),
       preyCount: tokens.length,
       trashStats: stats,
     });
-    log("screening", `Received ${tokens.length} cleaned tokens from Trash Layer (${stats.passed}/${stats.total} passed)`);
+    log("screening", `Received ${tokens.length} cleaned tokens from Trash Layer (${stats.passed}/${stats.total} passed) — prey cache updated`);
   });
 
   // Listen for market changes
