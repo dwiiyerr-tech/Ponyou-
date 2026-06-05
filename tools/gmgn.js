@@ -349,15 +349,11 @@ const SIGNAL_TYPES_SUPPORTED = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 17, 1
  * @param {object}   [filters]     optional group filters (mc_min, mc_max, …)
  */
 export async function getTokenSignals(signalTypes = SIGNAL_TYPES_SUPPORTED, filters = {}, chain = DEFAULT_CHAIN) {
-  const c = normalizeChain(chain);
-  return withCache(`${c}:token_signal:${signalTypes.join(",")}`, 3 * 60_000, async () => {
-    // signal_type must be INSIDE each group object, not at the top level.
-    // chain must be in the body (not just the query string) — server requires it.
-    const group = { signal_type: signalTypes, ...filters };
-    const raw = await gmgnFetch("POST", "/v1/market/token_signal", {}, { chain: c, groups: [group] });
-    if (!raw) return [];
-    return Array.isArray(raw) ? raw : (Array.isArray(raw?.list) ? raw.list : []);
-  });
+  // Endpoint /v1/market/token_signal returns 401 (deprecated/unavailable).
+  // Calling it poisons the global circuit for 10 min, blocking all other GMGN
+  // calls (holders/trending/trenches/wallet-stats). Skip entirely until restored.
+  void signalTypes; void filters; void chain;
+  return [];
 }
 
 // ─── User/wallet endpoints ────────────────────────────────────────────────────

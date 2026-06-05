@@ -875,10 +875,10 @@ async function huntGmgnTrenches(strategy) {
         if (!mint || seen.has(mint)) continue;
         seen.add(mint);
 
-        // Real trenches buckets: new_creation / pump (early, bonding curve) vs
-        // completed (graduated to DEX) / near_completion (about to). Graduated/
-        // near-graduated = more validated, lower rug risk → higher base score.
-        const isNearGrad = t._trench_type === "completed" || t._trench_type === "near_completion";
+        // Server bucket taxonomy: new_creation (early), pump (near-graduation —
+        // server maps requested "near_completion" to "pump"), completed (graduated).
+        // Near-graduated = more validated, lower rug risk → higher base score.
+        const isNearGrad = t._trench_type === "completed" || t._trench_type === "pump";
         let score = isNearGrad ? 45 : 25;
         if (Number(t.holder_count ?? 0) >= 100) score += 15;
         if (Number(t.volume_24h ?? 0) >= 10_000) score += 10;
