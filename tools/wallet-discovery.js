@@ -345,10 +345,8 @@ export async function discoverSmartWallets({
         // otherwise treat as unknown (null) so scoring can skip this wallet.
         stats = {
           winrate: w.winRate != null ? Number(w.winRate) : 0,
-          // NOTE: GMGN PnL is USD, not SOL. Stored in the realized_pnl_sol slot
-          // for now (the threshold/label below read it); unit correction is part
-          // of the gated rug/scoring activation work.
-          realized_pnl_sol: Number(w.realizedPnlUsd ?? 0),
+          realized_pnl_sol: null,            // unknown — GMGN reports USD, not SOL
+          realized_pnl_usd: Number(w.realizedPnlUsd ?? 0),
           completed_trades: Number(w.tradeCount ?? 0),
           total_swaps: Number(w.tradeCount ?? 0),
           avg_hold_seconds: null,
@@ -366,11 +364,17 @@ export async function discoverSmartWallets({
       }
 
       const botReason = looksLikeBot(stats);
+      // GMGN reports PnL in USD — compare against a USD equivalent (~$75 ≈ 0.5 SOL).
+      // Helius path stores real SOL in realized_pnl_sol and uses min_realized_pnl_sol.
+      const MIN_GMGN_PNL_USD = 75;
+      const pnlQualifies = stats._source === "gmgn"
+        ? (stats.realized_pnl_usd ?? 0) >= MIN_GMGN_PNL_USD
+        : (stats.realized_pnl_sol ?? 0) >= min_realized_pnl_sol;
       const qualifies =
         !botReason &&
         stats.completed_trades >= min_trades &&
         stats.winrate >= min_winrate &&
-        stats.realized_pnl_sol >= min_realized_pnl_sol &&
+        pnlQualifies &&
         // Only enforce the hold-time ceiling when we actually have the figure.
         (!holdKnown || stats.avg_hold_seconds <= max_avg_hold_seconds);
 
@@ -400,14 +404,14 @@ export async function discoverSmartWallets({
           && autoAddCount < MAX_AUTO_ADD_PER_RUN && meetsTrackRecord) {
         await addSmartWallet({
           address: addr,
-          label: `auto:wr${Math.round(stats.winrate * 100)}_pnl${stats.realized_pnl_sol.toFixed(2)}SOL_n${stats.completed_trades}`,
+          label: `auto:wr${Math.round(stats.winrate * 100)}_pnl${stats._source === "gmgn" ? `${(stats.realized_pnl_usd ?? 0).toFixed(2)}USD` : `${(stats.realized_pnl_sol ?? 0).toFixed(2)}SOL`}_n${stats.completed_trades}`,
           source_tokens: sourceTokens,
           stats,
           selection: entry.selection,
           notes: entry.selection.reasons.join("; "),
         });
         entry.promoted = true;
-        log("discovery", `Promoted ${addr.slice(0, 8)} — score ${entry.selection.score}, winrate ${stats.winrate}, ${stats.realized_pnl_sol} SOL`);
+        log("discovery", `Promoted ${addr.slice(0, 8)} — score ${entry.selection.score}, winrate ${stats.winrate}, pnl ${stats._source === "gmgn" ? `${stats.realized_pnl_usd ?? 0}USD` : `${stats.realized_pnl_sol ?? 0}SOL`}`);
       }
     } catch (e) {
       log("discovery_warn", `score ${addr.slice(0, 8)}: ${e.message}`);

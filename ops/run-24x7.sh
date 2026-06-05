@@ -346,5 +346,17 @@ while true; do
     log "Reached MAX_RESTARTS=${MAX_RESTARTS}. Supervisor exiting."
     exit "${EXIT_CODE}"
   fi
+  # Crash-rate circuit breaker: 5 crashes within 60s each → back off 60s
+  NOW=$(date +%s)
+  if [ $((NOW - ${LAST_RESTART:-0})) -lt 60 ]; then
+    RAPID=$((${RAPID:-0} + 1))
+  else
+    RAPID=0
+  fi
+  LAST_RESTART=$NOW
+  if [ "${RAPID}" -ge 5 ]; then
+    log "5 rapid crashes detected — backing off 60s (possible bad deploy)"
+    sleep 60; RAPID=0
+  fi
   sleep "${RESTART_DELAY}"
 done

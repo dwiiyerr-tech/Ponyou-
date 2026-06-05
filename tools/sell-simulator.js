@@ -179,7 +179,7 @@ export async function simulateSell(mint, { timeoutMs = 6000 } = {}) {
     tx.feePayer = holderOwner;
 
     const simResult = await Promise.race([
-      connection.simulateTransaction(tx, { sigVerify: false }),
+      connection.simulateTransaction(tx),
       new Promise((_, reject) => setTimeout(() => reject(new Error("__timeout__")), timeoutMs)),
     ]);
 
