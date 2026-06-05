@@ -744,7 +744,10 @@ export async function getTokenKlines({ mint, pair_address = null, resolution = "
   } catch (e) {
     const is429 = /429/.test(e?.message || "");
     if (!is429 || !_klineWarnSeen.has(mint)) {
-      if (is429) _klineWarnSeen.add(mint);
+      if (is429) {
+        if (_klineWarnSeen.size > 500) _klineWarnSeen.clear(); // bound memory over long uptimes
+        _klineWarnSeen.add(mint);
+      }
       log("kline_warn", `GeckoTerminal kline failed for ${mint}: ${e.message}`);
     }
     return { mint, resolution, candles: [], error: e.message };
@@ -1236,7 +1239,13 @@ export async function getSmartMoneyInflow({ timeframe = "1h" } = {}) {
   const cutoff = Date.now() / 1000 - (timeframe === "1h" ? 3600 : timeframe === "6h" ? 21600 : 86400);
   const tokenAccum = new Map(); // mint → { wallets: Set, buy_count, sell_count, weighted_buy_score }
 
-  for (const wallet of wallets.slice(0, 5)) {
+  const _heliusBatch = wallets.slice(0, 5);
+  if (heliusCircuitOpen()) {
+    log("smart_money", `Circuit open — skipping Helius inflow check for ${_heliusBatch.length} wallets`);
+    return { timeframe, tokens: [], source: "helius", wallets_tracked: wallets.length, degraded: "helius_circuit_open" };
+  }
+
+  for (const wallet of _heliusBatch) {
     try {
       const txns = await fetchHeliusTxns(wallet.address, apiKey, 30);
       const history = summarizeSmartWalletHistory(wallet.address, { timeframe: "24h", limit: 12 });

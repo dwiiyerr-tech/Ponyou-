@@ -126,6 +126,7 @@ const _heliusQueue       = [];
 let _heliusNextSlot      = 0;
 let _helius429Streak     = 0;
 let _heliusCBOpenUntil   = 0;           // epoch ms; 0 = circuit closed
+let _heliusReopens       = 0;           // persists across cooldowns; reset only on genuine recovery
 
 export function heliusCircuitOpen() {
   return Date.now() < _heliusCBOpenUntil;
@@ -134,12 +135,14 @@ export function heliusCircuitOpen() {
 export function helius429Hit() {
   _helius429Streak++;
   if (_helius429Streak >= HELIUS_CB_THRESHOLD && !heliusCircuitOpen()) {
-    // Exponential backoff: each re-open doubles the cooldown, capped at 30 min.
-    // Prevents burning 1-2 real 429s per cycle just to re-confirm rate-limiting.
-    const opens = Math.max(0, Math.floor(_helius429Streak / HELIUS_CB_THRESHOLD) - 1);
-    const cooldown = Math.min(HELIUS_CB_COOLDOWN_MS * (2 ** opens), 30 * 60 * 1000);
+    // Exponential backoff keyed on persistent re-open count (not the per-window
+    // streak, which resets on the first probe success). When Helius is structurally
+    // rate-limited the breaker re-opens every cooldown; escalating off _heliusReopens
+    // pins it to the max cap instead of restarting from the minimum each time.
+    _heliusReopens++;
+    const cooldown = Math.min(HELIUS_CB_COOLDOWN_MS * (2 ** (_heliusReopens - 1)), 30 * 60 * 1000);
     _heliusCBOpenUntil = Date.now() + cooldown;
-    log("helius_cb", `Circuit OPEN — ${_helius429Streak} consecutive 429s. Pausing Helius calls for ${Math.round(cooldown / 60000)} min.`);
+    log("helius_cb", `Circuit OPEN — ${_helius429Streak} consecutive 429s (re-open #${_heliusReopens}). Pausing Helius calls for ${Math.round(cooldown / 60000)} min.`);
   }
 }
 
@@ -147,6 +150,7 @@ export function heliusSuccess() {
   if (_helius429Streak > 0) _helius429Streak = 0;
   if (heliusCircuitOpen()) {
     _heliusCBOpenUntil = 0;
+    _heliusReopens = 0;   // genuine recovery — clear escalation so future backoff restarts small
     log("helius_cb", "Circuit CLOSED — Helius responding normally.");
   }
 }
