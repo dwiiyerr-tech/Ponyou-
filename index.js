@@ -163,6 +163,7 @@ import { registerDefaultFeatures, runAllFeatures, listFeatures, getHealthSummary
 import { analyzeCabalPlay, CabalAgentAction } from "./tools/cabal-play-analyzer.js";
 import { runAllMaintenance } from "./data-maintenance.js";
 import { addSmartWallet, listSmartWallets } from "./smart-wallets.js";
+import { importWalletInsight, getWalletPatternScore } from "./tools/wallet-insight-importer.js";
 import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "./market-heatmap.js";
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
 import { getVaultOverrides, getVaultContext, getVaultIntelligenceContext, getDevOverrides, getWalletOverrides, getSmartMoneyContext, getPatternOverrides, getChainOverrides } from "./tools/vault-reader.js";
@@ -6478,6 +6479,68 @@ export async function handleIncomingTelegramMessage(msg) {
       lines.push(`${bar} <b>${s.id}</b> ${avg} | WR ${wr}% rug ${rr}% (${s.traded} trades)`);
     }
     await sendHTML(lines.join("\n"));
+    return;
+  }
+
+  // ── /learn_wallet <address> — import wallet patterns from GMGN ──
+  if (text.startsWith("/learn_wallet ")) {
+    const addr = text.slice(14).trim();
+    if (!addr || addr.length < 32) {
+      await sendHTML("Usage: <code>/learn_wallet &lt;solana_address&gt;</code>\nImports trade patterns from GMGN dan menyimpan ke wallet_history.json");
+      return;
+    }
+    await sendHTML(`⏳ Fetching wallet <code>${addr.slice(0, 8)}...</code> dari GMGN...`);
+    try {
+      const result = await importWalletInsight(addr);
+      if (!result.added) {
+        await sendHTML(`⚠️ Wallet tidak ditambahkan: ${result.reason}`);
+      } else {
+        const p = result.patterns;
+        await sendHTML(
+          `✅ <b>Wallet dipelajari</b>\n` +
+          `Address: <code>${result.address.slice(0, 12)}...</code>\n` +
+          `Win rate: ${(result.win_rate * 100).toFixed(0)}%\n` +
+          `Entry mcap median: $${p.entry_mcap_median?.toFixed(0) ?? "N/A"}\n` +
+          `Avg hold: ${p.avg_hold_hours?.toFixed(1) ?? "N/A"} jam\n` +
+          `Avg gain: ${p.avg_gain_multiple?.toFixed(1) ?? "N/A"}x\n` +
+          `Trades menang: ${p.win_count}`
+        );
+      }
+    } catch (e) {
+      await sendHTML(`❌ Error: ${e.message}`);
+    }
+    return;
+  }
+
+  // ── /wallet_patterns — show loaded wallet patterns ──
+  if (text === "/wallet_patterns" || text === "/walletpatterns") {
+    try {
+      const { readFileSync, existsSync } = await import("fs");
+      const HIST = new URL("./wallet_history.json", import.meta.url).pathname;
+      if (!existsSync(HIST)) {
+        await sendHTML("Belum ada wallet patterns. Gunakan <code>/learn_wallet &lt;address&gt;</code> untuk mulai.");
+        return;
+      }
+      const db = JSON.parse(readFileSync(HIST, "utf8"));
+      if (!db.wallets?.length) {
+        await sendHTML("wallet_history.json kosong. Gunakan <code>/learn_wallet &lt;address&gt;</code>.");
+        return;
+      }
+      const lines = [`<b>🧠 Wallet Patterns (${db.wallets.length} wallets)</b>`, ``];
+      for (const w of db.wallets.slice(0, 10)) {
+        const p = w.patterns || {};
+        lines.push(
+          `<b>${w.address.slice(0, 8)}...</b> [${w.source}]\n` +
+          `  WR: ${w.win_rate != null ? (w.win_rate * 100).toFixed(0) + "%" : "?"} | ` +
+          `Entry mcap: $${p.entry_mcap_p25?.toFixed(0) ?? "?"}–$${p.entry_mcap_p75?.toFixed(0) ?? "?"} | ` +
+          `Hold: ${p.avg_hold_hours?.toFixed(1) ?? "?"}h | ` +
+          `Gain: ${p.avg_gain_multiple?.toFixed(1) ?? "?"}x`
+        );
+      }
+      await sendHTML(lines.join("\n"));
+    } catch (e) {
+      await sendHTML(`❌ Error membaca wallet patterns: ${e.message}`);
+    }
     return;
   }
 

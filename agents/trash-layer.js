@@ -241,13 +241,31 @@ async function filterPreyAdvanced(preyTokens, marketCondition = "NORMAL") {
   }
 
   for (const token of preyTokens) {
-    // Step 0: Batch RugCheck pre-screen result (already fetched above, zero extra API calls)
+    // Step 0a: Batch RugCheck pre-screen result (already fetched above, zero extra API calls)
     if (batchBlocked.has(token.mint)) {
       const rc = batchResults.get(token.mint);
       _stats.rugCheckBlocked++;
       log("trash_layer", `RugCheck BATCH BLOCK: ${token.symbol || token.mint.slice(0, 8)} score=${rc?.score ?? "?"} critical=${rc?.critical ?? "?"}`);
       _emitTrashBlock(token, `rugcheck_batch:score=${rc?.score ?? "?"}`, "rugcheck");
       continue;
+    }
+
+    // Step 0b: GMGN row-risk wash/bot signals (only on GMGN-sourced prey — zero extra API calls)
+    // bot_degen_rate: % of volume from bot/degen wallets; rat_trader_amount_rate: % from rat traders
+    // Both fields come from GMGN trenches/trending row data, not available on DexScreener prey.
+    {
+      const botDegen = token._gmgn_risk?.bot_degen_rate ?? 0;
+      const ratTrader = token._gmgn_risk?.rat_trader_amount_rate ?? 0;
+      if (botDegen >= 0.7 && ratTrader >= 0.35) {
+        _stats.blocked++;
+        log("trash_layer", `WASH BLOCK: ${token.symbol} bot_degen=${(botDegen * 100).toFixed(0)}% rat_trader=${(ratTrader * 100).toFixed(0)}%`);
+        _emitTrashBlock(token, `wash:bot_degen=${(botDegen * 100).toFixed(0)}%+rat=${(ratTrader * 100).toFixed(0)}%`, "wash_trading");
+        continue;
+      }
+      if (botDegen >= 0.5 || ratTrader >= 0.25) {
+        token._trash_flags = token._trash_flags || [];
+        token._trash_flags.push(`wash_suspect:bot_degen=${(botDegen * 100).toFixed(0)}%`);
+      }
     }
 
     // Step 1: Known scam pattern check (name/symbol) — curated + learned

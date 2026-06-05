@@ -241,7 +241,7 @@ export function evaluateCandidateDecision({
     reasons.push("negative_kelly_edge");
   }
   if (token.momentum_entry_pass === false) {
-    cautionScore += 10;
+    cautionScore += 25; // raised from 10 — klines available but no confirmation = falling knife risk
     reasons.push("momentum_unconfirmed");
   }
 
