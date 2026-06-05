@@ -158,11 +158,15 @@ async function checkHolderAnalysis(token) {
     const mwCfg = cfg.multiWalletDetection || {};
     const blockAt = mwCfg.blockRisk ?? "HIGH"; // default: block at HIGH or CRITICAL
     const riskOrder = { CLEAN: 0, SUSPICIOUS: 1, HIGH: 2, CRITICAL: 3 };
-    if ((riskOrder[clusterAnalysis.clusterRisk] || 0) >= (riskOrder[blockAt] || 2)) {
+    // Use ?? not || so blockRisk:"CLEAN"(0) or "SUSPICIOUS"(1) aren't silently
+    // upgraded to HIGH(2) by falsy-coercion.
+    const blockThreshold = riskOrder[blockAt] ?? 2;
+    const riskLevel = riskOrder[clusterAnalysis.clusterRisk] ?? 0;
+    if (riskLevel >= blockThreshold) {
       const top = clusterAnalysis.clusters[0];
       return {
         ok: false,
-        reason: `multi-wallet: ${top?.walletCount ?? "?"}  wallets control ${clusterAnalysis.largestClusterPct}% (${clusterAnalysis.clusterRisk})`,
+        reason: `multi-wallet: ${top?.walletCount ?? "?"} wallets control ${clusterAnalysis.largestClusterPct}% (${clusterAnalysis.clusterRisk})`,
       };
     }
   }

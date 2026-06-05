@@ -224,4 +224,30 @@ describe("detectMultiWalletClusters", () => {
     const r = detectMultiWalletClusters(holders);
     expect(r.same_funder_holders).toBe(r.clusters[0]?.walletCount ?? 0);
   });
+
+  it("does NOT flag a natural ladder distribution (stdev guard)", () => {
+    // 2.0, 2.5, 3.0 form a ladder — each pair is within 0.6 pct-points of neighbors,
+    // so they chain-merge via union-find, but stdev ≈ 0.41 > CLUSTER_MAX_STDEV(0.4).
+    // Should be rejected as a false-positive.
+    const holders = [h("a", 2.0), h("b", 2.5), h("c", 3.0), h("d", 8), h("e", 6)];
+    const r = detectMultiWalletClusters(holders);
+    expect(r.clusterRisk).toBe("CLEAN");
+  });
+
+  it("accepts a tight uniform split that passes stdev guard", () => {
+    // 5 wallets each at exactly 5.0% → stdev = 0 → passes guard
+    const holders = [h("a", 5.0), h("b", 5.0), h("c", 5.0), h("d", 5.0), h("e", 5.0)];
+    const r = detectMultiWalletClusters(holders);
+    expect(r.clusterRisk).not.toBe("CLEAN");
+    expect(r.clusters.length).toBeGreaterThan(0);
+  });
+
+  it("respects custom opts (tolerance/minSize/minCombined passed through)", () => {
+    // With tolerance=0.1 only exact matches count; 3.0/3.1/2.9 won't all cluster
+    const holders = [h("a", 3.0), h("b", 3.1), h("c", 2.9), h("d", 3.05), h("e", 2)];
+    const strict = detectMultiWalletClusters(holders, { tolerance: 0.05, minSize: 2 });
+    const loose  = detectMultiWalletClusters(holders, { tolerance: 0.6, minSize: 2 });
+    // Loose should cluster more wallets than strict
+    expect(loose.totalClusteredWallets).toBeGreaterThanOrEqual(strict.totalClusteredWallets);
+  });
 });

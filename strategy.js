@@ -177,8 +177,10 @@ export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
   }
 
   const volumeUsd = tokenData.volume || 0;
-  const globalFeesSol = tokenData.global_fees_sol || 0;
-  if (volumeUsd > 100000 && globalFeesSol < 5) {
+  // null = data unavailable (Jupiter didn't return fees); skip fee-dependent gates
+  // to avoid always-firing flags that eat the entire maxAllowedFlags budget.
+  const globalFeesSol = tokenData.global_fees_sol ?? null;
+  if (globalFeesSol != null && volumeUsd > 100000 && globalFeesSol < 5) {
     flags.push(`Wash Trading: High Volume ($${(volumeUsd/1000).toFixed(0)}K) but Low Fees (${globalFeesSol.toFixed(2)} SOL)`);
   }
 
@@ -193,7 +195,7 @@ export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
   if (Number.isFinite(f.min_holders) && tokenData.holder_count != null && tokenData.holder_count < f.min_holders) {
     flags.push(`Holders below ${f.min_holders}: ${tokenData.holder_count}`);
   }
-  if (Number.isFinite(f.min_token_fees_sol) && globalFeesSol < f.min_token_fees_sol) {
+  if (Number.isFinite(f.min_token_fees_sol) && globalFeesSol != null && globalFeesSol < f.min_token_fees_sol) {
     flags.push(`Token fees below ${f.min_token_fees_sol} SOL: ${globalFeesSol.toFixed(2)}`);
   }
 

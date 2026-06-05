@@ -4066,7 +4066,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
       // Active strategy for tier execution + downstream context
       const activeStrategy = getStrategy(null, { regime: marketIntel.condition });
-      const globalFees = tokenInfo.results?.[0]?.global_fees_sol || 0;
+      // Keep null when Jupiter has no fee data — coercing null→0 would always fire
+      // the min_token_fees_sol gate, consuming the entire flag budget for scalping.
+      const globalFees = tokenInfo.results?.[0]?.global_fees_sol ?? null;
       const tierInfo = getMcapTier(token.mcap);
       const tierExec = getTierExecutionProfile(token.mcap, activeStrategy?.id || null);
       if (tierExec.sell_only) {

@@ -203,10 +203,25 @@ async function probeRecentSells(mint, topHolders) {
 const CLUSTER_PCT_TOLERANCE = 0.6;  // wallets within 0.6 pct-points → same entity
 const CLUSTER_MIN_SIZE = 3;          // need ≥3 matching wallets to flag
 const CLUSTER_MIN_COMBINED_PCT = 10; // cluster must control ≥10% to matter
+// Stdev of pct across a cluster must be ≤ this to confirm it's a uniform split,
+// not a natural ladder (e.g. 2.0, 2.5, 3.0 chain-merging via transitivity).
+const CLUSTER_MAX_STDEV = 0.4;
 
-function detectMultiWalletClusters(topHolders = []) {
+function clusterStdev(indices, holders) {
+  const vals = indices.map(i => holders[i].pct || 0);
+  const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+  const variance = vals.reduce((s, v) => s + (v - avg) ** 2, 0) / vals.length;
+  return Math.sqrt(variance);
+}
+
+function detectMultiWalletClusters(topHolders = [], opts = {}) {
+  const tolerance    = opts.tolerance    ?? CLUSTER_PCT_TOLERANCE;
+  const minSize      = opts.minSize      ?? CLUSTER_MIN_SIZE;
+  const minCombined  = opts.minCombined  ?? CLUSTER_MIN_COMBINED_PCT;
+  const maxStdev     = opts.maxStdev     ?? CLUSTER_MAX_STDEV;
+
   const holders = topHolders.filter(h => (h.pct || 0) >= 0.5);
-  if (holders.length < CLUSTER_MIN_SIZE) {
+  if (holders.length < minSize) {
     return { clusters: [], largestClusterPct: 0, totalClusteredWallets: 0, clusterRisk: "CLEAN", same_funder_holders: 0 };
   }
 
@@ -220,7 +235,7 @@ function detectMultiWalletClusters(topHolders = []) {
 
   for (let i = 0; i < holders.length; i++) {
     for (let j = i + 1; j < holders.length; j++) {
-      if (Math.abs((holders[i].pct || 0) - (holders[j].pct || 0)) <= CLUSTER_PCT_TOLERANCE) {
+      if (Math.abs((holders[i].pct || 0) - (holders[j].pct || 0)) <= tolerance) {
         union(i, j);
       }
     }
@@ -235,9 +250,12 @@ function detectMultiWalletClusters(topHolders = []) {
 
   const clusters = [];
   for (const indices of groups.values()) {
-    if (indices.length < CLUSTER_MIN_SIZE) continue;
+    if (indices.length < minSize) continue;
     const combinedPct = indices.reduce((s, i) => s + (holders[i].pct || 0), 0);
-    if (combinedPct < CLUSTER_MIN_COMBINED_PCT) continue;
+    if (combinedPct < minCombined) continue;
+    // Stdev guard: reject natural ladders (2.0→2.5→3.0) that chain-merge via
+    // transitivity but are NOT actually a uniform supply split.
+    if (clusterStdev(indices, holders) > maxStdev) continue;
     const wallets = indices.map(i => holders[i].address || holders[i].wallet).filter(Boolean);
     const avgPct = combinedPct / indices.length;
     // Confidence: increases with cluster size and combined holdings
@@ -380,7 +398,13 @@ export async function enrichHolderData({ mint, currentPrice = 0, featureFlags = 
   // ── D) multi-wallet cluster detection — zero extra RPC ──
   if (result.topHolders.length >= CLUSTER_MIN_SIZE) {
     try {
-      result.clusterAnalysis = detectMultiWalletClusters(result.topHolders);
+      const mwOpts = cfg.multiWalletDetection ?? {};
+      result.clusterAnalysis = detectMultiWalletClusters(result.topHolders, {
+        tolerance:   mwOpts.pctTolerance   ?? undefined,
+        minSize:     mwOpts.minClusterSize  ?? undefined,
+        minCombined: mwOpts.minCombinedPct  ?? undefined,
+        maxStdev:    mwOpts.maxStdev        ?? undefined,
+      });
       if (result.clusterAnalysis.clusterRisk !== "CLEAN") {
         recordCounter(`holder_cluster_${result.clusterAnalysis.clusterRisk.toLowerCase()}`);
         log("holder_cluster", `${mint.slice(0, 8)}: risk=${result.clusterAnalysis.clusterRisk} largestPct=${result.clusterAnalysis.largestClusterPct}% across ${result.clusterAnalysis.clusters[0]?.walletCount} wallets`);

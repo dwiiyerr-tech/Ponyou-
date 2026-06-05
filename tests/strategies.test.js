@@ -60,6 +60,27 @@ describe("strategies — PRESETS", () => {
   // A $10M token must actually be flagged by the real entry-gate evaluator
   // when scalping is the active strategy — proves the max-mcap gate fires
   // instead of being silently skipped on an undefined bound.
+  it("min_token_fees_sol gate skips when global_fees_sol is null (no data)", async () => {
+    const { setActiveStrategy } = await import("../strategies.js");
+    const { run4FilterProtocol } = await import("../strategy.js");
+    setActiveStrategy("scalping"); // min_token_fees_sol: 1
+    // global_fees_sol=null means Jupiter had no data — gate must NOT fire
+    const tokenData = { mint: "FeeNull111", symbol: "FN", mcap: 50_000, volume: 0, global_fees_sol: null };
+    const result = await run4FilterProtocol(tokenData, { holders: [], rug_signals: {} }, { level: "low" });
+    const flagStr = JSON.stringify(result.flags);
+    expect(flagStr).not.toMatch(/Token fees below/i);
+  });
+
+  it("min_token_fees_sol gate fires when global_fees_sol is a known low value", async () => {
+    const { setActiveStrategy } = await import("../strategies.js");
+    const { run4FilterProtocol } = await import("../strategy.js");
+    setActiveStrategy("scalping"); // min_token_fees_sol: 1
+    const tokenData = { mint: "FeeReal111", symbol: "FR", mcap: 50_000, volume: 0, global_fees_sol: 0.2 };
+    const result = await run4FilterProtocol(tokenData, { holders: [], rug_signals: {} }, { level: "low" });
+    const flagStr = JSON.stringify(result.flags);
+    expect(flagStr).toMatch(/Token fees below/i);
+  });
+
   it("scalping flags a $10M token via run4FilterProtocol (BUG 1)", async () => {
     const { setActiveStrategy } = await import("../strategies.js");
     const { run4FilterProtocol } = await import("../strategy.js");

@@ -26,6 +26,16 @@ const ACTIVE_FILE = path.join(__dirname, "active-strategy.json");
 const OVERRIDES_FILE = path.join(__dirname, "strategies-overrides.json");
 
 // ─── Built-in presets ─────────────────────────────────────────
+//
+// Filter key notes:
+//   minHolderAgeHours — read by strategy-matcher.js + portfolio-manager.js as a
+//     *token* age gate (how old the pair must be before entry). The 4-filter
+//     run4FilterProtocol uses rug_signals.fresh_funded_holders (a fixed >=3
+//     threshold) instead, so tuning minHolderAgeHours does NOT change the
+//     fresh-funded holder check — it only affects the token-age gate.
+//
+//   global_fees_sol — skipped when the field is null (Jupiter didn't return fee
+//     data). Only fires when real fee data is present and below min_token_fees_sol.
 
 export const PRESETS = {
   scalping: {
