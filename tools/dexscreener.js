@@ -1154,16 +1154,17 @@ export async function getSmartMoneyInflow({ timeframe = "1h" } = {}) {
         : Array.isArray(signals?.tokens) ? signals.tokens : [];
       if (list.length > 0) {
         const tokens = list.map(s => {
-          // Real GMGN signal rows expose token_address + signal_times (how many
-          // times the signal fired = strength proxy), not wallet_count/score.
+          // signal rows: top-level has token_address + signal_times; rich fields
+          // (symbol, price, buy/sell counts) live in s.data nested object.
           const strength = Number(s.signal_times ?? s.wallet_count ?? s.smart_money_count ?? 1) || 1;
+          const d = s.data ?? {};
           return {
             mint: s.token_address || s.address || s.mint,
-            symbol: s.symbol,
-            price: Number(s.price ?? s.cur_data?.price ?? 0),
+            symbol: s.symbol || d.symbol,
+            price: Number(s.price ?? d.usd_market_cap ?? d.market_cap ?? 0),
             unique_wallets: strength,
-            buy_count: Number(s.buy_count ?? 1),
-            sell_count: Number(s.sell_count ?? 0),
+            buy_count: Number(s.buy_count ?? d.buys_1h ?? 1),
+            sell_count: Number(s.sell_count ?? d.sells_1h ?? 0),
             buy_ratio: Number(s.buy_ratio ?? 1),
             weighted_buy_score: strength,
             top_wallet_label: s.top_wallet_label || null,
