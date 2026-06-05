@@ -15,7 +15,7 @@ import { agentBus } from "./agent-bus.js";
 import { setAgentStatus, updateAgentHealth } from "./agent-registry.js";
 import { log } from "../logger.js";
 import { preScreenBatch } from "../tools/trash-filter.js";
-import { getRugCheckReport, rugCheckToSignals } from "../tools/rugcheck.js";
+import { getRugCheckReport, rugCheckToSignals, rugCheckBatchScreen } from "../tools/rugcheck.js";
 import { getRugMemory, getPerformanceHistory } from "../lessons.js";
 import { loadLearnedNamePatterns } from "../tools/name-pattern-learner.js";
 
@@ -219,7 +219,37 @@ function _emitTrashBlock(token, reason, type) {
 async function filterPreyAdvanced(preyTokens, marketCondition = "NORMAL") {
   const survivors = [];
 
+  // ── Batch RugCheck pre-screen (Solana only, runs before the per-token loop)
+  // Uses the lightweight summary API in parallel — much faster than the full
+  // report called per-token in Step 4. High-confidence rugs are dropped here
+  // so they never reach the expensive downstream steps.
+  // Min 5 tokens: single-token calls go through per-token Step 4 instead.
+  const solTokens = preyTokens.filter(t => !t.chain || t.chain === "sol");
+  const batchResults = solTokens.length >= 5
+    ? await rugCheckBatchScreen(solTokens).catch(() => new Map())
+    : new Map();
+
+  const batchBlocked = new Set();
+  for (const [mint, rc] of batchResults) {
+    if (!rc.indexed) continue; // new/unknown — let downstream decide
+    if (rc.critical >= 1 || rc.score >= 70) {
+      batchBlocked.add(mint);
+    }
+  }
+  if (batchBlocked.size > 0) {
+    log("trash_layer", `RugCheck batch: ${batchBlocked.size}/${solTokens.length} pre-blocked (score≥70 or critical risk)`);
+  }
+
   for (const token of preyTokens) {
+    // Step 0: Batch RugCheck pre-screen result (already fetched above, zero extra API calls)
+    if (batchBlocked.has(token.mint)) {
+      const rc = batchResults.get(token.mint);
+      _stats.rugCheckBlocked++;
+      log("trash_layer", `RugCheck BATCH BLOCK: ${token.symbol || token.mint.slice(0, 8)} score=${rc?.score ?? "?"} critical=${rc?.critical ?? "?"}`);
+      _emitTrashBlock(token, `rugcheck_batch:score=${rc?.score ?? "?"}`, "rugcheck");
+      continue;
+    }
+
     // Step 1: Known scam pattern check (name/symbol) — curated + learned
     let scamBlocked = false;
     const allNamePatterns = [...KNOWN_SCAM_PATTERNS, ..._learnedNamePatterns];
@@ -280,13 +310,13 @@ async function filterPreyAdvanced(preyTokens, marketCondition = "NORMAL") {
         const rugReport = await getRugCheckReport(token.mint);
         if (rugReport?.indexed) {
           const signals = rugCheckToSignals(rugReport);
-          token._rugcheck_score = signals.rug_score || 0;
-          token._rugcheck_risks = signals.critical_risks || 0;
+          token._rugcheck_score = signals._rugcheck_score || 0;
+          token._rugcheck_risks = signals._rugcheck_risks || 0;
 
-          if (signals.rug_score >= 60 || signals.critical_risks >= 1) {
+          if (token._rugcheck_score >= 60 || rugReport.risks?.some(r => r.level === "critical")) {
             _stats.rugCheckBlocked++;
-            log("trash_layer", `RugCheck BLOCK: ${token.symbol} score=${signals.rug_score}`);
-            _emitTrashBlock(token, `rugcheck_score:${signals.rug_score}`, "rugcheck");
+            log("trash_layer", `RugCheck BLOCK: ${token.symbol} score=${token._rugcheck_score} risks=${token._rugcheck_risks}`);
+            _emitTrashBlock(token, `rugcheck_score:${token._rugcheck_score}`, "rugcheck");
             continue;
           }
 
