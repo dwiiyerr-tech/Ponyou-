@@ -124,8 +124,28 @@ export function getCapitalAwareSizing({
 
   // ── GROWTH tier — half-kelly with cap ───────────────────────────────────────
   // ── FULL tier — full kelly ──────────────────────────────────────────────────
+  // CS-FULL-FALLBACK: same chicken-and-egg fix as GROWTH tier. Without this,
+  // a fresh bot at >$200 capital can never accumulate the 5 trades needed to
+  // unlock Kelly sizing — it hard-skips every candidate indefinitely.
   if (!isGrowth && (trades || []).length < minSampleTrades) {
-    return { should_skip: true, reason: "full_tier_sparse_data", tier: "FULL", deploy_amount_sol: 0 };
+    if (!isTradingAllowed(marketCondition) || marketCondition === REGIMES.COLD) {
+      return { should_skip: true, reason: "full_fallback_cold_or_dead", tier: "FULL", deploy_amount_sol: 0 };
+    }
+    const fallbackFraction = cfg.growthFallbackFraction;
+    const cap = baseDeployAmountSol > 0 ? baseDeployAmountSol : bankrollSol * fallbackFraction;
+    const fallbackAmount = Number(Math.min(bankrollSol * fallbackFraction, cap).toFixed(4));
+    return {
+      deploy_amount_sol: fallbackAmount,
+      kelly_fraction: 0,
+      effective_fraction: fallbackFraction,
+      inputs: {},
+      used_fallback: true,
+      should_skip: false,
+      tier: "FULL",
+      method: "full-fallback",
+      capital_usd: capitalUsd,
+      capped_at: null,
+    };
   }
 
   // Kelly mode: determine effective bankroll based on experience + conviction

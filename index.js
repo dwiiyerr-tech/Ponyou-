@@ -3962,7 +3962,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
           uniqueWallets: token.holder_count ?? 0,
           top10HolderConcentration: security?.holders?.top10_holders_pct ?? security?.rug_signals?.top10_concentration_pct ?? 0,
           devWalletNotHolding: (security?.rug_signals?.creator_pct ?? 100) < 0.5,
-          organicCommunityScore: featureResult?.scores?.organic ?? 50,
+          organicCommunityScore: 50,
           narrativeScore: 50,
           hasDexPaid: false,
           hasAds: false,
@@ -4525,7 +4525,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
           intel.intel_blocked = true;
           intel.intel_blockers.push(`insider: ${intel.insider.reasons.join(" | ")}`);
         }
-        if (intel.fomo.block) {
+        // Momentum strategies (scalping/degen/sniper) specifically target pumping
+        // tokens. Blocking +50%/1h candidates defeats the entire hunter premise.
+        const fomoExemptStrategies = new Set(["scalping", "degen", "sniper"]);
+        const isFomoExempt = fomoExemptStrategies.has(matchedStrategyId);
+        if (intel.fomo.block && !isFomoExempt) {
           intel.intel_blocked = true;
           intel.intel_blockers.push(`fomo: ${intel.fomo.signals.join(" | ")}`);
         }
