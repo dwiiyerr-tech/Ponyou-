@@ -33,6 +33,15 @@ const RUG_DROP_THRESHOLD = 0.70;                    // price dropped 70%+ = rug
 const RUG_LIQ_THRESHOLD  = 200;                     // liquidity < $200 = LP pulled
 const MAX_WATCHLIST_SIZE = 200;                      // cap — no unbounded growth
 
+// Major tokens / stablecoins / quote assets are not memecoin candidates. Their
+// SOL-denominated prices fluctuate with SOL/USD, causing false "rug crash" alerts
+// (e.g. USDC flagged at -78%). Skip by mint — spoof-proof.
+const SHADOW_EXCLUDED_MINTS = new Set([
+  "So11111111111111111111111111111111111111112", // wSOL
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
+]);
+
 let _timer = null;
 let _running = false;
 
@@ -59,6 +68,7 @@ function save(data) {
 // race and one set of changes is lost. The lock is cheap (in-process).
 export function shadowWatch(token) {
   if (!token?.mint) return;
+  if (SHADOW_EXCLUDED_MINTS.has(token.mint)) return;
 
   return withFileLock(WATCHLIST_FILE, async () => {
     const data = load();

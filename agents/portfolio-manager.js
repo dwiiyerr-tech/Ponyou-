@@ -113,7 +113,11 @@ export function evaluateSkillFilters(skill, candidate = {}) {
   }
 
   const ageHours = num(candidate.age_hours ?? (candidate.age_minutes != null ? candidate.age_minutes / 60 : null));
-  if (ageHours != null && f.minHolderAgeHours != null && ageHours < f.minHolderAgeHours) {
+  // minHolderAgeHours is a holder-maturity gate for swing/established strategies.
+  // Early-entry (scalping/degen) strategies target brand-new pairs — applying a 24h
+  // floor there makes the filter unsatisfiable and zeroes the entire ensemble.
+  const isEarlyEntryStrategy = f.maxEntryPumpMc != null && f.maxEntryPumpMc <= 5000;
+  if (ageHours != null && f.minHolderAgeHours != null && !isEarlyEntryStrategy && ageHours < f.minHolderAgeHours) {
     reasons.push(`age ${ageHours.toFixed(1)}h < min ${f.minHolderAgeHours}h`);
   }
 

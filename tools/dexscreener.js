@@ -647,6 +647,11 @@ let _gtLastCall = 0;
 let _gtQueue = Promise.resolve();
 const _klineWarnSeen = new Set();
 const GT_MIN_GAP_MS = 3100;  // ~19 req/min — safe headroom below GeckoTerminal's 30/min free limit
+// Adaptive backoff: a 429 pushes _gtCooldownUntil forward so subsequent slots
+// in the same burst don't keep hammering GeckoTerminal at the base rate.
+const GT_COOLDOWN_MS = 30000;
+let _gtCooldownUntil = 0;
+function _gtPenalize429() { _gtCooldownUntil = Date.now() + GT_COOLDOWN_MS; }
 
 async function gtAcquireSlot() {
   // Atomic reservation: only one caller at a time runs the gap-await + stamp.
@@ -656,8 +661,10 @@ async function gtAcquireSlot() {
   _gtQueue = next;
   await prev;
   try {
-    const gap = Date.now() - _gtLastCall;
-    if (gap < GT_MIN_GAP_MS) await new Promise((r) => setTimeout(r, GT_MIN_GAP_MS - gap));
+    const now = Date.now();
+    // Honor active 429 cooldown first, then the normal min-gap, whichever is later.
+    const minNext = Math.max(_gtLastCall + GT_MIN_GAP_MS, _gtCooldownUntil);
+    if (now < minNext) await new Promise((r) => setTimeout(r, minNext - now));
     _gtLastCall = Date.now();
   } finally {
     release();
@@ -671,6 +678,7 @@ async function gtFetch(url, retries = 3) {
     try {
       const res = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8000) });
       if (res.status === 429) {
+        _gtPenalize429();
         if (attempt < retries) {
           await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
           continue;

@@ -13,6 +13,7 @@
 
 import { getLLMClient } from "../agent.js";
 import { log } from "../logger.js";
+import { config } from "../config.js";
 
 const TIMEOUT_MS = 8000;
 const MIN_RUG_CORPUS = 25; // 25+ known rugs before LLM analysis activates
@@ -100,7 +101,7 @@ export async function analyzeRugWithLLM(token, signals = {}, anomaly = null, rug
     const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
     const response = await client.chat.completions.create({
-      model: process.env.LLM_MODEL || "openrouter/auto",
+      model: config.llm?.screeningModel || process.env.LLM_MODEL || "openrouter/auto",
       messages: [
         { role: "system", content: "You are a Solana memecoin rug detector. Analyze the token data and classify as SAFE, SUSPICIOUS, or RUG. Be concise. Prefer SUSPICIOUS when uncertain." },
         { role: "user", content: prompt },
