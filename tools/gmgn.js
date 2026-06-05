@@ -562,6 +562,15 @@ function normalizeTrendingToken(t) {
     change5m: Number(t.price_change_percent5m ?? t.change5m ?? 0),
     change24h: Number(t.price_change_percent ?? t.change24h ?? 0),
     smart_buy_count: Number(t.smart_degen_count ?? t.smart_buy_24h ?? 0),
+    // Bonding curve completion 0-100 (pump.fun graduation signal). Field name
+    // not yet verified live — null-safe: bonus activates only when GMGN sends it.
+    bonding_curve: t.pump_progress != null ? Number(t.pump_progress)
+      : t.bonding_curve_progress != null ? Number(t.bonding_curve_progress)
+      : t.completion_pct != null ? Number(t.completion_pct) : null,
+    // Buy pressure ratio 0-1. Only set when both buy/sell volume fields exist.
+    buy_pressure: (t.buy_volume_1h != null && t.sell_volume_1h != null)
+      ? Number(t.buy_volume_1h) / (Number(t.buy_volume_1h) + Number(t.sell_volume_1h) + 1)
+      : null,
     created_timestamp: t.creation_timestamp ?? t.open_timestamp ?? t.created_timestamp ?? t.created_at ?? null,
     launchpad: t.launchpad || t.launchpad_platform || "unknown",
     _gmgn_risk: extractGmgnRowRisk(t),

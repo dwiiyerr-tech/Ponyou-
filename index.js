@@ -49,7 +49,7 @@ import { analyzeHolderStructure } from "./holder-memory.js";
 import { summarizeSmartWalletHistory } from "./smart-wallet-history.js";
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
 import { executeTool, executeTrade, registerCronRestarter, registerPonyouControls, selectFilledExecutions } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape, handleCallMessage } from "./telegram.js";
+import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape, handleCallMessage, registerBotCommands } from "./telegram.js";
 import { startUserClient, stopUserClient, isUserClientEnabled, getUserClientStatus } from "./telegram-user-client.js";
 import { startHunter, stopHunter, getSocialScore } from "./social-hunter.js";
 import { startDiscordListener, stopDiscordListener } from "./discord-listener.js";
@@ -151,6 +151,7 @@ import { getStrategyPositionLimit, canActivateStrategy, canEnterToken, getStrate
 import { computeTradeFeeBreakdown, calcTruePnl, calcDexFee, calcPlatformFee, extractSlippageFromSwapResult, recordTokenAccountCreated, recordSimCall } from "./tools/fee-tracker.js";
 import { detectAnomaly, hasAnyActiveFlag } from "./tools/rug-anomaly.js";
 import { analyzeRugWithLLM } from "./tools/rug-llm-analysis.js";
+import { analyzeDexVisibilityRisk, RiskStatus as DexRiskStatus } from "./tools/dex-visibility-risk-analyzer.js";
 import { simulateSell } from "./tools/sell-simulator.js";
 import { screenDayPhaseTokens, isWeekendEntryWindow, isWeekdayExitWindow, formatWatchlistForNotification } from "./tools/day-phase-screener.js";
 import { initStagedEntry, checkStagedEntryTrigger, advanceStagedEntry, getStage1Amount } from "./tools/staged-entry.js";
@@ -2900,13 +2901,8 @@ export async function runManagementCycle({ silent = false } = {}) {
           }
         }
         const tradePnl = exit.pnl_pct || 0;
-        recordTrade(!exit.is_loss);
-        await handleDailyTradeGuardOutcome(!exit.is_loss, {
-          symbol: exit.symbol,
-          mint: exit.mint,
-          pnl_pct: tradePnl,
-          exit_reason: exit.reason,
-        });
+        // recordTrade and handleDailyTradeGuardOutcome are called AFTER truePnl
+        // is computed below so we use net-after-fee PnL for accurate win/loss labelling.
         recordCounter("swaps_executed");
 
         if (/rug/i.test(exit.reason)) {
@@ -2974,6 +2970,16 @@ export async function runManagementCycle({ silent = false } = {}) {
           exitFeeBreakdown,
         });
 
+        // Use net-after-fee PnL for win/loss label — more accurate than gross currentPnlPct
+        const netIsLoss = truePnl.net_pnl_pct != null ? truePnl.net_pnl_pct < 0 : exit.is_loss;
+        recordTrade(!netIsLoss);
+        await handleDailyTradeGuardOutcome(!netIsLoss, {
+          symbol: exit.symbol,
+          mint: exit.mint,
+          pnl_pct: truePnl.net_pnl_pct ?? tradePnl,
+          exit_reason: exit.reason,
+        });
+
         recordTradeOutcome({
           mint: exit.mint,
           symbol: exit.symbol,
@@ -3001,7 +3007,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           pnl_pct: truePnl.net_pnl_pct || tradePnl,
           hold_minutes: holdMinutes,
           exit_reason: exit.reason,
-          is_win: !exit.is_loss,
+          is_win: !netIsLoss,
         }).catch(() => {}));
         await recordTradeAttribution({
           mint: exit.mint,
@@ -3187,8 +3193,18 @@ export async function runManagementCycle({ silent = false } = {}) {
     const remainingBalance = await getPortfolioSnapshot();
     const remainingTokens = (remainingBalance.tokens || []).filter(t => t.usd >= 0.1 && t.symbol !== "SOL");
 
-    const _allActiveUseLlm = getActiveStrategyIds().every(id => getStrategy(id)?.use_llm !== false);
-    if (remainingTokens.length > 0 && isLLMReviewEnabled() && _allActiveUseLlm) {
+    // Per-position LLM gate: only include positions whose matched strategy uses LLM
+    // AND are not in a managed window (age <5min or active partial-TP).
+    // This is a HARD guard — managed positions are simply not shown to the LLM,
+    // so it cannot exit them regardless of what it decides.
+    const llmReviewTokens = remainingTokens.filter(t => {
+      const stratId = t.signal_snapshot?.strategy_used || t.strategy_used || null;
+      const usesLlm = getStrategy(stratId)?.use_llm !== false;
+      const ageMinutes = Number(t.age_minutes || 0);
+      const isManaged = ageMinutes < 5 || !!t.partial_tp_active;
+      return usesLlm && !isManaged;
+    });
+    if (llmReviewTokens.length > 0 && isLLMReviewEnabled()) {
       let planSummary;
       try {
         planSummary = getPlanSummary();
@@ -3197,13 +3213,7 @@ export async function runManagementCycle({ silent = false } = {}) {
         planSummary = null;
       }
       const marketIntel = getMarketIntelligence();
-
-      // MGMT-3: build the "do not exit" hint so the LLM is told which
-      // positions are inside their managed window (active partial-TP,
-      // age below min hold, etc). This is advisory — not a hard guard.
-      // For a hard guard, the swap_token tool itself would need to
-      // refuse on these mints; that would require threading state into
-      // the tool executor and is deferred to a follow-up.
+      // managedMints is informational only — hard guard is the llmReviewTokens filter above
       const managedMints = remainingTokens
         .filter(t => Number(t.age_minutes || 0) < 5 || t.partial_tp_active)
         .map(t => t.mint)
@@ -3226,8 +3236,8 @@ MANAGEMENT CYCLE — LLM Portfolio Review
 Market: ${marketIntel.condition} — ${marketIntel.description || ""}
 ${planSummary ? `Plan: Day ${planSummary.day}/${planSummary.days_total} | P&L: ${planSummary.today_pnl_pct}% | Target: +${planSummary.daily_target_pct}%${planSummary.profit_mode ? " | PROFIT MODE" : ""}` : ""}
 
-POSITIONS HELD:
-${JSON.stringify(remainingTokens.map(t => ({
+POSITIONS HELD (LLM-managed, eligible for review):
+${JSON.stringify(llmReviewTokens.map(t => ({
   symbol: t.symbol,
   mint: t.mint?.slice(0, 8),
   usd_value: t.usd?.toFixed(2),
@@ -3237,8 +3247,7 @@ ${JSON.stringify(remainingTokens.map(t => ({
   narrative: t.narrative_tags?.[0],
   market_entry: t.market_condition,
 })))}
-
-${managedMints.length > 0 ? `DO NOT EXIT these mints (managed window — active TP-guard or too young): ${managedMints.map(m => m.slice(0, 8)).join(", ")}` : ""}
+${managedMints.length > 0 ? `\nNOTE: ${managedMints.length} position(s) excluded from review (too young or active partial-TP).` : ""}
 
 TUGAS:
 1. Review setiap posisi — qualitative risk: narrative shifts, conviction decay, market deterioration
@@ -3891,6 +3900,35 @@ export async function runScreeningCycle({ silent = false } = {}) {
         }
       }
 
+      // ─── Dex Visibility Risk Analysis ────────────
+      // Catches distribution traps: old/pumped tokens with late dex-boost ads.
+      // Uses the same data already in scope — no extra network calls.
+      if (rugRisk.score < 60) {
+        const dexViz = analyzeDexVisibilityRisk({
+          tokenAgeMinutes: token.age_minutes ?? 0,
+          pricePumpPercent: token.change1h ?? 0,
+          volumeUsd: token.volume ?? token.volume24h ?? 0,
+          uniqueWallets: token.holder_count ?? 0,
+          top10HolderConcentration: security?.holders?.top10_holders_pct ?? security?.rug_signals?.top10_concentration_pct ?? 0,
+          devWalletNotHolding: (security?.rug_signals?.creator_pct ?? 100) < 0.5,
+          organicCommunityScore: featureResult?.scores?.organic ?? 50,
+          narrativeScore: 50,
+          hasDexPaid: false,
+          hasAds: false,
+          hasBoost: false,
+          marketCondition: config.marketCondition ?? "NORMAL",
+        });
+        if (dexViz.riskStatus === DexRiskStatus.HIGH_RISK) {
+          rugRisk.score = Math.min(100, rugRisk.score + 15);
+          rugRisk.reasons.push(`DexViz: HIGH_RISK score=${dexViz.visibilityRiskScore} (+15)`);
+        } else if (dexViz.riskStatus === DexRiskStatus.DANGER) {
+          rugRisk.score = Math.min(100, rugRisk.score + 8);
+          rugRisk.reasons.push(`DexViz: DANGER score=${dexViz.visibilityRiskScore} (+8)`);
+        } else if (dexViz.riskStatus === DexRiskStatus.POSITIVE) {
+          rugRisk.score = Math.max(0, rugRisk.score - 3);
+        }
+      }
+
       // ─── Cabal Play Analysis ──────────────────
       const cabalInput = {
         same_funder_holders: security?.rug_signals?.same_funder_holders,
@@ -4214,6 +4252,19 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const devPenalty = communityAssessment.dev?.tier === "RUGGER" ? -15 : 0;
       const ctoBonus = communityAssessment.community_takeover?.is_cto ? 3 : 0;
 
+      // Bonding curve near-graduation bonus: pump.fun token approaching Raydium
+      // graduation is a strong demand signal. Only fires when field is populated.
+      const bcProgress = token.bonding_curve ?? null;
+      const bcBonus = bcProgress != null && bcProgress >= 80 && bcProgress < 100
+        ? Math.round((bcProgress - 80) * 0.4)  // 0 at 80%, +8 at 100%
+        : 0;
+
+      // Buy-side pressure bonus: buy vol > 65% of total = bullish momentum.
+      // Null-safe — activates only if GMGN sends buy_volume_1h/sell_volume_1h.
+      const bsBonus = (token.buy_pressure != null && token.buy_pressure > 0.65)
+        ? Math.round((token.buy_pressure - 0.65) * 20)  // max +7
+        : 0;
+
       // Feature aggregate boosts conviction floor for trending/strong signals
       const boostedConviction = {
         ...conviction,
@@ -4221,6 +4272,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
           conviction.conviction_score
           + Math.max(0, (featureResult.aggregate - 30) * 0.3)
           + communityBonus + devBonus + devPenalty + ctoBonus
+          + bcBonus + bsBonus
         )),
         feature_aggregate: featureResult.aggregate,
         community_assessment: communityAssessment,  // attach for downstream
@@ -4757,7 +4809,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       const rbCandidates = passingCandidates.filter(c => getStrategy(c.selected_strategy)?.use_llm === false);
       const llmCandidates = passingCandidates.filter(c => getStrategy(c.selected_strategy)?.use_llm !== false);
       if (rbCandidates.length > 0) {
-      const best = rbCandidates[0];
+      const rbReports = [];
+      // Deploy multiple rule-based candidates up to available slot limit
+      for (const best of rbCandidates) {
+        const slotsUsed = openTokens.length + rbReports.length;
+        if (slotsUsed >= positionLimit) break;
       const bestStratLabel = best.selected_strategy !== getActiveStrategyId()
         ? ` [${best.selected_strategy}]` : "";
       log("cron", `[RULE-BASED${bestStratLabel}] ${best.symbol}: feature=${best.feature_aggregate} rug=${best.rug_score} hunter=${best._hunter_score ?? "?"} → direct deploy`);
@@ -4817,13 +4873,15 @@ export async function runScreeningCycle({ silent = false } = {}) {
           }
           recordTrade(null);
         }
-        screenReport = result?.success || result?.dry_run
-          ? `[RULE-BASED] Deployed ${best.symbol}${bestStratLabel} — feature=${best.feature_aggregate} size=${swapAmount}SOL`
-          : `[RULE-BASED] Deploy failed ${best.symbol}: ${result?.error || "unknown"}`;
+        rbReports.push(result?.success || result?.dry_run
+          ? `[RULE-BASED] ${best.symbol}${bestStratLabel} feature=${best.feature_aggregate} size=${swapAmount}SOL`
+          : `[RULE-BASED] FAIL ${best.symbol}: ${result?.error || "unknown"}`);
       } catch (e) {
-        screenReport = `[RULE-BASED] Error ${best.symbol}: ${e.message}`;
+        rbReports.push(`[RULE-BASED] ERR ${best.symbol}: ${e.message}`);
         log("cron_error", `rule-based deploy: ${e.message}`);
       }
+      } // end for loop
+      if (rbReports.length > 0) screenReport = rbReports.join(" | ");
       } else if (llmCandidates.length > 0) {
         // rbCandidates empty but llmCandidates exist → fall through to LLM
         passingCandidates = llmCandidates;
@@ -4870,7 +4928,24 @@ ${planSummary ? `Plan: Day ${planSummary.day} | P&L: ${planSummary.today_pnl_pct
 Posisi aktif: ${openTokens.length}/${positionLimit}
 ${_vaultBlock ? _vaultBlock + '\n' : ''}${_adaptiveRiskLine ? _adaptiveRiskLine + '\n' : ''}${_episodicBlock ? _episodicBlock + '\n' : ''}${_learnedRules ? _learnedRules + '\n' : ''}
 CANDIDATES (lolos 4-filter + rug check):
-${JSON.stringify(passingCandidates)}
+${JSON.stringify(passingCandidates.map(c => ({
+  symbol: c.symbol,
+  mint: c.mint?.slice(0, 8),
+  feature_aggregate: c.feature_aggregate,
+  feature_scores: c.feature_scores,
+  rug_score: c.rug_score,
+  conviction: c.conviction?.conviction_score,
+  trending_boost: c.conviction?.trending_boost,
+  verdict: c.workflow?.verdict,
+  kelly_skip: c.kelly?.should_skip,
+  narrative: c.narrative_tags?.[0],
+  mcap: c.mcap,
+  liq: c.liquidity,
+  deploy_sol: c.recommended_deploy_amount_sol,
+  selected_strategy: c.selected_strategy,
+  age_min: c.age_minutes,
+})))}
+
 ${narrativeVelocity.promptContext ? `\n${narrativeVelocity.promptContext}\n` : ""}${crossBatchVelocity.promptContext ? `${crossBatchVelocity.promptContext}\n` : ""}
 WORKFLOW KEPUTUSAN HATI-HATI:
 1. Default adalah SKIP jika conviction lemah, caution tinggi, atau edge belum jelas.
@@ -6152,6 +6227,70 @@ export async function handleIncomingTelegramMessage(msg) {
     return;
   }
 
+  // ── /setup_brain — Obsidian GitHub sync setup ────────────────────────────
+  // Two-step to avoid token exposure in chat history:
+  //   Step 1: /setup_brain              → tampilkan panduan
+  //   Step 2: /setup_brain USERNAME/REPO → simpan repo, minta token via DM terpisah
+  //   Step 3: brain token: ghp_xxx       → jalankan setup dengan token tersimpan
+  if (text.startsWith("/setup_brain")) {
+    const arg = text.replace(/^\/setup_brain\s*/, "").trim();
+    if (!arg) {
+      await sendHTML([
+        "🧠 <b>Setup Obsidian Second Brain</b>",
+        "",
+        "<b>Step 1</b> — Buat repo di GitHub:",
+        "github.com → New repository → <code>ponyou-brain</code> → Private",
+        "",
+        "<b>Step 2</b> — Kirim repo kamu:",
+        "<code>/setup_brain USERNAME/ponyou-brain</code>",
+        "",
+        "<b>Step 3</b> — Kirim token (segera hapus pesannya):",
+        "<code>brain token: ghp_xxx...</code>",
+        "",
+        "💡 <i>Token tidak disimpan ke log — hanya dipakai sekali untuk push.</i>",
+      ].join("\n"));
+      return;
+    }
+    // If arg looks like USER/REPO (no token), save repo and ask for token
+    if (!arg.includes("github.com") && arg.includes("/")) {
+      const repoSlug = arg.replace(/^https?:\/\/[^/]+\//, "").replace(/\.git$/, "");
+      process.env._BRAIN_PENDING_REPO = repoSlug;
+      await sendHTML([
+        `✅ <b>Repo disimpan:</b> <code>${htmlEscape(repoSlug)}</code>`,
+        "",
+        "Sekarang kirim token GitHub kamu (segera hapus pesan setelah terkirim):",
+        "<code>brain token: ghp_xxxxxxxxxxxx</code>",
+        "",
+        "Dapat token di: github.com → Settings → Developer settings → Personal access tokens",
+        "Pilih <b>Fine-grained</b> → pilih repo → Contents: <b>Read &amp; Write</b>",
+      ].join("\n"));
+      return;
+    }
+    // Legacy: full URL with embedded token (still supported)
+    if (arg.includes("github.com")) {
+      const response = await handleGeneralMessage(`setup brain: ${arg}`);
+      await sendHTML(response);
+      return;
+    }
+    await sendHTML("⚠️ Format tidak dikenal. Ketik <code>/setup_brain</code> untuk panduan.");
+    return;
+  }
+
+  // ── brain token: ghp_xxx — step 2 of two-step brain setup ────────────────
+  if (/^brain\s+token[:\s]+(\S+)/i.test(text)) {
+    const token = text.match(/^brain\s+token[:\s]+(\S+)/i)?.[1]?.trim();
+    const repo  = process.env._BRAIN_PENDING_REPO;
+    if (!token || !repo) {
+      await sendHTML("⚠️ Belum ada repo tersimpan. Mulai dari <code>/setup_brain</code> dulu.");
+      return;
+    }
+    delete process.env._BRAIN_PENDING_REPO;
+    const remoteUrl = `https://${token}@github.com/${repo}.git`;
+    const response = await handleGeneralMessage(`setup brain: ${remoteUrl}`);
+    await sendHTML(response);
+    return;
+  }
+
   // ── Vault Proposal Approval ──
   // Format: /approve_vault_XXXXXXXX or /reject_vault_XXXXXXXX
   if (text.startsWith("/approve_vault_") || text.startsWith("/reject_vault_")) {
@@ -6578,6 +6717,7 @@ async function ensureTelegramAutomationSurface() {
   // Bot API — selalu aktif untuk kirim notifikasi & terima perintah dari user owner
   if (telegramEnabled()) {
     startPolling(handleIncomingTelegramMessage);
+    registerBotCommands().catch(() => {}); // register slash commands in Telegram UI
   }
 
   // User Client (MTProto) — untuk monitor channel/grup sinyal tanpa bot di-invite
