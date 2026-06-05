@@ -163,11 +163,24 @@ export function buildRiskPolicy({ marketCondition = "NORMAL", conviction = {}, t
 
   policy.exit.hardStopLossPct = stopLossPct;
   policy.exit.immediateTakeProfitPct = takeProfitPct;
+  // M2: recompute hardCutLossPct after config override so it always sits below hardStopLossPct.
+  // Without this, strategy-derived cut (e.g. -19%) can end up shallower than a config stop
+  // (e.g. -25%), making the cut tier fire before the stop — inverting the hierarchy.
+  policy.exit.hardCutLossPct = Math.max(policy.exit.hardStopLossPct * 1.6, -30);
   if (condition === "COLD") {
     policy.exit.hardStopLossPct = Math.max(policy.exit.hardStopLossPct, -10);
+    // recompute cut after cold clamp too
+    policy.exit.hardCutLossPct = Math.max(policy.exit.hardStopLossPct * 1.6, -30);
     if (Number.isFinite(policy.exit.immediateTakeProfitPct)) {
       policy.exit.immediateTakeProfitPct = Math.min(policy.exit.immediateTakeProfitPct, 130);
     }
+  }
+  // M1: DEAD-market tight stop must not be overridden by a wider config stopLoss.
+  // Without this clamp the -3% DEAD protection set by adjustByMarket is silently
+  // replaced by whatever stopLossPct the operator configured (e.g. -20%).
+  if (condition === "DEAD") {
+    policy.exit.hardStopLossPct = Math.max(policy.exit.hardStopLossPct, -5);
+    policy.exit.hardCutLossPct = Math.max(policy.exit.hardStopLossPct * 1.6, -8);
   }
   const trailingTrigger = Number.isFinite(config?.management?.trailingTriggerPct)
     ? clamp(config.management.trailingTriggerPct, 1, 30)

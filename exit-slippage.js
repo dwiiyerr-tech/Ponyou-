@@ -30,6 +30,13 @@ export async function withProgressiveSlippage(exitFn, { maxAttempts } = {}) {
     if (lastResult.success || lastResult.dry_run) {
       return { result: lastResult, attempt, stuck: false };
     }
+    // M3: indeterminate = swap was sent but outcome is unknown (e.g. signature
+    // not confirmed). Retrying at higher slippage risks a double-sell. Surface
+    // it to the caller as a non-stuck, non-success result so it can handle the
+    // ambiguity (e.g. wait for confirmation) rather than escalating slippage.
+    if (lastResult.indeterminate) {
+      return { result: lastResult, attempt, stuck: false, indeterminate: true };
+    }
   }
   return { result: lastResult, attempt: max, stuck: true };
 }

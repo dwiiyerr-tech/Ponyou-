@@ -94,6 +94,27 @@ describe("risk policy", () => {
     expect(evaluateExitPolicy({ pnlPct: 9.4, peakPnlPct: 10, policy }).trailingStop).toBe(true);
   });
 
+  // M1 regression: DEAD-market -3% stop must not be overridden by a wider config stop.
+  it("DEAD market clamps stop loss — config wide stop does not override (M1)", () => {
+    const policy = buildRiskPolicy({
+      marketCondition: "DEAD",
+      config: { management: { stopLossPct: -20 } },
+    });
+    // -20 config must be clamped to -5 in DEAD (hardStopLossPct between -5 and 0)
+    expect(policy.exit.hardStopLossPct).toBeGreaterThanOrEqual(-5);
+    // hardCutLossPct must be more negative (deeper) than hardStopLossPct
+    expect(policy.exit.hardCutLossPct).toBeLessThanOrEqual(policy.exit.hardStopLossPct);
+  });
+
+  // M2 regression: hardCutLossPct must always sit below hardStopLossPct after config override.
+  it("hardCutLossPct is recomputed after config stop override — never shallower than stop (M2)", () => {
+    const policy = buildRiskPolicy({
+      config: { management: { stopLossPct: -25 } },
+    });
+    // cut must be deeper (more negative) than stop
+    expect(policy.exit.hardCutLossPct).toBeLessThanOrEqual(policy.exit.hardStopLossPct);
+  });
+
   it("describes the policy without mutating it", () => {
     const policy = buildRiskPolicy({ marketCondition: "HOT" });
     const snapshot = describeRiskPolicy(policy);

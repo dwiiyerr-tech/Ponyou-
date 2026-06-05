@@ -158,6 +158,9 @@ export async function executeFastBuy({
       signal_snapshot: {
         mint: token.mint,
         symbol: token.symbol,
+        // C2: entry_price required by checkPriceDrop emergency exit path.
+        // Without it entryPrice resolves to 0 and the fast-crash gate never fires.
+        entry_price: token.price || token.priceUsd || token.price_usd || 0,
         market_condition: token.market_condition || "UNKNOWN",
         rug_score: token.rug_score || 0,
         conviction: token.conviction || null,

@@ -76,4 +76,18 @@ describe("withProgressiveSlippage", () => {
     expect(attempt).toBe(2);
     expect(exitFn).toHaveBeenCalledTimes(2);
   });
+
+  // M3 regression: an indeterminate swap (sent but unconfirmed) must stop the
+  // retry loop immediately. Retrying at higher slippage risks a double-sell.
+  it("stops retrying on indeterminate result — does not escalate slippage (M3)", async () => {
+    const exitFn = vi.fn()
+      .mockResolvedValueOnce({ success: false })
+      .mockResolvedValueOnce({ success: false, indeterminate: true });
+    const { stuck, indeterminate, attempt } = await withProgressiveSlippage(exitFn);
+    expect(stuck).toBe(false);
+    expect(indeterminate).toBe(true);
+    expect(attempt).toBe(2);
+    // Must NOT have fired a 3rd attempt at higher slippage
+    expect(exitFn).toHaveBeenCalledTimes(2);
+  });
 });

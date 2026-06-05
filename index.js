@@ -1689,9 +1689,12 @@ async function executePendingIntent(id) {
   let symbol = args.token_out?.slice(0, 8) || "TOKEN";
   let initial_value_usd = 0;
   let solPriceUsd = 0;
+  let intentEntryPriceUsd = 0;
   try {
     const tokenInfo = await getTokenInfo({ query: args.token_out });
     symbol = tokenInfo?.results?.[0]?.symbol || symbol;
+    // C2: capture entry price for checkPriceDrop emergency exit gate.
+    intentEntryPriceUsd = Number(tokenInfo?.results?.[0]?.price || 0);
     const balance = await getWalletBalances();
     solPriceUsd = balance?.sol_price || 0;
     // Retry once if sol_price is missing — wallet API can return stale data
@@ -1726,6 +1729,7 @@ async function executePendingIntent(id) {
       signal_snapshot: {
         mint: args.token_out,
         symbol,
+        entry_price: intentEntryPriceUsd,
         market_condition: getMarketIntelligence().condition,
         workflow: { verdict: "manual" },
         execution_context: {
@@ -2111,7 +2115,7 @@ function handleTradeLoss({ symbol, mint, pnl_pct, entry_usd, exit_usd, hold_minu
 
 // ─── Deterministic Exits ──────────────────────────────────────
 
-async function checkDeterministicExits(tokens) {
+async function checkDeterministicExits(tokens, { solPriceUsd = 0 } = {}) {
   const exits = [];
   const market = getMarketIntelligence();
   const condition = market.condition || "NORMAL";
@@ -2138,9 +2142,27 @@ async function checkDeterministicExits(tokens) {
     });
 
     const ageMinutes = (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000;
-    const currentPnlPct = tracked.initial_value_usd > 0
+
+    // C1: pnl_unknown positions have initial_value_usd=0 because solPriceUsd was 0
+    // at entry time. Attempt a one-time backfill using the current cycle's SOL price
+    // so PnL gates can start firing. Without this, a pnl_unknown position reports
+    // permanent 0% PnL and all deterministic exits are silently disabled.
+    if (tracked.pnl_unknown === true && tracked.amount_sol > 0 && solPriceUsd > 0) {
+      const backfill = tracked.amount_sol * solPriceUsd;
+      tracked.initial_value_usd = backfill;
+      tracked.pnl_unknown = false;
+      // Persist so subsequent cycles don't need to re-backfill.
+      flushState && flushState().catch(() => {});
+      log("exit", `Backfilled initial_value_usd=${backfill.toFixed(2)} for ${token?.mint?.slice(0, 8)} (was pnl_unknown)`);
+    }
+
+    const pnlKnown = tracked.pnl_unknown !== true && tracked.initial_value_usd > 0;
+    const currentPnlPct = pnlKnown
       ? ((token.usd - tracked.initial_value_usd) / tracked.initial_value_usd) * 100
       : 0;
+    if (!pnlKnown) {
+      log("exit", `${token?.mint?.slice(0, 8)} pnl_unknown — PnL gates skipped; price-drop exit still active`);
+    }
     const currentPrice = Number(
       token?.priceUsd
       ?? token?.price_usd
@@ -2174,7 +2196,8 @@ async function checkDeterministicExits(tokens) {
 
     // Persist the new peak — mutating `tracked` in memory isn't enough because
     // a restart wipes the cache and resets the trailing-stop reference to 0.
-    if (currentPnlPct > (tracked.peak_pnl_pct || 0)) {
+    // C1: only update peak when PnL is real; phantom 0 must not overwrite a true peak.
+    if (pnlKnown && currentPnlPct > (tracked.peak_pnl_pct || 0)) {
       tracked.peak_pnl_pct = currentPnlPct;
       updatePeakPnl(token.position_key || token.mint, currentPnlPct, token.wallet_address || null);
     }
@@ -2451,11 +2474,11 @@ async function checkDeterministicExits(tokens) {
       }
     }
 
-    const exitPolicy = evaluateExitPolicy({
-      pnlPct: currentPnlPct,
-      peakPnlPct: tracked.peak_pnl_pct || 0,
-      policy: riskPolicy,
-    });
+    // C1: skip all PnL-based gates when PnL is unknown — passing phantom 0 lets
+    // positions rug silently because hardStopLoss/trailingStop never see a loss.
+    const exitPolicy = pnlKnown
+      ? evaluateExitPolicy({ pnlPct: currentPnlPct, peakPnlPct: tracked.peak_pnl_pct || 0, policy: riskPolicy })
+      : { hardCutLoss: false, hardStopLoss: false, takeProfit: false, trailingStop: false, profitSweepEligible: false };
 
     if (exitPolicy.hardCutLoss) {
       exits.push({ mint: token.mint, symbol: token.symbol, reason: exitPolicy.hardCutLossReason, pnl_pct: currentPnlPct, is_loss: true, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint, chain: token.chain || tracked.chain || "sol" });
@@ -2472,7 +2495,9 @@ async function checkDeterministicExits(tokens) {
     }
 
     // Partial TP: sell a fraction once when PnL crosses threshold, keep the rest running.
-    const partial = checkPartialTP(currentPnlPct, tracked.partial_tp_done === true);
+    const partial = pnlKnown
+      ? checkPartialTP(currentPnlPct, tracked.partial_tp_done === true)
+      : { trigger: false };
     if (partial.trigger && token.balance > 0) {
       const posKey = token.position_key || token.mint;
       if (isPartialTPLanded(posKey)) {
@@ -2502,7 +2527,11 @@ async function checkDeterministicExits(tokens) {
       });
       if (partialRes.success || partialRes.dry_run) {
         await markPartialTPLanded(posKey);
-        markPartialTPDone(token.position_key || token.mint, token.wallet_address || null);
+        // H3: await durability + set in-memory flag so the same cycle does not
+        // re-trigger. Without await, a restart between the two guards leaves
+        // partial_tp_done unset on disk while isPartialTPLanded sees a stale file.
+        await markPartialTPDone(token.position_key || token.mint, token.wallet_address || null);
+        tracked.partial_tp_done = true;
         if (telegramEnabled()) {
           sendHTML(
             `💰 <b>Partial TP</b> · ${htmlEscape(token.symbol || "?")}\n` +
@@ -2524,7 +2553,7 @@ async function checkDeterministicExits(tokens) {
       continue;
     }
 
-    const roiCheck = checkROI(ageMinutes, currentPnlPct, condition);
+    const roiCheck = pnlKnown ? checkROI(ageMinutes, currentPnlPct, condition) : { exit: false };
     if (roiCheck.exit) {
       exits.push({ mint: token.mint, symbol: token.symbol, reason: roiCheck.reason, pnl_pct: currentPnlPct, is_loss: currentPnlPct < 0, wallet_address: token.wallet_address || null, position_key: token.position_key || token.mint, chain: token.chain || tracked.chain || "sol" });
       continue;
@@ -2536,6 +2565,7 @@ async function checkDeterministicExits(tokens) {
     // Only fires when position is in profit (currentPnlPct >= trailingTrigger)
     // to protect gains on trend reversal rather than accelerating losses.
     if (
+      pnlKnown &&
       config.indicators?.enabled &&
       config.indicators?.exitOnTrendBreak &&
       currentPnlPct >= (riskPolicy.exit?.trailingTriggerPct ?? 8)
@@ -2779,7 +2809,7 @@ export async function runManagementCycle({ silent = false } = {}) {
     const stagedBuys = await checkStagedEntries(tokens, balance);
 
     // ─── Step 2: Deterministic exits ─────────────
-    const deterministicExits = await checkDeterministicExits(tokens);
+    const deterministicExits = await checkDeterministicExits(tokens, { solPriceUsd: balance.sol_price || 0 });
 
     // G2: cast-net staggered exit ordering. If multiple positions from the
     // same cast-net group hit exit simultaneously, dumping them in the same
@@ -3388,6 +3418,12 @@ TUGAS:
               // so SL/TP/trailing/rug-exit never applied to these positions.
               // Track now using the same data available in this closure.
               const mgmtSolPrice = Number(remainingBalance?.sol_price) || 0;
+              // C2: best-effort price fetch so checkPriceDrop can protect this position.
+              let mgmtEntryPrice = 0;
+              try {
+                const tInfo = await getTokenInfo({ query: tokenOut });
+                mgmtEntryPrice = Number(tInfo?.results?.[0]?.price || 0);
+              } catch { /* non-critical */ }
               await trackPosition({
                 position: tokenOut,
                 pool: "management-llm",
@@ -3398,6 +3434,7 @@ TUGAS:
                 signal_snapshot: {
                   mint: tokenOut,
                   symbol: result.symbol,
+                  entry_price: mgmtEntryPrice,
                   entry_reason: "management_llm_decision",
                   market_condition: getMarketIntelligence()?.condition || "UNKNOWN",
                 },
