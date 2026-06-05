@@ -17,18 +17,17 @@
  *  - Disabled by default. Opt in with `fastTrack.enabled: true`.
  */
 
-import { swapToken } from "./tools/jupiter.js";
+import { executeTrade } from "./tools/executor.js";
 import { planCastNetExecution } from "./wallet-strategy.js";
 import { recordCastNetFire } from "./tools/cast-net-gate.js";
 import { getAllWallets, getWalletByAddress } from "./tools/wallet-manager.js";
 import { trackPosition } from "./state.js";
-import { recordSwapOutcome, isKilled } from "./kill-switch.js";
+import { recordSwapOutcome } from "./kill-switch.js";
 import {
   startTimer, elapsedMs, recordLatency, recordCounter,
 } from "./metrics.js";
 import { log } from "./logger.js";
 import { config } from "./config.js";
-import { demoStrictGates } from "./runtime-mode.js";
 import { recordExecutionQuality } from "./execution-quality-memory.js";
 
 const DEFAULT_GATE = {
@@ -106,22 +105,10 @@ export async function executeFastBuy({
     return { success: false, error: "deployAmountSol must be > 0" };
   }
 
-  // P0-A: kill-switch re-check at fast-buy call site — executor guards don't
-  // cover this path because fast-buy calls swapToken() directly.
-  if (isKilled()) {
-    return { success: false, blocked: true, error: "Kill-switch is active — fast-buy blocked." };
-  }
-
-  // P0-A + P1-8: enforce maxDeployAmount cap for SOL buys in the fast-buy path.
-  // The executor's runSafetyChecks never runs here so we must guard explicitly.
-  const maxDeploy = config.risk?.maxDeployAmount ?? 35;
-  if (deployAmountSol > maxDeploy) {
-    return { success: false, blocked: true, error: `deployAmountSol ${deployAmountSol} SOL exceeds maxDeployAmount ${maxDeploy} SOL.` };
-  }
-
-  // confirmMode blocks live BUYs; also blocks demo BUYs when strict gates are on
-  // (so the approval flow gets exercised in demo).
-  if (config.trading?.confirmMode && (process.env.DRY_RUN !== "true" || demoStrictGates())) {
+  // confirmMode blocks live BUYs; demo (DRY_RUN=true) bypasses — no real funds at risk.
+  // R4: process.env.DRY_RUN is the authoritative runtime flag — it is set by
+  // applyExecutionMode() at startup and stays in sync with config.demoMode.
+  if (config.trading?.confirmMode && process.env.DRY_RUN !== "true") {
     recordCounter("fast_buy_blocked_confirm_mode");
     return {
       success: false,
@@ -134,7 +121,9 @@ export async function executeFastBuy({
   const t = startTimer();
   recordCounter("fast_buy_attempted");
 
-  const result = await swapToken({
+  // executeTrade applies kill-switch, amount validation, and maxDeployAmount via
+  // sharedSwapGuards — no need to duplicate those checks here.
+  const result = await executeTrade({
     token_in: "SOL",
     token_out: token.mint,
     amount: deployAmountSol,

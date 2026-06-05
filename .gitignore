@@ -75,6 +75,8 @@ skill-attribution.json
 strategy-skills.json
 trade-cooldowns.json
 conviction-memory.json
+coin-conviction.json
+loss-patterns.json
 strategy-skills-lock.json
 regime-memory.json
 smart-wallet-history.json

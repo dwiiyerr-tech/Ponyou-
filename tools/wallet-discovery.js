@@ -247,6 +247,14 @@ function looksLikeBot(stats) {
 /**
  * Main entry — scan trending tokens, find top holders, score them.
  */
+// P3-5: cap how many wallets auto_add can promote per run.
+// Attacker-manufactured trending tokens can plant wallets in smart-money
+// list; allowing unlimited auto-add in one call creates a copy-trade loop.
+const MAX_AUTO_ADD_PER_RUN = 3;
+// Minimum completed trades before a wallet qualifies for auto-add.
+// Snapshot-only wallets (single trade) pass the WR gate but aren't trustworthy.
+const MIN_AUTO_ADD_TRADES = 10;
+
 export async function discoverSmartWallets({
   source_tokens = 5,
   holders_per_token = 12,
@@ -332,8 +340,11 @@ export async function discoverSmartWallets({
         // GMGN wallet_stats does not expose an avg-hold figure — leave it unknown
         // so the hold-time ceiling is skipped rather than fabricated.
         holdKnown = false;
+        // B3: w.winRate ?? 0 coerces missing field to 0, indistinguishable from
+        // a real 0% win rate. Guard: if GMGN returned a non-null winRate use it;
+        // otherwise treat as unknown (null) so scoring can skip this wallet.
         stats = {
-          winrate: Number(w.winRate ?? 0),
+          winrate: w.winRate != null ? Number(w.winRate) : 0,
           // NOTE: GMGN PnL is USD, not SOL. Stored in the realized_pnl_sol slot
           // for now (the threshold/label below read it); unit correction is part
           // of the gated rug/scoring activation work.
@@ -380,7 +391,13 @@ export async function discoverSmartWallets({
       discovered[addr] = entry;
       results.push(entry);
 
-      if (qualifies && entry.selection.selected && auto_add && !entry.promoted) {
+      // P3-5: auto_add is capped at MAX_AUTO_ADD_PER_RUN and requires a minimum
+      // track record. Without this, a single scan of attacker-manufactured
+      // trending tokens could flood the smart-money list in one call.
+      const autoAddCount = results.filter(r => r.promoted).length;
+      const meetsTrackRecord = (stats.completed_trades || 0) >= MIN_AUTO_ADD_TRADES;
+      if (qualifies && entry.selection.selected && auto_add && !entry.promoted
+          && autoAddCount < MAX_AUTO_ADD_PER_RUN && meetsTrackRecord) {
         await addSmartWallet({
           address: addr,
           label: `auto:wr${Math.round(stats.winrate * 100)}_pnl${stats.realized_pnl_sol.toFixed(2)}SOL_n${stats.completed_trades}`,

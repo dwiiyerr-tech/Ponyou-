@@ -11,7 +11,8 @@
     "dev": "tsx src/cli.tsx",
     "build": "tsc",
     "start": "node dist/cli.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/theme.test.ts"
   },
   "engines": {
     "node": ">=18"

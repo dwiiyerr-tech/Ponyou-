@@ -162,7 +162,6 @@ const SECTIONS = [
     fields: [
       { key: 'paperTrading',    label: 'Virtual Balance',  hint: 'Demo uses fake SOL so trades actually run. Off = demo reads a real funded wallet.', type: 'toggle', default: true },
       { key: 'paperStartSol',   label: 'Starting SOL',     hint: 'Virtual capital for paper trading (demo only)',                                       type: 'number', default: 5 },
-      { key: 'demoStrictGates', label: 'Strict Gates',     hint: 'Run confirmMode approval + balance safety-check in demo too (1:1 with live)',         type: 'toggle', default: false },
     ],
   },
   {

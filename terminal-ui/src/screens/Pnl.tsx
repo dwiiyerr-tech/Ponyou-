@@ -9,7 +9,9 @@ import type { AgentState, Position } from "../types.js";
 import type { TermSize } from "../hooks/useTerminalSize.js";
 
 function fmtUsd(n: number): string {
-  return `${n < 0 ? "-" : "+"}$${Math.abs(n).toFixed(2)}`;
+  if (!Number.isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : n < 0 ? "-" : "";
+  return `${sign}$${Math.abs(n).toFixed(2)}`;
 }
 function pnlColor(n: number): string {
   return n > 0 ? color.good : n < 0 ? color.danger : color.dim;

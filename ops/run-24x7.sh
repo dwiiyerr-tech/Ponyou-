@@ -68,7 +68,11 @@ write_supervisor_state() {
 
 run_readiness() {
   if [ "${SKIP_READINESS:-0}" = "1" ]; then
-    log "Skipping readiness because SKIP_READINESS=1"
+    # T3-15: SKIP_READINESS bypasses ALL live readiness checks including wallet
+    # key validation, data floors, and RPC health. Only safe for local dev/test.
+    # DO NOT set in production — a malformed key or missing data will only fail
+    # at the first live swap, potentially mid-cycle.
+    log "WARNING: SKIP_READINESS=1 — all readiness checks bypassed. Only use for local dev/test, NEVER in production with live capital."
     return 0
   fi
 

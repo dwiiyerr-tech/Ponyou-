@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveExecutionMode, demoStrictGates, applyPaperDataRedirect, PAPER_REDIRECT_STORES } from "../runtime-mode.js";
+import { resolveExecutionMode, applyPaperDataRedirect, PAPER_REDIRECT_STORES } from "../runtime-mode.js";
 import os from "os";
 import path from "path";
 
@@ -40,35 +40,7 @@ describe("resolveExecutionMode", () => {
   });
 });
 
-describe("demoStrictGates", () => {
-  let saved;
-  beforeEach(() => { saved = process.env.DEMO_STRICT_GATES; });
-  afterEach(() => {
-    if (saved === undefined) delete process.env.DEMO_STRICT_GATES;
-    else process.env.DEMO_STRICT_GATES = saved;
-  });
-
-  it("is OFF by default (unset)", () => {
-    delete process.env.DEMO_STRICT_GATES;
-    expect(demoStrictGates()).toBe(false);
-  });
-
-  it("is ON for truthy flag values", () => {
-    for (const v of ["true", "1", "on", "yes"]) {
-      process.env.DEMO_STRICT_GATES = v;
-      expect(demoStrictGates()).toBe(true);
-    }
-  });
-
-  it("is OFF for falsy/garbage values", () => {
-    for (const v of ["false", "0", "off", "no", "", "maybe"]) {
-      process.env.DEMO_STRICT_GATES = v;
-      expect(demoStrictGates()).toBe(false);
-    }
-  });
-});
-
-describe("applyPaperDataRedirect (demo learning isolation)", () => {
+describe("applyPaperDataRedirect (demo safety/session isolation)", () => {
   const base = path.join(os.tmpdir(), "ponyou-redirect-test");
 
   it("does nothing in live mode", () => {
@@ -77,7 +49,7 @@ describe("applyPaperDataRedirect (demo learning isolation)", () => {
     expect(Object.keys(env)).toHaveLength(0);
   });
 
-  it("redirects every learning store into demo/ in demo mode", () => {
+  it("redirects safety/session stores into demo/ in demo mode", () => {
     const env = {};
     const dir = applyPaperDataRedirect({ isDemo: true, env, baseDir: base });
     expect(dir).toBe(path.join(base, "demo"));
@@ -96,11 +68,28 @@ describe("applyPaperDataRedirect (demo learning isolation)", () => {
     const env = { PONYOU_STATE_FILE: "/custom/state.json" };
     applyPaperDataRedirect({ isDemo: true, env, baseDir: base });
     expect(env.PONYOU_STATE_FILE).toBe("/custom/state.json");
-    // but other stores still get redirected
-    expect(env.PONYOU_LESSONS_FILE).toBe(path.join(base, "demo", "lessons.json"));
+    // other safety stores still get redirected
+    expect(env.PONYOU_KILL_SWITCH_STATE).toBe(path.join(base, "demo", "kill-switch-state.json"));
   });
 
   it("isolates the position store (state.json) so paper trades can't leak to live", () => {
     expect(PAPER_REDIRECT_STORES.PONYOU_STATE_FILE).toBe("state.json");
+  });
+
+  it("isolates simulated execution telemetry so it can't poison live routing/sizing", () => {
+    // In DRY_RUN every swap "succeeds" with fake slippage/latency. These two
+    // stores drive live wallet routing + position sizing, so they must stay in
+    // demo/ (mirrors scripts/promote-demo.js refusing to promote them).
+    expect(PAPER_REDIRECT_STORES.PONYOU_EXEC_QUALITY_FILE).toBe("execution-quality.json");
+    expect(PAPER_REDIRECT_STORES.PONYOU_TRADE_ATTRIBUTION_FILE).toBe("trade-attribution.json");
+  });
+
+  it("keeps knowledge stores SHARED so demo data carries to live (not isolated)", () => {
+    // These accumulate during demo and must be available to live — they must
+    // NOT appear in the redirect map.
+    for (const k of ["PONYOU_LESSONS_FILE", "PONYOU_CONVICTION_FILE", "PONYOU_RUG_MEMORY_FILE",
+                     "PONYOU_REGIME_FILE", "PONYOU_DARWIN_FILE", "PONYOU_PERF_FILE"]) {
+      expect(PAPER_REDIRECT_STORES[k]).toBeUndefined();
+    }
   });
 });

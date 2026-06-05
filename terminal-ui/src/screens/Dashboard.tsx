@@ -14,8 +14,9 @@ function riskColor(level: string): string {
 }
 
 function fmtUsd(n: number): string {
-  const sign = n > 0 ? "+" : n < 0 ? "" : "";
-  return `${sign}$${Math.abs(n).toFixed(2).replace(/^/, n < 0 ? "-" : "")}`;
+  if (!Number.isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : n < 0 ? "-" : "";
+  return `${sign}$${Math.abs(n).toFixed(2)}`;
 }
 
 export function Dashboard({ state, size }: { state: AgentState | null; size: TermSize }) {

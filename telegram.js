@@ -153,6 +153,34 @@ export function formatPnLTable(trades) {
   ].join("\n");
 }
 
+// ─── Bot command registration ────────────────────────────────────
+
+const BOT_COMMANDS = [
+  { command: "status",        description: "Status bot & market" },
+  { command: "pnl",           description: "Riwayat profit & loss" },
+  { command: "menu",          description: "Menu lengkap strategi & posisi" },
+  { command: "health",        description: "Health check semua fitur" },
+  { command: "agents",        description: "Status semua agent" },
+  { command: "positions",     description: "Posisi aktif saat ini" },
+  { command: "strategies",    description: "List & ganti strategi" },
+  { command: "auto",          description: "Start/stop automation (on|off)" },
+  { command: "autonomy",      description: "Set autonomy level (manual|supervised|full_auto)" },
+  { command: "proposals",     description: "Lihat vault proposals pending" },
+  { command: "chains",        description: "Status multi-chain market" },
+  { command: "setup_brain",   description: "Hubungkan Obsidian vault ke GitHub (panduan)" },
+  { command: "help",          description: "Daftar semua command" },
+];
+
+export async function registerBotCommands() {
+  if (!isEnabled()) return;
+  const res = await postTelegram("setMyCommands", { commands: BOT_COMMANDS });
+  if (res?.ok) {
+    console.log(`[Telegram] Registered ${BOT_COMMANDS.length} bot commands`);
+  } else {
+    console.warn("[Telegram] setMyCommands failed:", res?.description || "unknown error");
+  }
+}
+
 // ─── Long-poll incoming ──────────────────────────────────────────
 
 export function startPolling(onMessage) {
@@ -244,7 +272,7 @@ export function stopPolling() {
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve as _resolve, dirname as _dirname } from "path";
 import { fileURLToPath as _ftu } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 const _root = _dirname(_ftu(import.meta.url));
 const _SIGNALS_FILE = _resolve(_root, "social-signals.json");
 
@@ -307,46 +335,51 @@ export async function handleCallMessage(message = {}) {
 
   const { gateSignal } = await import("./social-trash-gate.js");
 
-  let cache = { updatedAt: null, signals: [] };
-  try {
-    if (existsSync(_SIGNALS_FILE)) cache = JSON.parse(readFileSync(_SIGNALS_FILE, "utf-8"));
-  } catch {}
+  // T3-3: wrap the read-modify-write in withFileLock so concurrent telegram
+  // signal handlers don't interleave reads and clobber each other's writes.
+  // social-hunter.js and discord-listener.js already use withFileLock here.
+  return withFileLock(_SIGNALS_FILE, async () => {
+    let cache = { updatedAt: null, signals: [] };
+    try {
+      if (existsSync(_SIGNALS_FILE)) cache = JSON.parse(readFileSync(_SIGNALS_FILE, "utf-8"));
+    } catch {}
 
-  const existing = new Map((cache.signals || []).map(s => [s.symbol, s]));
-  let passed = 0;
+    const existing = new Map((cache.signals || []).map(s => [s.symbol, s]));
+    let passed = 0;
 
-  for (const sig of signals) {
-    const gate = gateSignal(sig);
-    if (!gate.pass) continue;
-    passed++;
+    for (const sig of signals) {
+      const gate = gateSignal(sig);
+      if (!gate.pass) continue;
+      passed++;
 
-    const prev = existing.get(sig.symbol) || {
-      symbol: sig.symbol, mentions: 0, engagement: 0, sources: [],
-      firstSeen: sig.postedAt, lastSeen: sig.postedAt,
-    };
+      const prev = existing.get(sig.symbol) || {
+        symbol: sig.symbol, mentions: 0, engagement: 0, sources: [],
+        firstSeen: sig.postedAt, lastSeen: sig.postedAt,
+      };
 
-    // Forwarded calls from alpha channels carry higher weight
-    const scoreBoost = sig.isForwarded ? 30 : 20;
+      // Forwarded calls from alpha channels carry higher weight
+      const scoreBoost = sig.isForwarded ? 30 : 20;
 
-    existing.set(sig.symbol, {
-      ...prev,
-      source:     "telegram",
-      mentions:   (prev.mentions || 0) + 1,
-      engagement: (prev.engagement || 0) + (sig.views || 0),
-      sources:    [...(prev.sources || []), `telegram:${sig.channel}:${sig.views}`],
-      lastSeen:   sig.postedAt,
-      gate,
-      socialScore: Math.min(100, (prev.socialScore || 0) + scoreBoost),
-    });
-  }
+      existing.set(sig.symbol, {
+        ...prev,
+        source:     "telegram",
+        mentions:   (prev.mentions || 0) + 1,
+        engagement: (prev.engagement || 0) + (sig.views || 0),
+        sources:    [...(prev.sources || []), `telegram:${sig.channel}:${sig.views}`],
+        lastSeen:   sig.postedAt,
+        gate,
+        socialScore: Math.min(100, (prev.socialScore || 0) + scoreBoost),
+      });
+    }
 
-  if (passed > 0) {
-    cache.updatedAt = new Date().toISOString();
-    cache.signals   = [...existing.values()];
-    try { atomicWriteJson(_SIGNALS_FILE, cache); } catch {}
-  }
+    if (passed > 0) {
+      cache.updatedAt = new Date().toISOString();
+      cache.signals   = [...existing.values()];
+      try { await atomicWriteJson(_SIGNALS_FILE, cache); } catch {}
+    }
 
-  return passed;
+    return passed;
+  });
 }
 
 // ─── Live message: edits in place to show progress ───────────────

@@ -74,6 +74,11 @@ const ALLOWED_KEYS = new Set([
   "strategyEvolutionEnabled", "runtimeSelectorMode",
   "strategyProposalEnabled", "vaultProposalEnabled", "autonomyMode",
   "menuEnabled", "logLevel",
+  // Multi-wallet: enable toggle + tuning. `wallets` array carries the slots
+  // (env_ref + capital_pct); private keys live in .env, never here.
+  "multiWalletEnabled", "multiWalletMaxErrors", "multiWalletCooldownMin",
+  "multiWalletAutoSpreadEnabled", "multiWalletAutoSpreadMinTotalSol",
+  "multiWalletMinWalletDeploySol", "multiWalletMaxWalletsPerBatch",
   "screening", "execution", "filters",
   "blocklist", "watchlist", "wallets", "trashWallets",
   "hunter", "copyTrade", "positionLimits",

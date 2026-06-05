@@ -31,8 +31,6 @@ if (u.gmgnApiKey)  process.env.GMGN_API_KEY     ||= u.gmgnApiKey;
 // Paper trading (demo-only virtual balance for testing the full trade loop).
 if (u.paperTrading != null)  process.env.PAPER_TRADING   ||= String(u.paperTrading);
 if (u.paperStartSol != null) process.env.PAPER_START_SOL ||= String(u.paperStartSol);
-// Demo strict gates: run confirmMode + safety-check in demo too (opt-in fidelity).
-if (u.demoStrictGates != null) process.env.DEMO_STRICT_GATES ||= String(u.demoStrictGates);
 if (u.proValidationMode != null) process.env.PRO_VALIDATION_MODE ||= String(u.proValidationMode);
 if (u.heliusApiEnabled != null) process.env.HELIUS_API_ENABLED ||= String(u.heliusApiEnabled);
 if (u.publicApiKey) process.env.PUBLIC_API_KEY ||= u.publicApiKey;
@@ -273,9 +271,12 @@ export const config = {
   },
 
   // ─── Risk Limits ─────────────────────────
+  // CFG-VAL: monetary params MUST go through finiteNumber — `?? fallback` only
+  // catches null/undefined, so a string/NaN ("abc") would pass through and
+  // silently disable the maxDeployAmount cap (100 > "abc" === false in guards).
   risk: {
-    maxPositions:    u.maxPositions    ?? 2,
-    maxDeployAmount: u.maxDeployAmount ?? 35,
+    maxPositions:    finiteNumber(u.maxPositions,    2),
+    maxDeployAmount: finiteNumber(u.maxDeployAmount, 35),
   },
 
   kelly: {
@@ -371,10 +372,10 @@ export const config = {
     stopLossPct:           u.stopLossPct           || u.emergencyPriceDropPct || null,
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? null,
     autoTakeProfitPct:     u.autoTakeProfitPct     ?? 50,
-    minSolToOpen:          u.minSolToOpen          ?? 0.55,
-    deployAmountSol:       u.deployAmountSol       ?? 0.5,
-    gasReserve:            u.gasReserve            ?? 0.2,
-    positionSizePct:       u.positionSizePct       ?? 0.25,
+    minSolToOpen:          finiteNumber(u.minSolToOpen,    0.55),
+    deployAmountSol:       finiteNumber(u.deployAmountSol, 0.5),
+    gasReserve:            finiteNumber(u.gasReserve,      0.2),
+    positionSizePct:       finiteNumber(u.positionSizePct, 0.25),
     // Trailing take-profit
     trailingTakeProfit:    u.trailingTakeProfit    ?? true,
     trailingTriggerPct:    u.trailingTriggerPct    ?? 5,    // activate trailing at X% PnL

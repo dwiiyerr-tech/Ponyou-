@@ -32,7 +32,6 @@ const h = vi.hoisted(() => ({
   log:                         vi.fn(),
   logAction:                   vi.fn(),
   recordCounter:               vi.fn(),
-  demoStrictGates:             vi.fn(),
   getStrategy:                 vi.fn(),
   execSync:                    vi.fn(),
   spawn:                       vi.fn(),
@@ -75,7 +74,6 @@ vi.mock("../../intents.js",  () => ({ createPendingIntent: h.createPendingIntent
 vi.mock("../../logger.js",   () => ({ log: h.log, logAction: h.logAction }));
 vi.mock("../../metrics.js",  () => ({ recordCounter: h.recordCounter }));
 vi.mock("../../runtime-mode.js", () => ({
-  demoStrictGates:         h.demoStrictGates,
   normalizeBooleanFlag:    (v) => v === true,
   PAPER_REDIRECT_STORES:   {},
 }));
@@ -144,7 +142,6 @@ function commonDefaults() {
   h.sendHTML.mockReturnValue(Promise.resolve());
   h.getMarketIntelligence.mockReturnValue({ condition: "neutral" });
   h.getStrategy.mockReturnValue({ id: "scalping" });
-  h.demoStrictGates.mockReturnValue(false);
   h.listTrackedPositions.mockReturnValue([]);
   h.getTrackedPosition.mockReturnValue(null);
   h.getActiveWallet.mockReturnValue(WALLET);
@@ -238,12 +235,13 @@ describe("runSafetyChecks via executeTool", () => {
     expect(h.swapToken).toHaveBeenCalledOnce();
   });
 
-  it("demoStrictGates=true forces balance gate even in DRY_RUN=true", async () => {
+  it("DRY_RUN=true skips balance gate — low balance does not block trade", async () => {
     process.env.DRY_RUN = "true";
-    h.demoStrictGates.mockReturnValue(true);
-    h.getWalletBalances.mockResolvedValue({ sol: 0.05, tokens: [] });
+    h.getWalletBalances.mockResolvedValue({ sol: 0.001, tokens: [] }); // would block in live
+    h.swapToken.mockResolvedValue({ success: true, dry_run: true });
     const r = await executeTool("swap_token", { token_in: "SOL", token_out: MINT, amount: 0.1 });
-    expect(r).toMatchObject({ blocked: true });
+    expect(r.success).toBe(true); // not blocked despite insufficient balance
+    expect(r).not.toMatchObject({ blocked: true });
   });
 
   it("self_update is blocked when ALLOW_SELF_UPDATE is unset", async () => {
@@ -456,10 +454,9 @@ describe("maybeParkAsConfirmIntent (confirm mode)", () => {
     expect(h.swapToken).toHaveBeenCalledOnce();
   });
 
-  it("confirmMode=true + DRY_RUN + no strict gates → proceeds (bypass for demo)", async () => {
+  it("confirmMode=true + DRY_RUN → proceeds (no real funds, no approval needed)", async () => {
     config.trading.confirmMode = true;
     process.env.DRY_RUN = "true";
-    h.demoStrictGates.mockReturnValue(false);
     h.swapToken.mockResolvedValue({ success: true });
     await executeTool("swap_token", { token_in: "SOL", token_out: MINT, amount: 0.1 });
     expect(h.createPendingIntent).not.toHaveBeenCalled();
@@ -480,19 +477,6 @@ describe("maybeParkAsConfirmIntent (confirm mode)", () => {
     expect(h.createPendingIntent).toHaveBeenCalledWith(
       expect.objectContaining({ type: "buy" }),
     );
-  });
-
-  it("confirmMode=true + DRY_RUN + strict gates → parks", async () => {
-    config.trading.confirmMode = true;
-    process.env.DRY_RUN = "true";
-    h.demoStrictGates.mockReturnValue(true);
-    h.getWalletBalances.mockResolvedValue({ sol: 5, tokens: [] });
-    h.createPendingIntent.mockResolvedValue({
-      id: "intent-2", expires_at: "2026-06-02T10:00:00Z",
-    });
-    const r = await executeTool("swap_token", { token_in: "SOL", token_out: MINT, amount: 0.1 });
-    expect(r).toMatchObject({ pending: true });
-    expect(h.swapToken).not.toHaveBeenCalled();
   });
 
   it("confirmMode=true but token_in is NOT SOL → proceeds (only BUYs are parked)", async () => {

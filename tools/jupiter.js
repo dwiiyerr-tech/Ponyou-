@@ -112,7 +112,9 @@ async function swapViaJito({ inputMint, outputMint, amountRaw, slippageBps, wall
     // timed out. Returns the first confirmed signature, or null if none/unknown.
     confirmSignatures: async (sigs) => {
       try {
-        const conn = new Connection(process.env.RPC_URL || "https://api.mainnet-beta.solana.com", "confirmed");
+        // T3-2: prefer HELIUS_RPC_URL — public mainnet RPC 429s under load,
+        // exactly when double-exec risk is highest (retry storms).
+        const conn = new Connection(process.env.HELIUS_RPC_URL || process.env.RPC_URL || "https://api.mainnet-beta.solana.com", "confirmed");
         const res = await conn.getSignatureStatuses(sigs, { searchTransactionHistory: false });
         const vals = res?.value || [];
         for (let i = 0; i < vals.length; i++) {
@@ -156,9 +158,34 @@ async function legacyJitoFlow({ inputMint, outputMint, amountRaw, slippageBps, w
   if (!swapData.swapTransaction) throw new Error("Jupiter v6 swap: no transaction returned");
   const tx = VersionedTransaction.deserialize(Buffer.from(swapData.swapTransaction, "base64"));
   tx.sign([wallet]);
+  // T1-4: capture signature before submit so we can poll on !landed — same
+  // pattern as the Ultra path (T1-3). A tx can land even if awaitBundleLanding
+  // times out; throwing without polling risks a double-execution on retry.
+  let jitoTxSig = null;
+  try {
+    if (tx.signatures?.[0]) jitoTxSig = bs58.encode(tx.signatures[0]);
+  } catch { /* non-fatal */ }
+
   const bundleId = await submitSwapBundle({ signedSwapTx: tx, wallet, recentBlockhash: tx.message.recentBlockhash, tipLamports: config.jito.tipLamports, region: config.jito.region || "fra", authToken: config.jito.authToken || null });
   const landing = await awaitBundleLanding({ bundleId, region: config.jito.region || "fra", authToken: config.jito.authToken || null, timeoutMs: 30_000 });
-  if (!landing.landed) throw new Error(`Jito bundle not landed: ${JSON.stringify(landing.status?.err)}`);
+  if (!landing.landed) {
+    // T1-4: before declaring failure, check if the tx actually landed on-chain.
+    if (jitoTxSig) {
+      try {
+        const rpcUrl = process.env.HELIUS_RPC_URL || process.env.RPC_URL || "https://api.mainnet-beta.solana.com";
+        const conn = new Connection(rpcUrl, "confirmed");
+        const res = await conn.getSignatureStatuses([jitoTxSig], { searchTransactionHistory: false });
+        const st = res?.value?.[0];
+        if (st && !st.err && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) {
+          log("swap", `Jito bundle timeout but tx confirmed on-chain: ${jitoTxSig}`);
+          return { hash: jitoTxSig, amount_out: quote.outAmount ?? null, jito_bundle_id: bundleId };
+        }
+      } catch { /* poll failed — fall through to indeterminate */ }
+      log("jupiter_warn", `Jito bundle not landed — tx ${jitoTxSig.slice(0, 8)}… may have landed; caller should NOT retry blindly`);
+      throw Object.assign(new Error(`Jito bundle not landed: ${JSON.stringify(landing.status?.err)}`), { indeterminate: true, hash_candidate: jitoTxSig });
+    }
+    throw new Error(`Jito bundle not landed: ${JSON.stringify(landing.status?.err)}`);
+  }
   const hash = landing.status?.transactions?.[0] || bundleId;
   log("swap", `Jito bundle landed: ${bundleId} tx=${hash}`);
   return { hash, amount_out: quote.outAmount ?? null, jito_bundle_id: bundleId };
@@ -374,16 +401,45 @@ export async function swapToken({ token_in, token_out, amount, slippage = 0.5, w
     tx.sign([wallet]);
     const signedTx = Buffer.from(tx.serialize()).toString("base64");
 
+    // T1-3: capture signature before we send so we can poll if /execute times out.
+    // After sign(), tx.signatures[0] is the first (and for single-signer txs, only)
+    // signature as a Uint8Array — encode to base58 for getSignatureStatuses.
+    let txSignature = null;
+    try {
+      if (tx.signatures?.[0]) txSignature = bs58.encode(tx.signatures[0]);
+    } catch { /* non-fatal: fall through to indeterminate */ }
+
     // ── Step 3: Execute ────────────────────────────────────
-    const execRes = await fetch(`${ULTRA_BASE}/execute`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        signedTransaction: signedTx,
-        requestId: order.requestId,
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
+    let execRes;
+    try {
+      execRes = await fetch(`${ULTRA_BASE}/execute`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          signedTransaction: signedTx,
+          requestId: order.requestId,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (fetchErr) {
+      // T1-3: fetch timed out or failed — signed tx may have already landed.
+      // Poll before reporting failure to prevent double-execution on retry.
+      if (txSignature) {
+        try {
+          const rpcUrl = process.env.HELIUS_RPC_URL || process.env.RPC_URL || "https://api.mainnet-beta.solana.com";
+          const conn = new Connection(rpcUrl, "confirmed");
+          const res = await conn.getSignatureStatuses([txSignature], { searchTransactionHistory: false });
+          const st = res?.value?.[0];
+          if (st && !st.err && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) {
+            log("swap", `Jupiter Ultra /execute timeout but tx confirmed on-chain: ${txSignature}`);
+            return { success: true, hash: txSignature, token_in: inputMint, token_out: outputMint, amount, slippage, wallet_address: activeWalletAddress, amount_out: null, execution_provider: "jupiter_ultra", execution_context: execCtx };
+          }
+        } catch { /* poll failed — fall through to indeterminate */ }
+        log("jupiter_warn", `Jupiter Ultra /execute timeout — tx ${txSignature.slice(0, 8)}… may have landed; caller should NOT retry blindly`);
+        return { success: false, indeterminate: true, error: "execute_timeout_unconfirmed", hash_candidate: txSignature, execution_provider: "jupiter_ultra", execution_context: execCtx };
+      }
+      throw fetchErr;
+    }
 
     if (!execRes.ok) {
       const body = await execRes.text();

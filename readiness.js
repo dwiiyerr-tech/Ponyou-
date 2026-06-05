@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { config } from "./config.js";
 import { validateWalletTopology } from "./wallet-topology.js";
+import bs58 from "bs58";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,7 +40,17 @@ function hasWalletConfigured({ env = process.env, runtime = {}, config = null } 
     wallets: config?.multiWallet?.wallets || [],
   });
   if (topology.ok && topology.wallet_count > 0) return true;
-  return !!env.WALLET_PRIVATE_KEY;
+  if (!env.WALLET_PRIVATE_KEY) return false;
+  // T3-11: validate key FORMAT here so a malformed key fails readiness,
+  // not silently at the first live swap. A valid Ed25519 secret key decodes
+  // to exactly 64 bytes (seed + public key). Shorter decoded values are invalid.
+  try {
+    const decoded = bs58.decode(env.WALLET_PRIVATE_KEY);
+    if (decoded.length !== 64) return false;
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 function hasTelegramConfigured({ env = process.env } = {}) {
@@ -71,6 +82,23 @@ function checkTradingHistory(data) {
   const wins = trades.filter(t => (t.pnl_pct || t.pnlPct || 0) > 0).length;
   const liveWR = trades.length > 0 ? (wins / trades.length * 100).toFixed(1) : "0";
   return { passed: true, message: `${trades.length} closed trades (${liveWR}% WR) — sufficient history` };
+}
+
+// Trade-attribution is isolated to demo/ so simulated outcomes never reach live
+// SIZING (which reads root-only). But the readiness gate SHOULD count demo
+// practice so a smooth demo run opens the live door. So merge root + demo/
+// trade-attribution for this check only. Returns null only when BOTH are absent
+// (true cold start).
+function readTradeAttributionForReadiness() {
+  const root = tryReadJson("trade-attribution.json");
+  const demo = tryReadJson(path.join("demo", "trade-attribution.json"));
+  if (root === null && demo === null) return null;
+  return {
+    trades: [
+      ...((root?.trades) || []),
+      ...((demo?.trades) || []),
+    ],
+  };
 }
 
 function checkRugMemory(data) {
@@ -201,7 +229,12 @@ export function getOperationalReadiness({
       else errors.push(rugCheck.message);
     }
 
-    const historyCheck = dataFileCheck("trade-attribution.json", checkTradingHistory);
+    // Merge root + demo/ trade-attribution: demo practice counts toward the
+    // live-readiness gate, but live sizing still reads root-only (clean start).
+    const historyData = readTradeAttributionForReadiness();
+    const historyCheck = historyData === null
+      ? { passed: false, cold_start: true, message: "trade-attribution.json missing — cold start. Run in demo mode first to accumulate data." }
+      : checkTradingHistory(historyData);
     dataChecks.push({ name: "Trading History", ...historyCheck });
     if (!historyCheck.passed) {
       if (historyCheck.cold_start) warnings.push(historyCheck.message);

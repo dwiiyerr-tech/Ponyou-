@@ -16,7 +16,7 @@ import { log } from "../logger.js";
 import { config } from "../config.js";
 
 const TIMEOUT_MS = 8000;
-const MIN_RUG_CORPUS = 25; // 25+ known rugs before LLM analysis activates
+const MIN_RUG_CORPUS = 10; // 10+ known rugs before LLM analysis activates
 
 /**
  * Build a concise prompt for the LLM to classify rug risk.
@@ -61,16 +61,19 @@ Classification:`;
  */
 function parseRugVerdict(text) {
   if (!text) return { verdict: "unknown", adjustment: 0 };
+  // Parse first word only — system prompt requires classification as first word.
+  // Avoids false matches like "NOT A RUG but SUSPICIOUS" hitting SUSPICIOUS first.
+  const firstWord = text.trim().split(/\s+/)[0].toUpperCase().replace(/[^A-Z]/g, "");
+  if (firstWord === "RUG") return { verdict: "rug", adjustment: 20 };
+  if (firstWord === "SUSPICIOUS") return { verdict: "suspicious", adjustment: 8 };
+  if (firstWord === "SAFE") return { verdict: "safe", adjustment: -5 };
+  // Fallback: scan full text if first word is not a known label
   const upper = text.toUpperCase();
   if (upper.includes("RUG") && !upper.includes("NOT RUG") && !upper.includes("ANTI-RUG")) {
     return { verdict: "rug", adjustment: 20 };
   }
-  if (upper.includes("SUSPICIOUS")) {
-    return { verdict: "suspicious", adjustment: 8 };
-  }
-  if (upper.includes("SAFE")) {
-    return { verdict: "safe", adjustment: -5 };
-  }
+  if (upper.includes("SUSPICIOUS")) return { verdict: "suspicious", adjustment: 8 };
+  if (upper.includes("SAFE")) return { verdict: "safe", adjustment: -5 };
   return { verdict: "unknown", adjustment: 0 };
 }
 
@@ -103,7 +106,7 @@ export async function analyzeRugWithLLM(token, signals = {}, anomaly = null, rug
     const response = await client.chat.completions.create({
       model: config.llm?.screeningModel || process.env.LLM_MODEL || "openrouter/auto",
       messages: [
-        { role: "system", content: "You are a Solana memecoin rug detector. Analyze the token data and classify as SAFE, SUSPICIOUS, or RUG. Be concise. Prefer SUSPICIOUS when uncertain." },
+        { role: "system", content: "You are a Solana memecoin rug detector. Analyze the token data and classify. Your FIRST WORD must be one of: SAFE, SUSPICIOUS, or RUG. Then explain briefly. Prefer SUSPICIOUS when uncertain." },
         { role: "user", content: prompt },
       ],
       temperature: 0.1,

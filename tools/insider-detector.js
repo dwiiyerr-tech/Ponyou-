@@ -167,16 +167,19 @@ function detectFundingAncestor(holders, thresholds) {
 
 // ─── Pattern 4: Snipe block ────────────────────────────────────────────
 
-function detectSnipe(holders, thresholds) {
-  // We need pool creation block (vs first-buy block). Some screeners
-  // provide this as token.pool_created_block — fall back to "block 0"
-  // baseline if not. If we can't determine snipe-window, return 0.
-  // Treat holders entering at block <= snipeMaxBlock RELATIVE to the
-  // lowest first_buy_block in the dataset.
+function detectSnipe(holders, thresholds, poolCreatedBlock = null) {
+  // T3-9: use pool_created_block as the absolute snipe window baseline when
+  // available. The dataset min-block heuristic fails for 100%-sniped launches:
+  // if ALL holders bought at block 1000, minBlock = 1000 and all are within
+  // snipeMaxBlock = 0 of each other — correctly flagged. But if the deployer
+  // spread buys across 10 blocks (1000-1010) and snipeMaxBlock=5, blocks
+  // 1006-1010 escape detection relative to minBlock=1000. With a known pool
+  // creation block (e.g. 999), ALL buys within 999+snipeMaxBlock are caught.
   const withBlock = holders.filter((h) => h.first_buy_block > 0);
   if (withBlock.length === 0) return { triggered: false, score: 0, evidence: null };
-  const minBlock = Math.min(...withBlock.map((h) => h.first_buy_block));
-  const snipers = withBlock.filter((h) => h.first_buy_block - minBlock <= thresholds.snipeMaxBlock);
+  const baseline = (poolCreatedBlock > 0) ? poolCreatedBlock
+    : Math.min(...withBlock.map((h) => h.first_buy_block));
+  const snipers = withBlock.filter((h) => h.first_buy_block - baseline <= thresholds.snipeMaxBlock && h.first_buy_block >= baseline);
   if (snipers.length < thresholds.snipeMinHolders) {
     return { triggered: false, score: 0, evidence: null };
   }
@@ -226,7 +229,7 @@ export function detectInsiderPatterns(token, opts = {}) {
   const sim = detectSimultaneity(holders, thresholds);
   const eq  = detectEqualSize(holders, thresholds);
   const fnd = detectFundingAncestor(holders, thresholds);
-  const snp = detectSnipe(holders, thresholds);
+  const snp = detectSnipe(holders, thresholds, token.pool_created_block || null);
 
   const insider_score = Math.min(1, sim.score + eq.score + fnd.score + snp.score);
 

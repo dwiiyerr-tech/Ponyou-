@@ -2,6 +2,7 @@
 
 export type ScreenId =
   | "dashboard"
+  | "monitor"
   | "watchlist"
   | "logs"
   | "pnl"
@@ -34,6 +35,12 @@ export interface LogLine {
   text: string;
 }
 
+export interface ChainHeat {
+  chain: string;       // sol | base | bsc | eth
+  score: number;       // 0-100
+  condition: string;   // EXTREME | HOT | NORMAL | COLD | DEAD
+}
+
 export interface AgentState {
   agentName: string;
   mode: string;          // demo | live
@@ -48,6 +55,7 @@ export interface AgentState {
   connected: boolean;    // live WS vs file fallback
 
   openPositions: number;
+  maxPositions: number;
   openPositionsList: Position[];
   winRate: number;       // 0-1
   dailyPnlUsd: number;
@@ -56,6 +64,9 @@ export interface AgentState {
   totalSwaps: number;
 
   watchlist: WatchToken[];
+  chains: ChainHeat[];
+  walletUsd: number;       // wallet total USD (gauge) — preferred over balanceSol×price
+  stateMtimeMs: number;    // last time the bot wrote state.json (0 if unknown)
   automation: { active: boolean; qualified: boolean; progressPct: number };
   uptimeSec: number;
   version: string;
@@ -66,6 +77,8 @@ export interface DoctorCheck {
   label: string;
   status: "pass" | "warn" | "fail" | "checking";
   detail: string;
+  group?: string;   // Environment | API Keys | Network | Process
+  fix?: string;     // remediation hint shown under failing/warning rows
 }
 
 export interface CommandResult {

@@ -15,51 +15,41 @@ export function normalizeBooleanFlag(value) {
 }
 
 /**
- * DEMO_STRICT_GATES — opt-in fidelity switch. When ON (demo only), the live
- * execution gates also run in demo:
- *   • confirmMode parking — BUYs are parked as pending intents needing /yes
- *   • balance safety-check — verifies the (virtual) balance covers amount+gas
- * so the approval flow and safety gate get exercised against the virtual
- * balance. OFF by default (demo stays fast/frictionless). Callers already
- * guard on DRY_RUN, so this only takes effect in demo.
- */
-export function demoStrictGates() {
-  return normalizeBooleanFlag(process.env.DEMO_STRICT_GATES) === true;
-}
-
-/**
- * Learning / trade-outcome stores to ISOLATE in paper mode so simulated trades
- * never pollute the live decision corpus. Map: env override → default filename.
- * (Stores that already read these env vars need no change; the rest get a
- * one-line `process.env.X || default` added.)
+ * Stores isolated in demo/ so paper trading cannot trigger live kill-switches,
+ * mix positions with real trades, or pollute live execution routing with
+ * SIMULATED telemetry.
  *
- * Pure-market observations (smart-wallet-history) and ops counters (metrics) are
- * intentionally LEFT SHARED — they're real on-chain data, mode-independent.
+ * Two categories isolated:
+ *   1. Safety/session: state, kill-switch, daily-guard, plan.
+ *   2. Simulated execution telemetry: trade-attribution + execution-quality.
+ *      In DRY_RUN every swap "succeeds" with fake slippage/latency, so sharing
+ *      these would mislead live wallet routing + position sizing. The readiness
+ *      gate still counts demo trade-attribution via a demo/ fallback (see
+ *      readiness.js) so demo practice opens the live door — but live SIZING
+ *      reads root-only and starts clean. Mirrors scripts/promote-demo.js, which
+ *      explicitly refuses to promote these two.
+ *
+ * Learning/knowledge stores (lessons, conviction, rug-memory, patterns, regime,
+ * darwin-weights, performance) are intentionally LEFT SHARED — they are
+ * mode-independent and accumulate during demo runs so the bot does not start
+ * from zero when switching to live.
+ *
+ * Pure-market observations (smart-wallet-history, metrics) also stay shared —
+ * they are real on-chain data, mode-independent.
  */
 export const PAPER_REDIRECT_STORES = {
-  PONYOU_STATE_FILE:             "state.json",              // open positions
-  PONYOU_CONVICTION_FILE:        "coin-conviction.json",
-  PONYOU_PROFIT_PATTERNS_FILE:   "profit-patterns.json",
-  PONYOU_LOSS_PATTERNS_FILE:     "loss-patterns.json",
-  PONYOU_LESSONS_FILE:           "lessons.json",
-  PONYOU_PERF_FILE:              "performance.json",
-  PONYOU_DARWIN_FILE:            "darwin-weights.json",
-  PONYOU_RUG_MEMORY_FILE:        "rug-memory.json",
-  PONYOU_RUG_PATTERNS_FILE:      "rug-patterns-learned.json",
-  PONYOU_REGIME_FILE:            "regime-memory.json",
-  PONYOU_TRADE_ATTRIBUTION_FILE: "trade-attribution.json",
-  PONYOU_EXEC_QUALITY_FILE:      "execution-quality.json",
-  PONYOU_DAILY_GUARD_STATE:      "daily-trade-guard-state.json",
-  PONYOU_PLAN_FILE:              "trading-plan.json",
-  // Safety state: recordSwapOutcome() runs in demo too, so a paper-trade
-  // losing streak must NOT trip the live kill-switch / daily guard.
+  PONYOU_STATE_FILE:             "state.json",
   PONYOU_KILL_SWITCH_STATE:      "kill-switch-state.json",
   PONYOU_KILL_SWITCH_FLAG:       "kill-switch.flag",
+  PONYOU_DAILY_GUARD_STATE:      "daily-trade-guard-state.json",
+  PONYOU_PLAN_FILE:              "trading-plan.json",
+  PONYOU_TRADE_ATTRIBUTION_FILE: "trade-attribution.json",
+  PONYOU_EXEC_QUALITY_FILE:      "execution-quality.json",
 };
 
 /**
- * When paper mode is active (demo + PAPER_TRADING not disabled), point every
- * learning/trade store at a `demo/` subdir — UNLESS the env var is already set
+ * When paper mode is active (demo + PAPER_TRADING not disabled), point safety/
+ * session stores at a `demo/` subdir — UNLESS the env var is already set
  * (test isolation wins). Returns the demo dir, or null when not applied.
  *
  * Must run before any store evaluates its path const; callers ensure config.js
@@ -71,16 +61,15 @@ export function applyPaperDataRedirect({ isDemo, env = process.env, baseDir = _M
   const dir = path.join(baseDir, "demo");
   try { fs.mkdirSync(dir, { recursive: true }); } catch { /* best-effort */ }
   for (const [k, fname] of Object.entries(PAPER_REDIRECT_STORES)) {
-    if (!env[k]) env[k] = path.join(dir, fname); // ||= : explicit override wins
+    if (!env[k]) env[k] = path.join(dir, fname); // explicit override wins
   }
   return dir;
 }
 
 const DEVNET_RPC = "https://api.devnet.solana.com";
 const DEVNET_WSS = "wss://api.devnet.solana.com";
-const MAINNET_RPC_FALLBACK = "https://api.mainnet-beta.solana.com";
-const DEVNET_FAUCET_AMOUNT_SOL = 2;  // devnet airdrop max
-const DEVNET_FAUCET_MIN_BALANCE = 0.5; // refill if below this
+const DEVNET_FAUCET_AMOUNT_SOL = 2;
+const DEVNET_FAUCET_MIN_BALANCE = 0.5;
 
 export function resolveExecutionMode({
   env = process.env,
@@ -102,11 +91,10 @@ export function resolveExecutionMode({
     null;
 
   const normalizedMode = typeof rawMode === "string" ? rawMode.trim().toLowerCase() : null;
-  const demoFlag = normalizeBooleanFlag(rawDemo);
+  const demoFlag  = normalizeBooleanFlag(rawDemo);
   const dryRunFlag = normalizeBooleanFlag(rawDryRun);
 
   let mode = "live";
-  // Explicit mode strings — "false", "off", "no" are NOT valid modes, treat as live
   if (normalizedMode === "demo" || normalizedMode === "dry" || normalizedMode === "dry-run") {
     mode = "demo";
   } else if (normalizedMode === "live") {
@@ -116,23 +104,13 @@ export function resolveExecutionMode({
   } else if (demoFlag === false && dryRunFlag === false) {
     mode = "live";
   } else if (!normalizedMode) {
-    // No mode specified, use boolean flags or default to live
     mode = "live";
   }
 
   const isDemo = mode === "demo";
 
-  // ── DEMO mode: paper trading with mainnet data ──
-  // Demo uses MAINNET RPC for all reads (screening, quotes, prices)
-  // and SIMULATES execution — no real SOL is ever spent.
-  //
-  // For real on-chain testing with devnet tokens (free devnet SOL),
-  // set rpcUrl to a devnet endpoint in user-config.json explicitly.
-  // The faucet will auto-fund the wallet in that case.
-  // Devnet is only ACTIVE when the user is using a devnet RPC endpoint.
-  // demo mode with mainnet RPC does NOT use devnet, even though demo
-  // simulates execution. The `enabled` flag reflects whether devnet
-  // RPC + faucet should be used, not just whether we're in demo mode.
+  // Demo may optionally point at a devnet RPC for data reads (rare use-case —
+  // execution is still simulated / DRY_RUN=true regardless of RPC endpoint).
   const userWantsDevnet = (userConfig.rpcUrl || "").includes("devnet") ||
                           (env.RPC_URL || "").includes("devnet");
   const devnet = (isDemo && userWantsDevnet) ? {
@@ -149,8 +127,7 @@ export function resolveExecutionMode({
     isDemo,
     isLive: mode === "live",
     label: isDemo ? "DEMO (paper trade)" : "LIVE (mainnet)",
-    // DEMO = paper trading: mainnet data, simulated execution, no real SOL spent
-    legacyDryRun: isDemo ? true : false,
+    legacyDryRun: isDemo,
     devnet,
   };
 }
@@ -162,9 +139,6 @@ export function applyExecutionMode(options = {}) {
   process.env.EXECUTION_MODE = resolved.mode;
   process.env.DEMO_MODE = String(resolved.isDemo);
 
-  // DEMO mode = paper trading: mainnet data, simulated execution
-  // Keep mainnet RPC for reads (screening, quotes, prices).
-  // Only override to devnet if user explicitly set a devnet RPC in user-config.
   if (resolved.isDemo) {
     const userWantsDevnet = (userConfig.rpcUrl || "").includes("devnet") ||
                             (env.RPC_URL || "").includes("devnet");
@@ -175,13 +149,13 @@ export function applyExecutionMode(options = {}) {
         process.env.DEVNET_WALLET_KEY = resolved.devnet.walletKey;
       }
     }
-    // Paper trading: simulate execution, don't send real transactions
+    // Demo = paper trading: simulate execution, don't send real transactions.
     process.env.DRY_RUN = "true";
   } else {
     process.env.DRY_RUN = "false";
   }
 
-  // Isolate paper-trade learning into demo/ so it never pollutes live stores.
+  // Isolate paper-trade stores into demo/ so they never pollute live state.
   applyPaperDataRedirect({ isDemo: resolved.isDemo, env: process.env });
 
   return resolved;

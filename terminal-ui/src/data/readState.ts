@@ -7,7 +7,7 @@
  */
 import { existsSync, statSync } from "node:fs";
 import { rootPath, storePath, isPaperMode, readJson } from "./paths.js";
-import type { AgentState, Position, WatchToken } from "../types.js";
+import type { AgentState, Position, WatchToken, ChainHeat } from "../types.js";
 
 interface RawConfig {
   agentName?: string;
@@ -29,6 +29,7 @@ export function readState(): AgentState {
   const conviction = readJson<Record<string, any>>(storePath("coin-conviction.json", paper), {});
   const automation = readJson<Record<string, any>>(rootPath("automation-state.json"), {});
   const closed = readJson<any[]>(rootPath("closed-positions-archive.json"), []);
+  const chainIntel = readJson<Record<string, any>>(rootPath("market-chain-intel.json"), {});
 
   // ── Open positions (state.js schema: key off `closed`, mint=`position`) ──
   const openPositionsList: Position[] = Object.entries(fileState.positions || {})
@@ -42,9 +43,11 @@ export function readState(): AgentState {
         pnlPct: Number(v.peak_pnl_pct || 0),
         size: Number(v.amount_sol || 0),
         risk: rug >= 70 ? "HIGH" : rug >= 40 ? "MED" : "LOW",
-        age: v.deployed_at
-          ? Math.round((Date.now() - new Date(v.deployed_at).getTime()) / 60000) + "m"
-          : "--",
+        age: (() => {
+          if (!v.deployed_at) return "--";
+          const ms = new Date(v.deployed_at).getTime();
+          return Number.isFinite(ms) ? Math.round((Date.now() - ms) / 60000) + "m" : "--";
+        })(),
       } as Position;
     });
 
@@ -71,13 +74,34 @@ export function readState(): AgentState {
     const usd = (t.entry_usd || 0) * ((t.pnl_pct ?? t.peak_pnl_pct ?? 0) / 100);
     return s + (Number.isFinite(usd) ? usd : 0);
   }, 0);
-  const unrealized = openPositionsList.reduce((s, p) => {
-    const entryUsd = p.size * (Number(fileState.sol_price) || marketIntel.solPrice || 0);
-    return s + entryUsd * (p.pnlPct / 100);
-  }, 0);
+  const solPriceForPnl = Number(fileState.sol_price) || Number(marketIntel.solPrice) || 0;
+  const unrealized = solPriceForPnl > 0
+    ? openPositionsList.reduce((s, p) => {
+        const entryUsd = p.size * solPriceForPnl;
+        return s + (Number.isFinite(entryUsd) ? entryUsd * (p.pnlPct / 100) : 0);
+      }, 0)
+    : 0;
+
+  // ── Chain heat — per-chain hotness from market-chain-intel.js snapshots ──
+  const chains: ChainHeat[] = Object.values(chainIntel.chains || {})
+    .map((c: any) => ({
+      chain: String(c.chain || "?"),
+      score: Number(c.score ?? 0),
+      condition: String(c.condition || "DEAD"),
+    }))
+    .sort((a, b) => b.score - a.score);
 
   const balanceSol = Number(fileState.balance_sol ?? config.walletBalance ?? 0);
   const solPrice = Number(fileState.sol_price ?? marketIntel.solPrice ?? 0);
+  // Prefer the wallet_total_usd gauge (true marked value) over balance×price.
+  const walletUsd = Number(metrics.gauges?.wallet_total_usd ?? balanceSol * solPrice);
+
+  // Freshness — when the bot last wrote state.json (drives Monitor's live/stale).
+  let stateMtimeMs = 0;
+  try {
+    const sp = storePath("state.json", paper);
+    if (existsSync(sp)) stateMtimeMs = statSync(sp).mtimeMs;
+  } catch { /* fail soft */ }
 
   return {
     agentName: config.agentName || "ponyou-agent",
@@ -92,6 +116,7 @@ export function readState(): AgentState {
     rpcStatus: "FILE",
     connected: false,
 
+    maxPositions: Number(config.maxPositions ?? 3),
     openPositions: openPositionsList.length,
     openPositionsList,
     winRate: Number(metrics.winRate ?? 0),
@@ -101,6 +126,9 @@ export function readState(): AgentState {
     totalSwaps: Number(metrics.totalSwaps ?? 0),
 
     watchlist,
+    chains,
+    walletUsd,
+    stateMtimeMs,
     automation: {
       active: automation.automationActive ?? false,
       qualified: automation.qualified ?? false,

@@ -14,9 +14,17 @@
  * TIDAK membuat keputusan BUY/SELL — itu milik Management Agent.
  */
 
+import { execFile } from "child_process";
+import { promisify } from "util";
+import { fileURLToPath } from "url";
+import path from "path";
+
+const execFileAsync = promisify(execFile);
 import { agentBus } from "./agent-bus.js";
 import { setAgentStatus, updateAgentHealth, getAllAgentStatuses } from "./agent-registry.js";
 import { log } from "../logger.js";
+
+const _REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const AGENT_NAME = "general";
 
@@ -24,6 +32,8 @@ let _agentLoop    = null;
 let _config       = null;
 let _controls     = null;
 let _initialized  = false;
+// T3-12: track unsubscribe functions for safe re-init cleanup.
+let _unsubscribers = [];
 
 // Riwayat percakapan — persisten selama runtime, bukan per-restart
 const _history = [];
@@ -119,17 +129,27 @@ function buildStateSnapshot() {
 // ─── Init ─────────────────────────────────────────────────────────────────
 
 export function initGeneralAgent({ agentLoop, config, controls }) {
-  if (_initialized) return;
-  _initialized = true;
+  // T3-12: clean up previous listeners before re-registering.
+  // Previously used .on() directly (no cleanup reference), causing listener
+  // accumulation on re-init. Now uses .subscribe() + stored unsubscribers.
+  for (const fn of _unsubscribers) { try { fn(); } catch { /* already removed */ } }
+  _unsubscribers = [];
 
-  _agentLoop = agentLoop;
-  _config    = config;
-  _controls  = controls || null;
+  if (_initialized) {
+    _agentLoop = agentLoop;
+    _config    = config;
+    _controls  = controls || null;
+    // Fall through to re-register listeners (cleaned above).
+  } else {
+    _initialized = true;
+    _agentLoop = agentLoop;
+    _config    = config;
+    _controls  = controls || null;
+    setAgentStatus(AGENT_NAME, "running", "General agent — Ponyou assistant & control interface");
+  }
 
-  setAgentStatus(AGENT_NAME, "running", "General agent — Ponyou assistant & control interface");
-
-  // ── Agent bus: legacy support ──
-  agentBus.on("general:telegram", async (payload) => {
+  // ── Agent bus listeners ──
+  _unsubscribers.push(agentBus.subscribe("general:telegram", async (payload) => {
     const reqId = payload?._reqId;
     if (!reqId) return;
     const text = payload?.text?.trim() || "";
@@ -139,9 +159,9 @@ export function initGeneralAgent({ agentLoop, config, controls }) {
     } catch (e) {
       agentBus.respond(reqId, { response: `Error: ${e.message}` });
     }
-  });
+  }));
 
-  agentBus.on("general:dashboard_query", async (payload) => {
+  _unsubscribers.push(agentBus.subscribe("general:dashboard_query", async (payload) => {
     const reqId = payload?._reqId;
     if (!reqId) return;
     const query = payload?.query || "";
@@ -151,7 +171,7 @@ export function initGeneralAgent({ agentLoop, config, controls }) {
     } catch (e) {
       agentBus.respond(reqId, { response: `Error: ${e.message}` });
     }
-  });
+  }));
 
   log("general", "General agent initialized — assistant & control interface ready");
 }
@@ -173,6 +193,60 @@ export async function handleGeneralMessage(text) {
     _controls.rememberLesson(lesson, "user");
     log("general", `Memory saved: "${lesson.slice(0, 80)}"`);
     return `✅ <b>Disimpan ke Second Brain</b>\n<i>"${lesson.slice(0, 100)}"</i>\n\nPonyou akan menggunakan pelajaran ini pada setiap screening cycle berikutnya.`;
+  }
+
+  // ── Obsidian / Second Brain setup (no LLM needed) ──
+  const brainSetupMatch = text.match(/^(?:setup\s*brain|hubungkan\s*obsidian|obsidian\s*setup|brain\s*setup)[:\s]+(\S+)/is);
+  if (brainSetupMatch) {
+    const remoteUrl = brainSetupMatch[1].trim();
+    if (!remoteUrl.includes("github.com")) {
+      return [
+        "❌ <b>URL tidak valid</b>",
+        "",
+        "Format yang benar:",
+        "<code>setup brain: https://TOKEN@github.com/USERNAME/REPO.git</code>",
+        "",
+        "Contoh:",
+        "<code>setup brain: https://ghp_xxx@github.com/dwiiyerr/ponyou-brain.git</code>",
+      ].join("\n");
+    }
+    try {
+      const safeUrl = remoteUrl.replace(/https?:\/\/[^@]+@/, "https://***@");
+      log("general", `Brain setup: ${safeUrl}`);
+      const scriptPath = path.join(_REPO_ROOT, "scripts", "setup-secondbrain.mjs");
+      await execFileAsync(
+        process.execPath,
+        [scriptPath, "--method", "obsidian-git", "--remote", remoteUrl, "--yes"],
+        { cwd: _REPO_ROOT, timeout: 60000 }
+      );
+      return [
+        "✅ <b>Obsidian Second Brain terhubung!</b>",
+        "",
+        "📚 Vault sudah di-push ke GitHub",
+        "🔄 Auto-push aktif setiap 5 menit",
+        "",
+        "<b>Langkah terakhir di perangkat kamu:</b>",
+        "1. Clone: <code>git clone https://github.com/USERNAME/ponyou-brain</code>",
+        "2. Buka sebagai vault di Obsidian",
+        "3. Install plugin <b>Obsidian Git</b>",
+        "4. Set auto-pull: 5 menit",
+        "",
+        "📡 Vault akan sync otomatis dari bot ke Obsidian.",
+      ].join("\n");
+    } catch (e) {
+      const errMsg = (e.stderr?.toString() || e.message).slice(0, 300);
+      log("general_error", `Brain setup failed: ${errMsg}`);
+      return [
+        "❌ <b>Setup gagal</b>",
+        "",
+        `<code>${errMsg}</code>`,
+        "",
+        "Pastikan:",
+        "• Token GitHub valid (Settings → Developer settings → PAT)",
+        "• Repo sudah dibuat di GitHub (private OK)",
+        "• Format URL: <code>https://TOKEN@github.com/USER/REPO.git</code>",
+      ].join("\n");
+    }
   }
 
   if (!_agentLoop) {
@@ -238,6 +312,10 @@ function _quickResponse(text) {
       "/feature <name> on|off — Toggle fitur",
       "/strategies — List semua strategi",
       "/health — Health semua fitur",
+      "",
+      "<b>🧠 Second Brain</b>",
+      "ingat: [pelajaran] — Simpan instruksi ke vault",
+      "setup brain: [github-url] — Hubungkan Obsidian ke GitHub",
       "",
       "<b>💬 Chat</b>",
       "Tanya apa saja dalam bahasa natural.",

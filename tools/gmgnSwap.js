@@ -154,7 +154,9 @@ async function pollOrder(orderId, chain, { maxTries = 20, intervalMs = 3000 } = 
     }
     await new Promise(r => setTimeout(r, intervalMs));
   }
-  return { success: false, status: "poll_timeout" };
+  // T3-5: mark as indeterminate — the order may have confirmed on-chain
+  // after maxTries. Caller must NOT retry blindly (double-buy risk).
+  return { success: false, status: "poll_timeout", indeterminate: true };
 }
 
 function safeJson(s) {

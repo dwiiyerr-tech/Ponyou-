@@ -103,7 +103,7 @@ const CALL_INDICATORS = [
 
 const SYMBOL_RE = /\$([A-Z]{2,12})\b|(?:^|\s)([A-Z]{3,10})(?:\s|$)/g;
 
-function parseCallMessage(content = "", channelName = "", reactions = []) {
+export function parseCallMessage(content = "", channelName = "", reactions = []) {
   const isCall = CALL_INDICATORS.some(re => re.test(content));
   if (!isCall && reactions.length === 0) return null;
 

@@ -61,14 +61,13 @@ function safeReadCached(fpath, fallback) {
 }
 
 // ── Demo-redirect awareness ──
-// In paper mode the bot isolates learning/trade stores into demo/ (see
-// runtime-mode.js applyPaperDataRedirect). This monitor is a SEPARATE process
-// without the PONYOU_*_FILE env, so it detects paper mode from user-config and
-// reads the demo/ copies — otherwise it shows an empty live corpus while the
-// bot is actively paper-trading. Must mirror runtime-mode's PAPER_REDIRECT_STORES.
+// Isolated in demo/: positions (state.json), session (trading-plan.json), and
+// simulated execution telemetry (execution-quality.json). All learning stores
+// (lessons, conviction, regime-memory, etc.) are shared between demo and live
+// so data accumulated in demo is immediately usable when switching to live.
+// Mirrors runtime-mode.js PAPER_REDIRECT_STORES.
 const REDIRECTED_STORES = new Set([
-  'state.json', 'coin-conviction.json', 'regime-memory.json',
-  'execution-quality.json', 'lessons.json', 'trading-plan.json',
+  'state.json', 'trading-plan.json', 'execution-quality.json',
 ]);
 
 function isPaperMode(config) {

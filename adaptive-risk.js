@@ -111,7 +111,14 @@ export function getRiskMultiplier({
 export function adaptDeployAmount(amountSol, sessionState = {}, { minSol = 0, maxMultiplier = 1.25 } = {}) {
   const risk      = getRiskMultiplier(sessionState, { maxMultiplier });
   const rawAmount = Number(amountSol) || 0;
-  const adjusted  = risk.multiplier === 0 ? 0 : Math.max(minSol, rawAmount * risk.multiplier);
+  // T3-7: only apply minSol floor when scaling UP (multiplier >= 1).
+  // During defensive state (multiplier < 1) the intended size reduction must
+  // be honored — Math.max(minSol, ...) would raise it back to minSol, defeating
+  // the risk-reduction entirely. Zero multiplier still produces zero.
+  const scaled   = rawAmount * risk.multiplier;
+  const adjusted = risk.multiplier === 0 ? 0
+    : risk.multiplier >= 1 ? Math.max(minSol, scaled)
+    : scaled;
   return {
     amount_sol: Number(adjusted.toFixed(4)),
     ...risk,

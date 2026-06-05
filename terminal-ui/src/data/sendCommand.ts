@@ -37,11 +37,12 @@ export async function sendCommand(cmd: string): Promise<CommandResult> {
   if (viaApi) return viaApi;
 
   // File fallback — the bot's dashboard IPC poller picks this up.
+  // args must be an array to match /api/cmd schema (server joins them server-side).
   try {
     const payload = {
       id: `tui-${Date.now()}`,
       cmd: base,
-      args: parts.slice(1).join(" "),
+      args: parts.slice(1),
       timestamp: new Date().toISOString(),
     };
     await writeFile(rootPath("dashboard-cmd.json"), JSON.stringify(payload, null, 2));

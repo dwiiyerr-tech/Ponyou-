@@ -1,6 +1,8 @@
 import { Router } from "express";
 import _fs from "fs";
 import _path from "path";
+import { ERROR_LOG_FILE } from "../../logger.js";
+import { agentBus } from "../../agents/agent-bus.js";
 import { readBotState } from "../state-reader.js";
 import { writeAutomationCommand } from "../command-writer.js";
 import { readConfig, writeConfig } from "../config-writer.js";
@@ -37,14 +39,28 @@ import { config } from "../../config.js";
 
 const ALLOWED_LIFECYCLE_CMDS = new Set(["start", "stop"]);
 const ALLOWED_SLASH_CMDS = new Set([
+  // ── Core trading control ──
   "/menu", "/strategies", "/strategy", "/stratset", "/agent", "/auto",
   "/confirm", "/dailyguard", "/continue", "/resetplan", "/plan", "/stoptrade",
   "/pending", "/no", "/yes", "/metrics", "/kill", "/unkill", "/killstate",
+  // ── Wallet & chain management ──
   "/wallets", "/pnl", "/status", "/health", "/feature", "/devcheck", "/dayphase",
+  "/chains",
+  // ── Skills & strategy evolution ──
   "/skills", "/promoteskill", "/rejectskill", "/skillweight",
+  "/strategy-perf", "/stratperf",
+  // ── Vault proposals ──
   "/vault_proposals", "/proposals", "/proposals_status",
   "/proposals_on", "/proposals_off", "/autonomy",
   "/approve_vault", "/reject_vault",
+  // ── Pro-orchestrator automation ──
+  "/approve_automation", "/reject_automation", "/revoke_automation",
+  "/automation_status", "/qualification",
+  // ── Intel & cast-net ──
+  "/intel", "/castnet",
+  // NOTE: /off (shutdown) is intentionally excluded — too destructive for dashboard.
+  // NOTE: /approve_UUID /reject_UUID (evolved strategies) use dynamic IDs —
+  //       they are validated by the handler itself, not this allowlist.
 ]);
 
 export function createApiRouter() {
@@ -627,7 +643,11 @@ export function createApiRouter() {
       return res.status(400).json({ error: "Invalid cmd" });
     }
     const baseCmd = cmd.split(" ")[0];
-    if (!ALLOWED_SLASH_CMDS.has(baseCmd)) {
+    // Dynamic approval commands: /approve_UUID and /reject_UUID for evolved strategies.
+    // These can't be hardcoded in ALLOWED_SLASH_CMDS because the UUID suffix is
+    // generated at runtime. Validate the pattern instead: prefix + hex/alphanumeric.
+    const isDynamicApproval = /^\/(approve|reject)_[a-zA-Z0-9_-]{4,64}$/.test(baseCmd);
+    if (!ALLOWED_SLASH_CMDS.has(baseCmd) && !isDynamicApproval) {
       return res.status(400).json({ error: "Unknown or disallowed command" });
     }
     if (!Array.isArray(args) || args.length > 16) {
@@ -645,6 +665,101 @@ export function createApiRouter() {
     }
     const result = await sendBotCommand({ cmd, args });
     res.json(result);
+  });
+
+  // ── Cast-Net (Tebar Jala) ───────────────────────────────────────────────────
+
+  // GET  /api/castnet         — current status (enabled, cooldown, fires, config)
+  // POST /api/castnet/enable  — turn manual toggle ON
+  // POST /api/castnet/disable — turn manual toggle OFF
+  // GET  /api/castnet/history — last 20 fires with outcomes
+
+  router.get("/castnet", async (req, res) => {
+    try {
+      const { getCastNetStatus } = await import("../../tools/cast-net-gate.js");
+      res.json(getCastNetStatus());
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  router.post("/castnet/enable", async (req, res) => {
+    try {
+      const { setCastNetManualEnabled, getCastNetStatus } = await import("../../tools/cast-net-gate.js");
+      await setCastNetManualEnabled(true);
+      res.json({ ok: true, status: getCastNetStatus() });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  router.post("/castnet/disable", async (req, res) => {
+    try {
+      const { setCastNetManualEnabled, getCastNetStatus } = await import("../../tools/cast-net-gate.js");
+      await setCastNetManualEnabled(false);
+      res.json({ ok: true, status: getCastNetStatus() });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  router.get("/castnet/history", async (req, res) => {
+    try {
+      const { getCastNetHistory } = await import("../../tools/cast-net-gate.js");
+      res.json({ fires: getCastNetHistory(20) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Doctor diagnostics ──────────────────────────────────────────────────────
+
+  // GET /api/doctor/errors — return parsed error-log.jsonl (last 200 entries)
+  router.get("/doctor/errors", (req, res) => {
+    try {
+      if (!_fs.existsSync(ERROR_LOG_FILE)) return res.json({ entries: [] });
+      const raw = _fs.readFileSync(ERROR_LOG_FILE, "utf8");
+      const lines = raw.trim().split("\n").filter(Boolean);
+      // Take last 200 lines to keep response small
+      const entries = lines.slice(-200).map(l => {
+        try { return JSON.parse(l); } catch { return null; }
+      }).filter(Boolean);
+      res.json({ entries });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/doctor/diagnose — ask General Agent to analyze error patterns
+  router.post("/doctor/diagnose", async (req, res) => {
+    try {
+      // Build error summary for the LLM
+      let errorSummary = "No errors recorded.";
+      if (_fs.existsSync(ERROR_LOG_FILE)) {
+        const raw = _fs.readFileSync(ERROR_LOG_FILE, "utf8");
+        const lines = raw.trim().split("\n").filter(Boolean).slice(-100);
+        const entries = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+
+        // Group by category, count, find most recent
+        const groups = {};
+        for (const e of entries) {
+          const key = e.category;
+          if (!groups[key]) groups[key] = { category: key, cycle: e.cycle, count: 0, last: e.ts, msgs: new Set() };
+          groups[key].count++;
+          groups[key].last = e.ts > groups[key].last ? e.ts : groups[key].last;
+          groups[key].msgs.add(e.msg);
+        }
+        const sorted = Object.values(groups).sort((a, b) => b.count - a.count);
+        errorSummary = sorted.map(g =>
+          `[${g.category}] ×${g.count} (cycle:${g.cycle}, last:${g.last})\n  → ${[...g.msgs].slice(0,2).join(" | ")}`
+        ).join("\n");
+      }
+
+      const query = `Diagnosa error Ponyou bot berikut dan berikan root cause + fix singkat (max 5 poin):\n\n${errorSummary}`;
+
+      // Call General Agent via agentBus request (same path as Telegram/dashboard)
+      const response = await agentBus.request("general:dashboard_query", { query }, 20_000)
+        .catch(() => null);
+
+      res.json({
+        diagnosis: response?.response || "General Agent tidak tersedia — pastikan bot berjalan.",
+        error_summary: errorSummary,
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   return router;

@@ -447,11 +447,16 @@ export function getSocialSignals(limit = 20) {
   return (cache.signals || []).slice(0, limit);
 }
 
-export function getSocialScore(symbol) {
+export function getSocialScore(symbol, mint = null) {
   if (!symbol) return 0;
   const cache = loadCache();
-  const match = (cache.signals || []).find(
-    s => s.symbol.toUpperCase() === symbol.toUpperCase()
-  );
+  const symbolUpper = symbol.toUpperCase();
+  // T3-4: when mint is known, require it to match so impersonator tokens
+  // (same symbol, different address) don't inherit the real coin's social score.
+  const match = (cache.signals || []).find(s => {
+    if (s.symbol.toUpperCase() !== symbolUpper) return false;
+    if (mint && s.mint && s.mint !== mint) return false;
+    return true;
+  });
   return match?.socialScore || 0;
 }

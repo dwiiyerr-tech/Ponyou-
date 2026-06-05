@@ -5,6 +5,7 @@ import { TabBar, TABS } from "./components/TabBar.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { CommandPalette, type PaletteCommand } from "./components/CommandPalette.js";
 import { Dashboard } from "./screens/Dashboard.js";
+import { Monitor } from "./screens/Monitor.js";
 import { Watchlist } from "./screens/Watchlist.js";
 import { Logs } from "./screens/Logs.js";
 import { Pnl } from "./screens/Pnl.js";
@@ -23,7 +24,9 @@ export function App() {
   const size = useTerminalSize();
   const { state } = usePonyouState(1500);
 
-  const [screen, setScreen] = useState<ScreenId>("dashboard");
+  // Initial screen can be set via env (handy for deep-links / screenshots).
+  const initialScreen = TABS.find((t) => t.id === process.env.PONYOU_TUI_SCREEN)?.id ?? "dashboard";
+  const [screen, setScreen] = useState<ScreenId>(initialScreen);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -45,6 +48,7 @@ export function App() {
 
   const commands: PaletteCommand[] = [
     { cmd: "/scan", desc: "trigger a screening scan", run: () => runBotCommand("scan", "/scan") },
+    { cmd: "/monitor", desc: "open the live monitor", run: () => goto("monitor") },
     { cmd: "/watch", desc: "open the watchlist", run: () => goto("watchlist") },
     { cmd: "/pnl", desc: "open the P&L panel", run: () => goto("pnl") },
     { cmd: "/logs", desc: "open live logs", run: () => goto("logs") },
@@ -72,8 +76,10 @@ export function App() {
     screen === "wizard"
       ? [{ key: "enter", label: "next" }, { key: "↑↓", label: "step" }, { key: "esc", label: "back" }]
       : screen === "doctor"
-        ? [{ key: "r", label: "re-run" }, { key: "/", label: "palette" }, { key: "q", label: "quit" }]
-        : [{ key: "1-6", label: "screens" }, { key: "↑↓", label: "navigate" }, { key: "/", label: "palette" }, { key: "q", label: "quit" }];
+        ? [{ key: "r", label: "re-run" }, { key: "c", label: "copy" }, { key: "/", label: "palette" }, { key: "q", label: "quit" }]
+        : screen === "monitor"
+          ? [{ key: "↑↓", label: "position" }, { key: "p", label: "pause" }, { key: "/", label: "palette" }, { key: "q", label: "quit" }]
+          : [{ key: "1-7", label: "screens" }, { key: "↑↓", label: "navigate" }, { key: "/", label: "palette" }, { key: "q", label: "quit" }];
 
   return (
     <Box flexDirection="column" paddingY={0}>
@@ -82,6 +88,7 @@ export function App() {
 
       <Box flexDirection="column" marginTop={1} paddingX={1} minHeight={size.height - 7}>
         {screen === "dashboard" && <Dashboard state={state} size={size} />}
+        {screen === "monitor" && <Monitor state={state} size={size} active={screenActive} />}
         {screen === "watchlist" && <Watchlist state={state} size={size} active={screenActive} />}
         {screen === "logs" && <Logs size={size} active={screenActive} />}
         {screen === "pnl" && <Pnl state={state} size={size} active={screenActive} />}
@@ -92,7 +99,7 @@ export function App() {
             onDone={(saved) => showToast({ kind: "success", message: saved.length ? `saved ${saved.length} setting(s)` : "no changes" })}
           />
         )}
-        {screen === "doctor" && <Doctor active={screenActive} />}
+        {screen === "doctor" && <Doctor active={screenActive} size={size} />}
       </Box>
 
       {paletteOpen ? (

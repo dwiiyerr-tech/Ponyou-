@@ -33,8 +33,16 @@ let _checkAllGates = null;
 let _telegramEnabled = null;
 let _llmReviewEnabled = true;
 let _emergencyCount = 0;
+// T3-12: track unsubscribe functions so re-init is safe (no listener accumulation).
+let _unsubscribers = [];
 
 export function initManagementAgent({ runManagementCycle, checkAllGates, telegramEnabled, llmReviewEnabled = true }) {
+  // T3-12/R1: clean up previous listeners before re-registering.
+  // Wrapped in try/catch so a single failing unsubscriber doesn't block cleanup
+  // of the remaining ones — listeners would otherwise leak on next init.
+  for (const fn of _unsubscribers) { try { fn(); } catch { /* already removed */ } }
+  _unsubscribers = [];
+
   _runManagementCycle = runManagementCycle;
   _checkAllGates = checkAllGates;
   _telegramEnabled = telegramEnabled;
@@ -43,72 +51,72 @@ export function initManagementAgent({ runManagementCycle, checkAllGates, telegra
   setAgentStatus(AGENT_NAME, "running", "Management agent — owns BUY/SELL decisions, LLM review enabled");
 
   // ── BUY tracking: listen for screening candidates → could trigger entry ──
-  agentBus.subscribe("screening:decision", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("screening:decision", (payload) => {
     log("management", `Screening decision received: ${payload?.symbol || payload?.mint} — ready for review`);
     updateAgentHealth(AGENT_NAME, {
       lastScreeningDecision: payload,
       pendingBuyReview: true,
     });
-  });
+  }));
 
   // ── SELL tracking: LLM review lifecycle ──
-  agentBus.subscribe("management:llm_review_started", () => {
+  _unsubscribers.push(agentBus.subscribe("management:llm_review_started", () => {
     updateAgentHealth(AGENT_NAME, { llmReviewActive: true });
-  });
+  }));
 
-  agentBus.subscribe("management:llm_review_complete", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("management:llm_review_complete", (payload) => {
     log("management", `LLM review complete — ${payload?.tokenCount || 0} positions`);
     updateAgentHealth(AGENT_NAME, {
       lastLLMReview: new Date().toISOString(),
       llmReviewActive: false,
     });
-  });
+  }));
 
-  agentBus.subscribe("management:llm_buy", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("management:llm_buy", (payload) => {
     log("management", `BUY: ${payload?.symbol || payload?.token?.slice(0, 8)} | ${payload?.amount} SOL`);
     updateAgentHealth(AGENT_NAME, { lastLLMBuy: payload, pendingBuyReview: false });
-  });
+  }));
 
-  agentBus.subscribe("management:llm_sell", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("management:llm_sell", (payload) => {
     log("management", `SELL: ${payload?.symbol || payload?.token?.slice(0, 8)}`);
     updateAgentHealth(AGENT_NAME, { lastLLMSell: payload });
-  });
+  }));
 
-  agentBus.subscribe("management:llm_exit_executed", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("management:llm_exit_executed", (payload) => {
     log("management", `EXIT: ${payload?.mint?.slice(0, 8)} — ${payload?.reason}`);
     updateAgentHealth(AGENT_NAME, { lastExit: payload });
-  });
+  }));
 
-  agentBus.subscribe("management:llm_entry_executed", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("management:llm_entry_executed", (payload) => {
     log("management", `ENTRY: ${payload?.mint?.slice(0, 8)} | ${payload?.amount_sol} SOL`);
     updateAgentHealth(AGENT_NAME, { lastEntry: payload });
-  });
+  }));
 
   // ── Heartbeat: always-on position monitoring (every 30s) ──
-  agentBus.subscribe("management:heartbeat", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("management:heartbeat", (payload) => {
     updateAgentHealth(AGENT_NAME, {
       lastHeartbeat: new Date().toISOString(),
       positionsMonitored: payload?.positions || 0,
       emergencySignals: payload?.emergencySignals || 0,
     });
-  });
+  }));
 
   // ── Emergency exits: rug force-exit or price crash ──
-  agentBus.subscribe("management:emergency_exit", (payload) => {
+  _unsubscribers.push(agentBus.subscribe("management:emergency_exit", (payload) => {
     _emergencyCount += 1;
     log("management", `EMERGENCY: ${payload?.symbol} — ${payload?.reason} (${payload?.type})`);
     updateAgentHealth(AGENT_NAME, {
       lastEmergency: payload,
       emergencyCount: _emergencyCount,
     });
-  });
+  }));
 
   // ── Full cycle complete tracking ──
-  agentBus.subscribe("management:full_cycle_complete", () => {
+  _unsubscribers.push(agentBus.subscribe("management:full_cycle_complete", () => {
     updateAgentHealth(AGENT_NAME, {
       lastFullCycle: new Date().toISOString(),
     });
-  });
+  }));
 }
 
 export async function runManagementCycle({ silent = false } = {}) {
