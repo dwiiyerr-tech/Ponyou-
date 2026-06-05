@@ -142,13 +142,13 @@ export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
     flags.push(`Gas Fee: ${gasLevel} level (Bots/Traffic)`);
   }
 
-  const freshlyFunded = holders.filter(h => {
-    if (!h.funded_at) return false;
-    const ageHours = (Date.now() / 1000 - h.funded_at) / 3600;
-    return ageHours < f.minHolderAgeHours;
-  });
-  if (freshlyFunded.length >= 3) {
-    flags.push(`Holder Age: ${freshlyFunded.length} top holders funded < ${f.minHolderAgeHours}h ago`);
+  // Funded wallet age: use pre-computed rug_signals.fresh_funded_holders rather than
+  // h.funded_at (which is never populated — the field stays null from the RPC layer).
+  // fresh_funded_holders is already computed by gatherRugSignals via GMGN (bundler+rat
+  // tags), Shyft transaction history, or Helius fallback — all with ~24h window.
+  const freshFundedCount = securityDetails?.rug_signals?.fresh_funded_holders ?? 0;
+  if (freshFundedCount >= 3) {
+    flags.push(`Holder Age: ${freshFundedCount} fresh-funded top holders (insider/sybil prep)`);
   }
 
   const dustHolders = holders.filter(h => !h.is_contract && h.sol_balance < f.minTopHolderSol);
@@ -156,10 +156,23 @@ export async function run4FilterProtocol(tokenData, securityDetails, gasFee) {
     flags.push(`Top Holder Balance: ${dustHolders.length} dust wallets (< ${f.minTopHolderSol} SOL)`);
   }
 
-  if (tokenData.initial_mcap && tokenData.initial_mcap < f.maxEntryPumpMc) {
-    const pumpRatio = tokenData.mcap / tokenData.initial_mcap;
+  // Entry market cap: initial_mcap is never set by the data layer (always null).
+  // Estimate it by back-calculating from price_change_1h / price_change_24h —
+  // take the minimum (deepest back in time) to catch both short and longer pumps.
+  const currentMcap = Number(tokenData.mcap || 0);
+  let initialMcapEst = Number(tokenData.initial_mcap || 0) || null;
+  if (!initialMcapEst && currentMcap > 0) {
+    const candidates = [];
+    const pc1h  = Number(tokenData.price_change_1h  ?? NaN);
+    const pc24h = Number(tokenData.price_change_24h ?? NaN);
+    if (Number.isFinite(pc1h)  && pc1h  > -99) candidates.push(currentMcap / (1 + pc1h  / 100));
+    if (Number.isFinite(pc24h) && pc24h > -99) candidates.push(currentMcap / (1 + pc24h / 100));
+    if (candidates.length > 0) initialMcapEst = Math.min(...candidates);
+  }
+  if (initialMcapEst && initialMcapEst > 0 && initialMcapEst < f.maxEntryPumpMc) {
+    const pumpRatio = currentMcap / initialMcapEst;
     if (pumpRatio > 3) {
-      flags.push(`Entry MC: Pumped ${pumpRatio.toFixed(1)}x from low start`);
+      flags.push(`Entry MC: Pumped ${pumpRatio.toFixed(1)}x from ~$${Math.round(initialMcapEst)} start`);
     }
   }
 

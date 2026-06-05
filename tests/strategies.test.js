@@ -71,6 +71,74 @@ describe("strategies — PRESETS", () => {
     expect(flagStr).toMatch(/MCap above/i);
   });
 
+  it("funded wallet age gate fires when rug_signals reports fresh-funded holders", async () => {
+    const { setActiveStrategy } = await import("../strategies.js");
+    const { run4FilterProtocol } = await import("../strategy.js");
+    setActiveStrategy("scalping");
+    const tokenData = { mint: "FreshMnt", symbol: "FRESH", mcap: 50_000, volume: 0, global_fees_sol: 5 };
+    // 4 fresh-funded holders reported by rug_signals (GMGN bundler/rat tags)
+    const securityDetails = { holders: [], rug_signals: { fresh_funded_holders: 4 } };
+    const result = await run4FilterProtocol(tokenData, securityDetails, { level: "low" });
+    const flagStr = JSON.stringify(result.flags);
+    expect(flagStr).toMatch(/Holder Age/i);
+    expect(flagStr).toMatch(/fresh-funded/i);
+  });
+
+  it("funded wallet age gate does NOT fire when fresh_funded_holders < 3", async () => {
+    const { setActiveStrategy } = await import("../strategies.js");
+    const { run4FilterProtocol } = await import("../strategy.js");
+    setActiveStrategy("scalping");
+    const tokenData = { mint: "CleanMnt1", symbol: "CLEAN", mcap: 50_000, volume: 0, global_fees_sol: 5 };
+    const securityDetails = { holders: [], rug_signals: { fresh_funded_holders: 2 } };
+    const result = await run4FilterProtocol(tokenData, securityDetails, { level: "low" });
+    const flagStr = JSON.stringify(result.flags);
+    expect(flagStr).not.toMatch(/Holder Age/i);
+  });
+
+  it("entry mcap gate fires when token has pumped 3x+ from a low start (estimated via price_change_1h)", async () => {
+    const { setActiveStrategy } = await import("../strategies.js");
+    const { run4FilterProtocol } = await import("../strategy.js");
+    setActiveStrategy("scalping"); // maxEntryPumpMc = 3000
+    // Token at $9,000 mcap, price_change_1h = +200% → initial est = 9000/(1+2) = 3000
+    // pumpRatio = 9000/3000 = 3x — exactly at threshold, should NOT flag (> 3 required)
+    // Use +300% → initial = 9000/4 = 2250, ratio = 4x → should flag
+    const tokenData = {
+      mint: "PumpMnt11", symbol: "PUMP", mcap: 9_000,
+      price_change_1h: 300, price_change_24h: 300,
+      volume: 0, global_fees_sol: 5,
+    };
+    const result = await run4FilterProtocol(tokenData, { holders: [], rug_signals: {} }, { level: "low" });
+    const flagStr = JSON.stringify(result.flags);
+    expect(flagStr).toMatch(/Entry MC/i);
+    expect(flagStr).toMatch(/Pumped/i);
+  });
+
+  it("entry mcap gate does NOT fire when token is within normal range", async () => {
+    const { setActiveStrategy } = await import("../strategies.js");
+    const { run4FilterProtocol } = await import("../strategy.js");
+    setActiveStrategy("scalping");
+    // No price change data → initial_mcap_est = null → gate skipped
+    const tokenData = { mint: "NoPumpM11", symbol: "STABLE", mcap: 50_000, volume: 0, global_fees_sol: 5 };
+    const result = await run4FilterProtocol(tokenData, { holders: [], rug_signals: {} }, { level: "low" });
+    const flagStr = JSON.stringify(result.flags);
+    expect(flagStr).not.toMatch(/Entry MC/i);
+  });
+
+  it("entry mcap gate does NOT fire when estimated initial is above maxEntryPumpMc", async () => {
+    const { setActiveStrategy } = await import("../strategies.js");
+    const { run4FilterProtocol } = await import("../strategy.js");
+    setActiveStrategy("scalping"); // maxEntryPumpMc = 3000
+    // current mcap = 50k, change = +100% → initial_est = 25k > 3000 → gate skipped
+    const tokenData = {
+      mint: "NoStart11A", symbol: "MID", mcap: 50_000,
+      price_change_1h: 100, price_change_24h: 100,
+      volume: 0, global_fees_sol: 5,
+    };
+    const result = await run4FilterProtocol(tokenData, { holders: [], rug_signals: {} }, { level: "low" });
+    const flagStr = JSON.stringify(result.flags);
+    expect(flagStr).not.toMatch(/Entry MC/i);
+  });
+
   it("sniper preset has strict gate filters", async () => {
     const { PRESETS } = await import("../strategies.js");
     const s = PRESETS.sniper;
