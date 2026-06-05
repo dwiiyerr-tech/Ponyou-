@@ -63,7 +63,7 @@ current_head() {
 
 write_supervisor_state() {
   node -e "const fs=require('fs');fs.writeFileSync(process.argv[1], JSON.stringify({desiredRunning:process.argv[2]==='1',agentRunning:process.argv[3]==='1',pid:process.argv[4]?Number(process.argv[4]):null,mode:process.argv[5],source:process.argv[6],updatedAt:new Date().toISOString()},null,2)+'\\n');" \
-    "${SUPERVISOR_STATE_FILE}" "${DESIRED_RUNNING}" "${1:-0}" "${2:-}" "${MODE}" "${3:-supervisor}" >/dev/null 2>&1
+    "${SUPERVISOR_STATE_FILE}" "${DESIRED_RUNNING}" "${1:-0}" "${2:-}" "${MODE}" "${3:-supervisor}" >/dev/null 2>&1 || true
 }
 
 run_readiness() {
@@ -101,6 +101,10 @@ start_agent() {
     fi
     rm -f "${AGENT_PID_FILE}"
   fi
+
+  # Clear any stale IPC command from a previous session so the new agent
+  # doesn't immediately process an old /off or other command on startup.
+  rm -f "${ROOT_DIR}/dashboard-cmd.json" || true
 
   (
     cd "${ROOT_DIR}"
