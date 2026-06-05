@@ -3253,6 +3253,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       const isManaged = ageMinutes < 5 || !!t.partial_tp_active;
       return usesLlm && !isManaged;
     });
+    const _allActiveUseLlm = getActiveStrategyIds().every(id => getStrategy(id)?.use_llm !== false);
     if (llmReviewTokens.length > 0 && isLLMReviewEnabled()) {
       let planSummary;
       try {
