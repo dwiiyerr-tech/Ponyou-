@@ -95,9 +95,7 @@ async function gmgnFetch(method, path, query = {}, body = null, retries = 2, cha
     return null;
   }
 
-  const aq = authQuery();
-  const params = new URLSearchParams({ chain: normalizeChain(chain), ...query, ...aq });
-  const url = `${BASE}${path}?${params}`;
+  const chainStr = normalizeChain(chain);
   const headers = { "X-APIKEY": getApiKey(), "Content-Type": "application/json" };
 
   let lastErr;
@@ -107,6 +105,12 @@ async function gmgnFetch(method, path, query = {}, body = null, retries = 2, cha
 
     const release = await acquireSlot();
     try {
+      // Timestamp generated AFTER slot acquired — the 300ms queue can hold 17+
+      // requests before token_signal fires; a pre-queued timestamp would be >5s
+      // old and the server returns 401. Fresh timestamp on every attempt too.
+      const aq = authQuery();
+      const params = new URLSearchParams({ chain: chainStr, ...query, ...aq });
+      const url = `${BASE}${path}?${params}`;
       const opts = { method, headers, signal: AbortSignal.timeout(8000) };
       if (body !== null) opts.body = JSON.stringify(body);
       const res = await fetch(url, opts);
