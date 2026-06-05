@@ -139,6 +139,48 @@ describe("strategies — PRESETS", () => {
     expect(flagStr).not.toMatch(/Entry MC/i);
   });
 
+  it("min_holders gate fires for smart_money when holder_count is below threshold", async () => {
+    const { setActiveStrategy } = await import("../strategies.js");
+    const { run4FilterProtocol } = await import("../strategy.js");
+    setActiveStrategy("smart_money"); // min_holders: 300
+    const tokenData = {
+      mint: "SmartMn11A", symbol: "SM", mcap: 50_000,
+      holder_count: 150, // below 300 → should flag
+      volume: 0, global_fees_sol: 5,
+    };
+    const result = await run4FilterProtocol(tokenData, { holders: [], rug_signals: {} }, { level: "low" });
+    const flagStr = JSON.stringify(result.flags);
+    expect(flagStr).toMatch(/Holders below/i);
+  });
+
+  it("min_holders gate skips (soft-pass) when holder_count is null", async () => {
+    const { setActiveStrategy } = await import("../strategies.js");
+    const { run4FilterProtocol } = await import("../strategy.js");
+    setActiveStrategy("smart_money"); // min_holders: 300
+    const tokenData = {
+      mint: "SmartMn11B", symbol: "SM2", mcap: 50_000,
+      holder_count: null, // no data → gate must soft-pass
+      volume: 0, global_fees_sol: 5,
+    };
+    const result = await run4FilterProtocol(tokenData, { holders: [], rug_signals: {} }, { level: "low" });
+    const flagStr = JSON.stringify(result.flags);
+    expect(flagStr).not.toMatch(/Holders below/i);
+  });
+
+  it("min_holders gate passes when holder_count meets threshold", async () => {
+    const { setActiveStrategy } = await import("../strategies.js");
+    const { run4FilterProtocol } = await import("../strategy.js");
+    setActiveStrategy("smart_money"); // min_holders: 300
+    const tokenData = {
+      mint: "SmartMn11C", symbol: "SM3", mcap: 50_000,
+      holder_count: 350, // above 300 → no flag
+      volume: 0, global_fees_sol: 5,
+    };
+    const result = await run4FilterProtocol(tokenData, { holders: [], rug_signals: {} }, { level: "low" });
+    const flagStr = JSON.stringify(result.flags);
+    expect(flagStr).not.toMatch(/Holders below/i);
+  });
+
   it("sniper preset has strict gate filters", async () => {
     const { PRESETS } = await import("../strategies.js");
     const s = PRESETS.sniper;

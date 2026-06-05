@@ -4073,7 +4073,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
         log("filter", `${token.symbol}: SKIP sell-only tier ${tierExec.tier}`);
         continue;
       }
-      const enhancedToken = { ...token, chain: token.chain || "sol", global_fees_sol: globalFees, tier: tierInfo, _trash_flags: token._trash_flags || [] };
+      // holder_count from Jupiter DataAPI (tokenInfo); used by min_holders gate in
+      // run4FilterProtocol for smart_money/day_phase_trading. Falls back to any count
+      // already on the token (some GMGN/smart-money paths set it); null = gate skips.
+      const holderCount = tokenInfo.results?.[0]?.holders ?? token.holder_count ?? null;
+      const enhancedToken = { ...token, chain: token.chain || "sol", global_fees_sol: globalFees, holder_count: holderCount, tier: tierInfo, _trash_flags: token._trash_flags || [] };
 
       // ATH-proxy: compute dip_from_ath_pct from kline window-high when CoinGecko
       // data is unavailable (most new memecoins). This makes the dip_buy preset's
