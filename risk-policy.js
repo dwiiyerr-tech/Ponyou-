@@ -12,7 +12,7 @@ const DEFAULT_POLICY = Object.freeze({
   },
   sizing: {
     minFraction: 0,
-    maxFraction: 1,
+    maxFraction: 0.20,
     probeSizeFraction: 0.05,
     hotBoost: 0.10,
     coldPenalty: 0.10,

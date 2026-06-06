@@ -73,8 +73,9 @@ export function shouldFastBuy(token, fastTrackConfig = {}) {
       return { ok: false, reason: `age ${token.age_minutes}m > ${gate.maxAgeMinutes}m` };
     }
   }
-  if (Number.isFinite(token.flags?.length) && token.flags.length > gate.maxFlags) {
-    return { ok: false, reason: `flags ${token.flags.length} > ${gate.maxFlags}` };
+  const flags = Array.isArray(token.flags) ? token.flags : [];
+  if (flags.length > gate.maxFlags) {
+    return { ok: false, reason: `flags ${flags.length} > ${gate.maxFlags}` };
   }
   return { ok: true, reason: "passed all fast-track gates" };
 }

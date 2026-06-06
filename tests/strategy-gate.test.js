@@ -21,10 +21,12 @@ describe("StrategyGate", () => {
     const paperTradeReader = vi.fn(async () => ({
       winRate: 0.80,
       trades: 30,
+      profitFactor: 1.5,
     }));
     const liveTradeReader = vi.fn(async () => ({
       winRate: 0.80,
       trades: 20,
+      profitFactor: 1.5,
     }));
     const strategyGate = createGate({ backtestRunner, paperTradeReader, liveTradeReader });
 
@@ -47,10 +49,12 @@ describe("StrategyGate", () => {
     const paperTradeReader = vi.fn(async () => ({
       winRate: 0.90,
       trades: 30,
+      profitFactor: 1.5,
     }));
     const liveTradeReader = vi.fn(async () => ({
       winRate: 0.90,
       trades: 20,
+      profitFactor: 1.5,
     }));
     const strategyGate = createGate({ backtestRunner, paperTradeReader, liveTradeReader });
 
@@ -72,10 +76,12 @@ describe("StrategyGate", () => {
     const paperTradeReader = vi.fn(async () => ({
       winRate: 0.79,
       trades: 30,
+      profitFactor: 1.5,
     }));
     const liveTradeReader = vi.fn(async () => ({
       winRate: 0.90,
       trades: 20,
+      profitFactor: 1.5,
     }));
     const strategyGate = createGate({ backtestRunner, paperTradeReader, liveTradeReader });
 
@@ -95,10 +101,12 @@ describe("StrategyGate", () => {
     const paperTradeReader = vi.fn(async () => ({
       winRate: 0.90,
       trades: 30,
+      profitFactor: 1.5,
     }));
     const liveTradeReader = vi.fn(async () => ({
       winRate: 0.90,
       trades: 19,
+      profitFactor: 1.5,
     }));
     const strategyGate = createGate({ backtestRunner, paperTradeReader, liveTradeReader });
 

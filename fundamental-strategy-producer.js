@@ -538,17 +538,23 @@ export class FundamentalStrategyProducer {
   async #emit(candidate) {
     if (!candidate) return false;
 
+    let isLlm = false;
     // Resolve pending LLM candidates.
     if (candidate.pending && typeof this.#composer?.generate === "function") {
+      isLlm = true;
       try {
         const generated = await this.#composer.generate({
           regime: candidate.regime,
           evidence: candidate.evidence,
           proIntel: candidate.proIntel,
         });
-        if (!generated || !validateStrategyRuleSchema(generated.rules)) return false;
+        if (!generated || !validateStrategyRuleSchema(generated.rules)) {
+          this.#lastLlmAt = 0;
+          return false;
+        }
         candidate = { ...generated, evidence: candidate.evidence, conviction: candidate.conviction };
       } catch (err) {
+        this.#lastLlmAt = 0;
         this.#logger.warn?.(`composer.generate failed: ${err?.message || err}`);
         return false;
       }
@@ -559,17 +565,25 @@ export class FundamentalStrategyProducer {
     // untuk mencegah strategi delusi atau berbahaya.
     const candidateCheck = validateStrategyCandidate(candidate);
     if (!candidateCheck.valid) {
+      if (isLlm) this.#lastLlmAt = 0;
       this.#logger.warn?.(`candidate REJECTED: ${candidateCheck.reason} — name=${candidate.name}`);
       return false;
     }
 
     const fingerprint = fingerprintRules(candidate.rules);
-    if (!fingerprint) return false;
+    if (!fingerprint) {
+      if (isLlm) this.#lastLlmAt = 0;
+      return false;
+    }
     if (this.#isDuplicate(fingerprint)) {
+      if (isLlm) this.#lastLlmAt = 0;
       this.#logger.info?.(`dedup hit — skipping fingerprint=${fingerprint.slice(0, 64)}`);
       return false;
     }
-    if (!this.#throttleAllows()) return false;
+    if (!this.#throttleAllows()) {
+      if (isLlm) this.#lastLlmAt = 0;
+      return false;
+    }
 
     this.#emitHistory.push({ ts: Date.now(), fingerprint });
 

@@ -116,6 +116,7 @@ _restoreState();
  */
 export function setSessionBaseline(usd) {
   if (!Number.isFinite(usd) || usd <= 0) return;
+  if (_sessionStartUsd !== null && _sessionStartUsd > 0) return;
   _sessionStartUsd = usd;
   _baselineLocked = true;
   _baselineReadings = [];

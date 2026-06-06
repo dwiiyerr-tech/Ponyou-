@@ -2178,11 +2178,12 @@ async function checkDeterministicExits(tokens, { solPriceUsd = 0 } = {}) {
       ?? tracked?.signal_snapshot?.price
       ?? 0
     );
-    if (currentPrice > 0 && entryPrice > 0) {
+      let dropReason = null;
       const dropped = checkPriceDrop(
         { ...tracked, mint: token.mint, entry_price: entryPrice },
         currentPrice,
         (mint, reason, detail) => {
+          dropReason = `${reason}: ${detail}`;
           log("exit_signal", `Price drop signal: ${mint.slice(0, 8)} — ${reason}: ${detail}`);
           if (telegramEnabled()) {
             sendHTML(`⚠️ <b>Price Drop Alert</b>\nMint: <code>${mint.slice(0, 8)}</code>\n${detail}`).catch(() => {});
@@ -2191,8 +2192,18 @@ async function checkDeterministicExits(tokens, { solPriceUsd = 0 } = {}) {
       );
       if (dropped) {
         log("exit_signal", `Emergency price drop detected for ${token?.mint?.slice(0, 8)}`);
+        exits.push({
+          mint: token.mint,
+          symbol: token.symbol,
+          reason: dropReason || "price_drop_emergency",
+          pnl_pct: currentPnlPct,
+          is_loss: true,
+          wallet_address: token.wallet_address || null,
+          position_key: token.position_key || token.mint,
+          chain: token.chain || tracked.chain || "sol",
+        });
+        continue;
       }
-    }
 
     // Persist the new peak — mutating `tracked` in memory isn't enough because
     // a restart wipes the cache and resets the trailing-stop reference to 0.
@@ -3188,7 +3199,7 @@ export async function runManagementCycle({ silent = false } = {}) {
         // Auto-sweep trigger: check vault due after every trade close
         if (!tpTriggered) {
           const vaultCheck = isVaultDue();
-          if (vaultCheck.due) {
+          if (vaultCheck.due || vaultCheck.first_vault) {
             runVaultCycle({ silent: true }).catch(e => log("vault_error", `post-trade vault: ${e.message}`));
           }
         }
@@ -4404,7 +4415,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
               circuit_breaker_locked: _rugCircuitBreaker?.getStatus?.()?.locked ?? false,
               circuit_breaker_reason: _rugCircuitBreaker?.getStatus?.()?.lockReason ?? null,
               learning_mode_active: getLearningModeStatus?.()?.active ?? false,
-              token_cooldown_active: isTokenOnCooldown?.(enhancedToken.mint),
+              token_cooldown_active: isTokenOnCooldown ? await isTokenOnCooldown(enhancedToken.mint) : false,
               cooldown_remaining_min: 0,
             },
           })
@@ -5335,8 +5346,8 @@ async function seedSmartWallets() {
 
   // Path 1: Promote from existing discovered-wallets.json (free, no API calls)
   try {
-    const { readFileSync } = await import("fs");
-    const discovered = JSON.parse(readFileSync("discovered-wallets.json", "utf8"));
+    const { readFile } = await import("fs/promises");
+    const discovered = JSON.parse(await readFile("discovered-wallets.json", "utf8"));
     const allWallets = Object.values(discovered).filter(w => w && typeof w === "object" && w.address);
     const elite = allWallets
       .filter(w => (w.stats?.winrate || 0) >= 0.65 && (w.stats?.completed_trades || 0) >= 3)
@@ -5554,6 +5565,28 @@ function startTurboButtons() {
             log("geyser_exit_emergency", `EMERGENCY EXIT SIGNAL: ${mint.slice(0, 8)} reason=${reason} — ${detail}`);
             if (telegramEnabled()) {
               sendHTML(`🚨 <b>Emergency Exit Signal</b>\nMint: <code>${mint.slice(0, 8)}</code>\nReason: ${reason}\n${detail}`).catch(() => {});
+            }
+            const activePositions = Object.values(getState()?.positions || {}).filter(p => p.mint === mint && !p.closed);
+            for (const pos of activePositions) {
+              log("geyser_exit_emergency", `Executing immediate emergency exit for ${pos.symbol} (${mint})`);
+              const { result: res } = await withProgressiveSlippage(
+                (slippage) => sellByChain({
+                  token_in: mint, token_out: "SOL",
+                  amount: pos.balance,
+                  slippage: Math.max(slippage, 0.05),
+                  chain: pos.chain || "sol",
+                  wallet: pos.wallet_address ? getWalletByAddress(pos.wallet_address)?.keypair || null : null,
+                })
+              );
+              if (res?.success || res?.dry_run) {
+                log("geyser_exit_emergency", `Emergency exit successful for ${pos.symbol}: PnL ${res.pnl_pct || 0}%`);
+                await recordClose(pos.position_key || mint, `emergency_exit: ${reason}`, pos.wallet_address || null);
+                _rugMonitor?.detachPosition(pos.position_key || mint);
+                await clearPartialTPGuard(pos.position_key || mint);
+                recordRuggedNarrativesForExit({ reason: `emergency_exit: ${reason}`, token: pos });
+              } else {
+                log("geyser_exit_emergency", `Emergency exit failed for ${pos.symbol}: ${res?.error || "unknown error"}`);
+              }
             }
           },
           onSuspiciousActivity: (mint, reason, detail) => {
@@ -5907,9 +5940,9 @@ export function startCronJobs() {
         return;
       }
 
-      const fs = await import("fs");
+      const fsPromises = await import("fs/promises");
       const exportPath = "/home/ubuntu/ponyou-brain/notebooklm-export.md";
-      const exportContent = fs.readFileSync(exportPath, "utf8");
+      const exportContent = await fsPromises.readFile(exportPath, "utf8");
 
       // Find or create the Ponyou notebook
       const nb = await nlmFindOrCreate("Ponyou Brain");
@@ -5941,8 +5974,8 @@ export function startCronJobs() {
     // Wallet pruning — prevent discovered-wallets.json bloat
     try {
       const { pruneDiscoveredWallets } = await import("./wallet-score-decay.js");
-      const { readFileSync } = await import("fs");
-      const wallets = JSON.parse(readFileSync("discovered-wallets.json", "utf8"));
+      const { readFile } = await import("fs/promises");
+      const wallets = JSON.parse(await readFile("discovered-wallets.json", "utf8"));
       const result = pruneDiscoveredWallets(wallets, { maxAgeDays: 30, maxWallets: 200 });
       if (result.removed > 0) {
         // atomic write — every other discovered-wallets writer uses it; a raw
@@ -6776,13 +6809,14 @@ export async function handleIncomingTelegramMessage(msg) {
   // ── /wallet_patterns — show loaded wallet patterns ──
   if (text === "/wallet_patterns" || text === "/walletpatterns") {
     try {
-      const { readFileSync, existsSync } = await import("fs");
+      const { existsSync } = await import("fs");
+      const { readFile } = await import("fs/promises");
       const HIST = new URL("./wallet_history.json", import.meta.url).pathname;
       if (!existsSync(HIST)) {
         await sendHTML("Belum ada wallet patterns. Gunakan <code>/learn_wallet &lt;address&gt;</code> untuk mulai.");
         return;
       }
-      const db = JSON.parse(readFileSync(HIST, "utf8"));
+      const db = JSON.parse(await readFile(HIST, "utf8"));
       if (!db.wallets?.length) {
         await sendHTML("wallet_history.json kosong. Gunakan <code>/learn_wallet &lt;address&gt;</code>.");
         return;

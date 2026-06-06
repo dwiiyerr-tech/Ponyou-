@@ -609,7 +609,11 @@ export function quickSwitch(providerId) {
     const env = readEnv();
     const config = readConfig();
     env.LLM_PROVIDER = providerId;
-    if (custom.baseUrl) env.LLM_BASE_URL = custom.baseUrl;
+    if (custom.baseUrl) {
+      env.LLM_BASE_URL = custom.baseUrl;
+    } else {
+      delete env.LLM_BASE_URL;
+    }
     // agent.js reads process.env.LLM_MODEL before config.llmModel; if we only
     // wrote the config the old env value would still win, so update both.
     if (custom.defaultModel) env.LLM_MODEL = custom.defaultModel;
@@ -617,7 +621,11 @@ export function quickSwitch(providerId) {
 
     config.llmProvider = providerId;
     config.llmModel = custom.defaultModel || "auto";
-    if (custom.baseUrl) config.llmBaseUrl = custom.baseUrl;
+    if (custom.baseUrl) {
+      config.llmBaseUrl = custom.baseUrl;
+    } else {
+      config.llmBaseUrl = "";
+    }
     writeConfig(config);
 
     const keyVar = custom.apiKeyEnv || "LLM_API_KEY";
@@ -643,6 +651,8 @@ export function quickSwitch(providerId) {
 
   if (provider.baseUrl) {
     env.LLM_BASE_URL = provider.baseUrl;
+  } else {
+    delete env.LLM_BASE_URL;
   }
 
   // Also write LLM_MODEL — env var wins over config.llmModel in agent.js, so
@@ -661,6 +671,8 @@ export function quickSwitch(providerId) {
   config.llmModel = provider.models[0];
   if (provider.baseUrl) {
     config.llmBaseUrl = provider.baseUrl;
+  } else {
+    config.llmBaseUrl = "";
   }
 
   writeConfig(config);

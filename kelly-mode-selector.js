@@ -6,7 +6,7 @@ export const KELLY_MODES = Object.freeze({
 });
 
 const MODE3_MIN_LIVE_TRADES        = 50;
-const MODE3_MIN_WIN_RATE           = 1.00;
+const MODE3_MIN_WIN_RATE           = 0.70;
 const MODE3_MIN_CONVICTION         = 0.99;
 const MODE3_MIN_SEMANTIC_ENTRIES   = 200;
 

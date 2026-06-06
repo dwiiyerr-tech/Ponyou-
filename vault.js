@@ -162,12 +162,12 @@ export function isVaultDue(overrides = {}) {
   const cfg = getVaultSweepConfig(overrides);
   const intervalDays = cfg.sweepIntervalDays;
 
-  if (!cfg.enabled) {
-    return { due: false, disabled: true, days_since_last: 0, days_remaining: intervalDays, first_vault: false };
+  if (!cfg.enabled || !cfg.vaultWallet) {
+    return { due: false, disabled: !cfg.enabled, days_since_last: 0, days_remaining: intervalDays, first_vault: !state.lastVaultDate };
   }
 
   if (!state.lastVaultDate) {
-    return { due: false, days_since_last: 0, days_remaining: intervalDays, first_vault: true };
+    return { due: false, days_since_last: 0, days_remaining: 0, first_vault: true };
   }
 
   const daysSince = (Date.now() - new Date(state.lastVaultDate).getTime()) / (1000 * 60 * 60 * 24);
@@ -267,6 +267,15 @@ export async function executeVaultTransfer(amountSol, solPriceUsd = 0, overrides
 
 async function _executeVaultTransferInner(amountSol, solPriceUsd, overrides) {
   const cfg = getVaultSweepConfig(overrides);
+  
+  // Re-verify if sweep is still due inside the critical section to prevent double-sweep
+  if (!overrides?.force) {
+    const dueCheck = isVaultDue(overrides);
+    if (!dueCheck.due) {
+      return { success: false, error: "Vault sweep no longer due (already processed concurrently)" };
+    }
+  }
+
   const vaultWallet = cfg.vaultWallet;
 
   if (!cfg.enabled) {
@@ -360,6 +369,9 @@ async function _executeVaultTransferInner(amountSol, solPriceUsd, overrides) {
         lamports,
       })
     );
+    const latestBlockhash = await connection.getLatestBlockhash("confirmed");
+    transaction.recentBlockhash = latestBlockhash.blockhash;
+    transaction.feePayer = wallet.publicKey;
 
     const sig = await sendAndConfirmTransaction(connection, transaction, [wallet]);
     const amountUsd = amount * solPriceUsd;

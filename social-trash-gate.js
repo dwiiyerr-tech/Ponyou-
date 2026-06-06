@@ -288,7 +288,7 @@ export function gateSignal(signal = {}) {
   log("social_gate", `${sym} [${source}] tier=${tier} score=${trashScore} flags=${flags.join(",") || "none"}`);
 
   return {
-    pass:       tier === "PASS" || tier === "FLAG",
+    pass:       tier === "PASS",
     tier,
     trashScore,
     flags,

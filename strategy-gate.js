@@ -138,7 +138,7 @@ function defaultPaperTradeReader(candidate) {
   const provided = candidateEvidence(candidate, "paper");
   if (provided) return normalizeEvidence(provided);
   const trades = candidate?.paperTrades ?? candidate?.paperSignals ?? [];
-  return computeEvidenceFromTrades(trades);
+  return computeEvidenceFromTrades(trades, { profitFactor: true });
 }
 
 function loadAttribution(pathname) {
@@ -159,7 +159,7 @@ function defaultLiveTradeReader(strategyId, candidate, { attributionPath, convic
   const trades = Array.isArray(directTrades)
     ? directTrades
     : filterTradesForStrategy(loadAttribution(attributionPath).trades, strategyId, candidate);
-  const evidence = computeEvidenceFromTrades(trades);
+  const evidence = computeEvidenceFromTrades(trades, { profitFactor: true });
   const mints = [...new Set(trades.map(trade => trade.mint || trade.tokenMint || trade?.token?.mint).filter(Boolean))];
   if (mints.length > 0) {
     evidence.conviction = mints.map(mint => convictionReader(mint)).filter(Boolean);
@@ -417,8 +417,9 @@ export class StrategyGate {
     // Profit factor check: even if win rate is high, live trades must show
     // meaningful profit per loss. Prevents strategies that win tiny amounts
     // but lose big from passing the gate.
-    if (evidence.profitFactor != null && evidence.profitFactor < this.#cfg.minLiveProfitFactor) {
-      return `live profit factor ${evidence.profitFactor.toFixed(2)} < ${this.#cfg.minLiveProfitFactor}`;
+    const pf = evidence.profitFactor;
+    if (pf == null || Number.isNaN(pf) || pf < this.#cfg.minLiveProfitFactor) {
+      return `live profit factor ${pf != null ? pf.toFixed(2) : "missing"} < ${this.#cfg.minLiveProfitFactor}`;
     }
     return null;
   }

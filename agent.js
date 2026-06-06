@@ -433,6 +433,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           if (lastIdx >= 0 && messages[lastIdx].role === "user" && messages[lastIdx].content === NUDGE) {
             // already nudged; skip pushing again
           } else {
+            messages.push({ role: "assistant", content: "I will call the appropriate tool." });
             messages.push({ role: "user", content: NUDGE });
           }
           continue;

@@ -79,6 +79,7 @@ export function pruneDiscoveredWallets(walletsData = {}, opts = {}) {
   let removed = 0;
 
   for (const [addr, wallet] of entries) {
+    if (addr === "_v") continue;
     const activeAt = lastActiveMs(wallet);
     if (activeAt && activeAt < cutoff) {
       removed++;
@@ -97,6 +98,9 @@ export function pruneDiscoveredWallets(walletsData = {}, opts = {}) {
   }
 
   const pruned = {};
+  if (walletsData._v !== undefined) {
+    pruned._v = walletsData._v;
+  }
   for (const [addr, wallet] of kept) {
     pruned[addr] = wallet;
   }

@@ -43,6 +43,7 @@ const MAX_MSG_AGE_H  = 4;        // ignore messages older than 4h
 
 let _timer  = null;
 let _lastMsgIds = {};             // { channelId: lastMessageId }
+const _channelNameCache = new Map(); // channelId -> channelName
 
 // ─── State persistence ─────────────────────────────────────────
 
@@ -71,8 +72,9 @@ async function discordGet(path) {
       signal: ctrl.signal,
     });
     if (res.status === 429) {
-      const retry = res.headers.get("Retry-After") || "5";
+      const retry = parseFloat(res.headers.get("Retry-After") || "5");
       log("discord_listener_warn", `Rate limited, retry after ${retry}s`);
+      await new Promise(r => setTimeout(r, (retry + 0.1) * 1000));
       return null;
     }
     if (!res.ok) return null;
@@ -161,8 +163,13 @@ async function pollChannel(channelId) {
   _lastMsgIds[channelId] = newest;
 
   // DL-2: fetch channel info ONCE per poll, not once per message.
-  const channelInfo = await discordGet(`/channels/${channelId}`);
-  const channelName = channelInfo?.name || channelId;
+  // Cache channel name to avoid repetitive REST API calls and rate limits.
+  let channelName = _channelNameCache.get(channelId);
+  if (!channelName) {
+    const channelInfo = await discordGet(`/channels/${channelId}`);
+    channelName = channelInfo?.name || channelId;
+    _channelNameCache.set(channelId, channelName);
+  }
 
   const signals = [];
   for (const msg of msgs) {
@@ -195,7 +202,16 @@ function mergeIntoCache(newSignals) {
       if (existsSync(SIGNALS_FILE)) cache = JSON.parse(readFileSync(SIGNALS_FILE, "utf-8"));
     } catch {}
 
-    const existing = new Map((cache.signals || []).map(s => [s.symbol, s]));
+    const now = Date.now();
+    const existing = new Map(
+      (cache.signals || [])
+        .filter(s => {
+          if (!s.lastSeen) return false;
+          const ageH = (now - new Date(s.lastSeen).getTime()) / 3_600_000;
+          return ageH <= 24; // memory leak fix: evict signals older than 24h
+        })
+        .map(s => [s.symbol, s])
+    );
 
     for (const sig of newSignals) {
       const gate = gateSignal(sig);

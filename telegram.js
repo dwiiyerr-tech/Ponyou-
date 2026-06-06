@@ -84,7 +84,8 @@ export const fmt = {
 
 // Allow callers to opt-out of escape for already-HTML strings.
 function looksLikeHtml(s) {
-  return typeof s === "string" && /<[a-z][^>]*>/i.test(s);
+  if (typeof s !== "string") return false;
+  return /<\/?(b|i|code|pre|a|em|strong|ins|u|strike|del|s)\b[^>]*>/i.test(s);
 }
 
 // ─── Low-level send ──────────────────────────────────────────────
