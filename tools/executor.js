@@ -307,13 +307,57 @@ async function adaptiveSwap(args = {}) {
     const plan = buildAdaptiveTradeWalletPlan(tokenIn, amount, "sell");
     const rankedWallets = rankWalletExecutionCandidates(plan.selected_wallets, {
       mode: "sell",
-      split: false,
+      split: plan.selected_wallets.length > 1,
       marketCondition,
       provider: "auto",
       slippage: Number(args.slippage || 0),
     });
+
+    if (rankedWallets.length === 0) return { success: false, error: `No wallet with open position for ${tokenIn}` };
+
+    if (rankedWallets.length > 1) {
+      const executions = [];
+      const delays = plan.delays_ms || [];
+      for (let i = 0; i < rankedWallets.length; i++) {
+        const slot = rankedWallets[i];
+        if (i > 0 && delays[i - 1] > 0) {
+          await new Promise(r => setTimeout(r, delays[i - 1]));
+        }
+        const result = await executeJupiterSwap({
+          ...args,
+          amount: slot.amount_sol,
+          wallet_address: slot.address,
+          wallet: getWalletByAddress(slot.address)?.keypair || null,
+        });
+        executions.push({ wallet_address: slot.address, amount: slot.amount_sol, chain: (args.chain || "sol").toLowerCase(), ...result });
+        if (!(result.success || result.dry_run)) {
+          const filled = executions.filter(e => e.success || e.dry_run);
+          if (filled.length > 0) {
+            log("executor_warn", `Split swap partial fill: ${filled.length}/${rankedWallets.length} legs filled before failure on ${tokenIn} sell`);
+            recordCounter("executor_split_partial_fill");
+          }
+          return {
+            success: false,
+            partial_success: filled.length > 0,
+            error: result.error || "split sell execution failed",
+            executions,
+            token_in: tokenIn,
+            token_out: tokenOut,
+          };
+        }
+      }
+      return {
+        success: true,
+        split_execution: true,
+        token_in: tokenIn,
+        token_out: tokenOut,
+        amount,
+        executions,
+        wallet_address: executions[0]?.wallet_address || null,
+      };
+    }
+
     const slot = rankedWallets[0];
-    if (!slot) return { success: false, error: `No wallet with open position for ${tokenIn}` };
     return executeJupiterSwap({
       ...args,
       wallet_address: slot.address,

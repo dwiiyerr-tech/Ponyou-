@@ -72,6 +72,13 @@ export function createWizardRouter() {
       // Strip transport-only field; writeConfig's whitelist would drop it
       // anyway, but be explicit so it never lands in user-config.json.
       delete data._walletKeys;
+      
+      if (data._gmgnPrivateKey && data._gmgnPrivateKey.trim() !== "") {
+        const { writeGmgnPrivateKey } = await import("../env-writer.js");
+        writeGmgnPrivateKey(data._gmgnPrivateKey.trim());
+      }
+      delete data._gmgnPrivateKey;
+
       writeConfig(data);
       res.json({ ok: true });
     } catch (e) {

@@ -51,8 +51,9 @@ function resolveToken(tok, chain) {
 
 /** Convert a human amount to smallest-unit string (EVM 18-decimals). */
 function toSmallestUnit(amountHuman, decimals = EVM_DECIMALS) {
-  // Avoid float drift: use BigInt on the integer + fractional split.
-  const [intPart, fracRaw = ""] = String(amountHuman).split(".");
+  // Avoid float drift and scientific notation: use toFixed then split
+  const fixedStr = Number(amountHuman).toFixed(decimals);
+  const [intPart, fracRaw = ""] = fixedStr.split(".");
   const frac = (fracRaw + "0".repeat(decimals)).slice(0, decimals);
   const whole = BigInt(intPart || "0") * (10n ** BigInt(decimals));
   return (whole + BigInt(frac || "0")).toString();

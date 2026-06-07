@@ -268,6 +268,10 @@ export async function executeVaultTransfer(amountSol, solPriceUsd = 0, overrides
 async function _executeVaultTransferInner(amountSol, solPriceUsd, overrides) {
   const cfg = getVaultSweepConfig(overrides);
   
+  if (!cfg.enabled) {
+    return { success: false, disabled: true, error: "Vault sweep disabled" };
+  }
+
   // Re-verify if sweep is still due inside the critical section to prevent double-sweep
   if (!overrides?.force) {
     const dueCheck = isVaultDue(overrides);
@@ -277,10 +281,6 @@ async function _executeVaultTransferInner(amountSol, solPriceUsd, overrides) {
   }
 
   const vaultWallet = cfg.vaultWallet;
-
-  if (!cfg.enabled) {
-    return { success: false, disabled: true, error: "Vault sweep disabled" };
-  }
 
   if (!vaultWallet) {
     return { success: false, error: "VAULT_WALLET tidak dikonfigurasi. Set di .env atau user-config.json." };

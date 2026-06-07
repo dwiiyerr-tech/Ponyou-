@@ -49,7 +49,7 @@ describe("daily trade guard", () => {
     await recordDailyTradeOutcome(true, {}, enabled);
     await recordDailyTradeOutcome(true, {}, enabled);
 
-    const continued = decideDailyTradeGuard("continue", enabled);
+    const continued = await decideDailyTradeGuard("continue", enabled);
     expect(continued.status).toBe("continued");
     expect(isDailyTradeGuardEntryBlocked(enabled).blocked).toBe(false);
 
@@ -63,11 +63,11 @@ describe("daily trade guard", () => {
     await recordDailyTradeOutcome(false, {}, enabled);
     await recordDailyTradeOutcome(false, {}, enabled);
 
-    const stopped = decideDailyTradeGuard("stop", enabled);
+    const stopped = await decideDailyTradeGuard("stop", enabled);
     expect(stopped.status).toBe("stopped");
     expect(isDailyTradeGuardEntryBlocked(enabled).blocked).toBe(true);
 
-    const reset = decideDailyTradeGuard("reset", enabled);
+    const reset = await decideDailyTradeGuard("reset", enabled);
     expect(reset.status).toBe("running");
     expect(getDailyTradeGuardStatus(enabled).losses).toBe(0);
   });

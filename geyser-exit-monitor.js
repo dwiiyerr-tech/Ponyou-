@@ -111,11 +111,23 @@ export function attachExitMonitor(geyserStream, getPositions, {
       // which inverted the mental model.
       if (isLiquidityRemoval) {
         const tokensDumped = Number(event.amount_in);
-        if (Number.isFinite(tokensDumped) && tokensDumped > LARGE_TOKEN_REMOVAL) {
+        const totalSupply = Number(
+          pos?.total_supply ??
+          pos?.supply ??
+          pos?.signal_snapshot?.total_supply ??
+          pos?.signal_snapshot?.supply ??
+          pos?.signal_snapshot?.token_details?.total_supply ??
+          0
+        );
+        const dumpThreshold = (Number.isFinite(totalSupply) && totalSupply > 0)
+          ? totalSupply * 0.01
+          : LARGE_TOKEN_REMOVAL;
+
+        if (Number.isFinite(tokensDumped) && tokensDumped > dumpThreshold) {
           recordCounter("geyser_exit_emergency");
-          log("geyser_exit", `EMERGENCY: large dump on ${mint.slice(0, 8)}: ${tokensDumped.toLocaleString()} tokens sold in single tx`);
+          log("geyser_exit", `EMERGENCY: large dump on ${mint.slice(0, 8)}: ${tokensDumped.toLocaleString()} tokens sold in single tx (threshold ${dumpThreshold.toLocaleString()})`);
           try {
-            onEmergencyExit(mint, "liquidity_removal", `${tokensDumped.toLocaleString()} tokens dumped in single tx`);
+            onEmergencyExit(mint, "liquidity_removal", `${tokensDumped.toLocaleString()} tokens dumped in single tx (threshold ${dumpThreshold.toLocaleString()})`);
           } catch (e) {
             recordCounter("geyser_exit_callback_error");
             log("geyser_exit_error", `Emergency callback failed: ${e?.message || e}`);

@@ -55,10 +55,6 @@ export async function checkHolderExitSignals({
   const flagsEnabled = cfg.dumpMonitor?.enabled || cfg.entryPriceAnalysis?.enabled || cfg.rugPatternDetector?.enabled;
   if (!flagsEnabled) return null;
 
-  // Check if this position should run holder checks (beta rollout percentage)
-  const shouldRun = shouldRunBetaCheck(mint, cfg);
-  if (!shouldRun) return null;
-
   const signals = [];
   let maxRisk = "NONE";
   let maxConfidence = 0;
@@ -66,7 +62,7 @@ export async function checkHolderExitSignals({
   // ─────────────────────────────────────────────────────────────
   // A) HOLDER DUMP MONITOR
   // ─────────────────────────────────────────────────────────────
-  if (cfg.dumpMonitor?.enabled) {
+  if (cfg.dumpMonitor?.enabled && shouldRunBetaCheck(mint, cfg.dumpMonitor?.betaRolloutPct || 0)) {
     try {
       // Record snapshot first
       if (topHolders && topHolders.length > 0) {
@@ -114,7 +110,7 @@ export async function checkHolderExitSignals({
   // ─────────────────────────────────────────────────────────────
   // B) ENTRY PRICE ANALYSIS
   // ─────────────────────────────────────────────────────────────
-  if (cfg.entryPriceAnalysis?.enabled) {
+  if (cfg.entryPriceAnalysis?.enabled && shouldRunBetaCheck(mint, cfg.entryPriceAnalysis?.betaRolloutPct || 0)) {
     try {
       let entryAnalysis;
       let isFallback = false;
@@ -193,7 +189,7 @@ export async function checkHolderExitSignals({
   // ─────────────────────────────────────────────────────────────
   // C) RUG PATTERN DETECTOR
   // ─────────────────────────────────────────────────────────────
-  if (cfg.rugPatternDetector?.enabled) {
+  if (cfg.rugPatternDetector?.enabled && shouldRunBetaCheck(mint, cfg.rugPatternDetector?.betaRolloutPct || 0)) {
     try {
       if (recentSells && recentSells.length >= 2) {
         const patternRisk = detectRugPattern({
@@ -314,14 +310,9 @@ export async function checkHolderExitSignals({
  * Determine if this position should run beta checks (for staged rollout).
  * Uses mint hash to consistently assign positions to beta cohorts.
  */
-function shouldRunBetaCheck(mint, featureFlags = {}) {
-  const dumpPct = featureFlags.dumpMonitor?.betaRolloutPct || 0;
-  const entryPct = featureFlags.entryPriceAnalysis?.betaRolloutPct || 0;
-  const patternPct = featureFlags.rugPatternDetector?.betaRolloutPct || 0;
-
-  const maxPct = Math.max(dumpPct, entryPct, patternPct);
-  if (maxPct <= 0) return false;
-  if (maxPct >= 100) return true;
+function shouldRunBetaCheck(mint, rolloutPct = 0) {
+  if (rolloutPct <= 0) return false;
+  if (rolloutPct >= 100) return true;
   if (!mint || typeof mint !== "string") return false;
 
   // Hash mint to 0-100 bucket for consistent rollout. Same mint always lands
@@ -333,7 +324,7 @@ function shouldRunBetaCheck(mint, featureFlags = {}) {
   }
   const bucket = Math.abs(hash) % 100;
 
-  return bucket < maxPct;
+  return bucket < rolloutPct;
 }
 
 /**

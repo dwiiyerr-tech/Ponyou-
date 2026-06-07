@@ -124,7 +124,7 @@ describe("vault — executeVaultTransfer (dry-run)", () => {
   it("dry run returns success without real tx", async () => {
     const { executeVaultTransfer, _setVaultStateFile } = await import("../vault.js");
     _setVaultStateFile(TEST_STATE);
-    const result = await executeVaultTransfer(0.5, 50, { vaultWallet: "DRYwallet" });
+    const result = await executeVaultTransfer(0.5, 50, { vaultWallet: "DRYwallet", force: true });
     expect(result.dry_run).toBe(true);
     expect(result.success).toBe(true);
     expect(result.amount_sol).toBe(0.5);

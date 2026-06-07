@@ -22,7 +22,9 @@ export function estimateKellyInputs(trades = [], context = {}) {
   const rawWinRate = sampleSize > 0 ? wins.length / sampleSize : 0;
   const avgWinPct = average(wins.map(t => Math.abs(t.pnl_pct || 0)));
   const avgLossPct = average(losses.map(t => Math.abs(t.pnl_pct || 0)));
-  const payoffRatio = avgLossPct > 0 ? avgWinPct / avgLossPct : 0;
+  const payoffRatio = losses.length === 0
+    ? (avgWinPct > 0 ? avgWinPct / 1.0 : 1.0)
+    : (avgLossPct > 0 ? avgWinPct / avgLossPct : 0);
   const cappedPayoffRatio = Math.min(payoffRatio, 5); // cap outlier moonbags
 
   let p = rawWinRate;

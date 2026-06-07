@@ -117,7 +117,7 @@ export async function getMintExtensions(connection, mintAddress) {
 // A single successful response resets the consecutive counter and closes the circuit.
 
 const HELIUS_MAX_CONCURRENT   = 1;      // Reduced to 1 for free tier stability
-const HELIUS_MIN_INTERVAL_MS  = 2500;   // Increased to 2.5s (~0.4 req/s) for free tier
+const HELIUS_MIN_INTERVAL_MS  = 5000;   // Increased to 5s (~0.2 req/s) for free tier
 const HELIUS_CB_THRESHOLD     = 2;      // Reduced threshold to 2 consecutive 429s
 const HELIUS_CB_COOLDOWN_MS   = 10 * 60 * 1000; // Increased to 10-minute cooldown
 

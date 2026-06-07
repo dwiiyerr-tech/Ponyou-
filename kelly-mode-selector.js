@@ -45,7 +45,7 @@ export function selectKellyMode({
   ) {
     return {
       mode: KELLY_MODES.FULL_KELLY,
-      effectiveBankroll: bankrollSol,
+      effectiveBankroll: Math.max(0, bankrollSol - deployedSol),
       reason: `Mode3: all unlock criteria met + operator approved (trades=${liveTrades}, winRate=${winRate}, conviction=${conviction})`,
     };
   }

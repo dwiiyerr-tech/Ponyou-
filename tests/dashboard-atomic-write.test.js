@@ -42,12 +42,12 @@ describe("writeDashboardCmd — atomic write", () => {
     // writeFileSync must be called with the .tmp path
     expect(mockWriteFileSync).toHaveBeenCalledOnce();
     const writeCall = mockWriteFileSync.mock.calls[0];
-    expect(writeCall[0]).toMatch(/dashboard-cmd\.json\.tmp\.\d+\.\d+$/);
+    expect(writeCall[0]).toMatch(/dashboard-cmd\.json\.tmp\.\d+\.\d+\.\d+$/);
 
     // renameSync must be called: tmp → final
     expect(mockRenameSync).toHaveBeenCalledOnce();
     const [tmpPath, finalPath] = mockRenameSync.mock.calls[0];
-    expect(tmpPath).toMatch(/dashboard-cmd\.json\.tmp\.\d+\.\d+$/);
+    expect(tmpPath).toMatch(/dashboard-cmd\.json\.tmp\.\d+\.\d+\.\d+$/);
     expect(finalPath).toMatch(/dashboard-cmd\.json$/);
     expect(finalPath).not.toMatch(/\.tmp$/);
 
@@ -75,11 +75,11 @@ describe("writeAutomationCommand — atomic write", () => {
 
     expect(mockWriteFileSync).toHaveBeenCalledOnce();
     const writeCall = mockWriteFileSync.mock.calls[0];
-    expect(writeCall[0]).toMatch(/automation-command\.json\.tmp\.\d+\.\d+$/);
+    expect(writeCall[0]).toMatch(/automation-command\.json\.tmp\.\d+\.\d+\.\d+$/);
 
     expect(mockRenameSync).toHaveBeenCalledOnce();
     const [tmpPath, finalPath] = mockRenameSync.mock.calls[0];
-    expect(tmpPath).toMatch(/automation-command\.json\.tmp\.\d+\.\d+$/);
+    expect(tmpPath).toMatch(/automation-command\.json\.tmp\.\d+\.\d+\.\d+$/);
     expect(finalPath).toMatch(/automation-command\.json$/);
     expect(finalPath).not.toMatch(/\.tmp$/);
 

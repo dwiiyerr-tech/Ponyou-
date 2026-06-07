@@ -148,42 +148,28 @@ export function reportBalance(usd, limits = DEFAULT_LIMITS) {
   }
 
   // Warmup: collect readings until stable
-  if (!_baselineLocked) {
-    _baselineReadings.push(usd);
-    if (_baselineReadings.length >= BASELINE_WARMUP_READINGS) {
-      const recent = _baselineReadings.slice(-BASELINE_WARMUP_READINGS);
-      const max = Math.max(...recent);
-      const min = Math.min(...recent);
-      // Readings must be within 10% spread to lock baseline
-      if (min > 0 && (max - min) / min < 0.10) {
-        _baselineLocked = true;
-        _sessionStartUsd = Math.max(_sessionStartUsd || 0, max); // use peak of stable window
-        _persistState();
-        log("kill_switch", `Baseline locked at $${_sessionStartUsd.toFixed(2)} after ${_baselineReadings.length} readings (spread ${((max-min)/min*100).toFixed(1)}%)`);
-        _baselineReadings = [];
-      } else if (_baselineReadings.length > BASELINE_WARMUP_READINGS * 3) {
-        // 3x readings still unstable — force lock at the max reading
-        _baselineLocked = true;
-        _sessionStartUsd = Math.max(..._baselineReadings);
-        _persistState();
-        log("kill_switch", `Baseline force-locked at $${_sessionStartUsd.toFixed(2)} after ${_baselineReadings.length} unstable readings`);
-        _baselineReadings = [];
-      }
+  _baselineReadings.push(usd);
+  if (_baselineReadings.length >= BASELINE_WARMUP_READINGS) {
+    const recent = _baselineReadings.slice(-BASELINE_WARMUP_READINGS);
+    const max = Math.max(...recent);
+    const min = Math.min(...recent);
+    // Readings must be within 10% spread to lock baseline
+    if (min > 0 && (max - min) / min < 0.10) {
+      _baselineLocked = true;
+      _sessionStartUsd = Math.max(_sessionStartUsd || 0, max); // use peak of stable window
+      _persistState();
+      log("kill_switch", `Baseline locked at $${_sessionStartUsd.toFixed(2)} after ${_baselineReadings.length} readings (spread ${((max-min)/min*100).toFixed(1)}%)`);
+      _baselineReadings = [];
+    } else if (_baselineReadings.length > BASELINE_WARMUP_READINGS * 3) {
+      // 3x readings still unstable — force lock at the max reading
+      _baselineLocked = true;
+      _sessionStartUsd = Math.max(..._baselineReadings);
+      _persistState();
+      log("kill_switch", `Baseline force-locked at $${_sessionStartUsd.toFixed(2)} after ${_baselineReadings.length} unstable readings`);
+      _baselineReadings = [];
     }
-    return false; // no kill check during warmup
   }
-
-  // Normal check after baseline locked
-  if (_sessionStartUsd == null || _sessionStartUsd <= 0) return false;
-  const pct = ((usd - _sessionStartUsd) / _sessionStartUsd) * 100;
-  if (pct <= limits.drawdown_pct) {
-    trip({
-      reason: "drawdown",
-      detail: `Session P&L ${pct.toFixed(2)}% ≤ limit ${limits.drawdown_pct}%`,
-    });
-    return true;
-  }
-  return false;
+  return false; // no kill check during warmup
 }
 
 /**

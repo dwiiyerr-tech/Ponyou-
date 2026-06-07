@@ -184,48 +184,50 @@ export function recordDailyTradeOutcome(isWin, meta = {}, guardConfig = {}, opti
   });
 }
 
-export function decideDailyTradeGuard(action, guardConfig = {}, options = {}) {
-  const cfg = normalizeDailyTradeGuardConfig(guardConfig);
-  const nowMs = options.nowMs ?? Date.now();
-  let state = loadState(nowMs);
-  const normalized = String(action || "").toLowerCase();
+export async function decideDailyTradeGuard(action, guardConfig = {}, options = {}) {
+  return withFileLock(STATE_FILE, async () => {
+    const cfg = normalizeDailyTradeGuardConfig(guardConfig);
+    const nowMs = options.nowMs ?? Date.now();
+    let state = loadState(nowMs);
+    const normalized = String(action || "").toLowerCase();
 
-  if (normalized === "continue") {
-    const pending = state.pendingDecision;
-    if (pending) {
-      const key = thresholdKey(pending.threshold, pending.limit);
-      if (!state.acknowledgedThresholds.includes(key)) {
-        state.acknowledgedThresholds.push(key);
+    if (normalized === "continue") {
+      const pending = state.pendingDecision;
+      if (pending) {
+        const key = thresholdKey(pending.threshold, pending.limit);
+        if (!state.acknowledgedThresholds.includes(key)) {
+          state.acknowledgedThresholds.push(key);
+        }
       }
+      state.status = "continued";
+      state.lastDecision = {
+        action: "continue",
+        decidedAt: new Date(nowMs).toISOString(),
+        pendingDecision: pending || null,
+      };
+      state.pendingDecision = null;
+    } else if (normalized === "stop") {
+      const pending = state.pendingDecision;
+      state.status = "stopped";
+      state.lastDecision = {
+        action: "stop",
+        decidedAt: new Date(nowMs).toISOString(),
+        pendingDecision: pending || null,
+      };
+      state.pendingDecision = null;
+    } else if (normalized === "reset") {
+      state = defaultState(nowMs);
+    } else {
+      return {
+        ...publicStatus(state, cfg),
+        changed: false,
+        error: "unknown_action",
+      };
     }
-    state.status = "continued";
-    state.lastDecision = {
-      action: "continue",
-      decidedAt: new Date(nowMs).toISOString(),
-      pendingDecision: pending || null,
-    };
-    state.pendingDecision = null;
-  } else if (normalized === "stop") {
-    const pending = state.pendingDecision;
-    state.status = "stopped";
-    state.lastDecision = {
-      action: "stop",
-      decidedAt: new Date(nowMs).toISOString(),
-      pendingDecision: pending || null,
-    };
-    state.pendingDecision = null;
-  } else if (normalized === "reset") {
-    state = defaultState(nowMs);
-  } else {
-    return {
-      ...publicStatus(state, cfg),
-      changed: false,
-      error: "unknown_action",
-    };
-  }
 
-  state = saveState(state, nowMs);
-  return { ...publicStatus(state, cfg), changed: true };
+    state = saveState(state, nowMs);
+    return { ...publicStatus(state, cfg), changed: true };
+  });
 }
 
 export function isDailyTradeGuardEntryBlocked(guardConfig = {}, options = {}) {

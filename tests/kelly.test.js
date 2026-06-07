@@ -129,6 +129,16 @@ describe("kelly sizing", () => {
     // then dampener applies: p = 0.5 - 0.05 = 0.45
     expect(inputs.p).toBe(0.45);
   });
+
+  it("handles 0 losses (100% win rate) gracefully", () => {
+    const inputs = estimateKellyInputs([
+      { pnl_pct: 20 },
+      { pnl_pct: 30 },
+    ]);
+    expect(inputs.sample_size).toBe(2);
+    expect(inputs.raw_win_rate).toBe(1.0);
+    expect(inputs.b).toBe(5); // capped payoff ratio
+  });
 });
 
 // ─── Conviction multiplier logic (mirrors index.js _convMult formula) ────────

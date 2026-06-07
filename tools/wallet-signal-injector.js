@@ -158,16 +158,14 @@ export function checkRugDevDeployer({ creatorWallet, tokenMint, tokenSymbol } = 
 export async function autoBlockRugDevToken({ creatorWallet, tokenMint, tokenSymbol } = {}) {
   if (!tokenMint) return { blocked: false, reason: "no_token_mint" };
 
-  const isBlacklisted = listBlacklist().some(t => t.mint === tokenMint);
-  if (isBlacklisted) return { blocked: false, reason: "already_blacklisted" };
-
   const result = await addToBlacklist({
     mint: tokenMint,
     reason: `Auto-blocked: rug dev ${creatorWallet} deployed ${tokenSymbol || "?"}`,
   });
 
-  if (result.saved) {
-    _injectorStats.rugDevsBlocked++;
+  if (!result.saved) return { blocked: false, reason: result.reason || "already_blacklisted" };
+
+  _injectorStats.rugDevsBlocked++;
 
     // Emit alert
     agentBus.emit("wallet:rug_dev_blocked", {
@@ -182,7 +180,6 @@ export async function autoBlockRugDevToken({ creatorWallet, tokenMint, tokenSymb
       `RUG DEV BLOCKED: ${tokenSymbol || "?"} (${tokenMint.slice(0, 8)}...)`,
       `deployer=${creatorWallet.slice(0, 8)}...`,
     ].join(" | "));
-  }
 
   return result;
 }
@@ -196,10 +193,12 @@ export async function autoBlockRugDevToken({ creatorWallet, tokenMint, tokenSymb
  */
 export function getSmartMoneyCandidates({ minWinRate = 0.60 } = {}) {
   // Check cache TTL
-  if (_smartMoneyCachedAt && (Date.now() - _smartMoneyCachedAt) > SIGNAL_TTL_MS) {
-    _smartMoneySignals = [];
-    _smartMoneyCachedAt = null;
+  if (_smartMoneyCachedAt && (Date.now() - _smartMoneyCachedAt) <= SIGNAL_TTL_MS) {
+    return buildSmartMoneyCandidates(_smartMoneySignals);
   }
+  
+  _smartMoneySignals = [];
+  _smartMoneyCachedAt = null;
 
   const signals = detectSmartMoneySignals({ minWinRate });
   const now = Date.now();

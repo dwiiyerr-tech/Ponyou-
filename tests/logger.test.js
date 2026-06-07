@@ -33,6 +33,12 @@ describe("logger — log", () => {
     expect(call.length).toBeLessThan(2500);
   });
 
+  it("redacts EVM private keys", () => {
+    log("info", "key: 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+    const call = consoleSpy.mock.calls[0]?.[0] || "";
+    expect(call).toContain("key: [REDACTED]");
+  });
+
   it("sanitizes category name to max 64 chars", () => {
     log("a".repeat(80), "msg");
     const call = consoleSpy.mock.calls[0]?.[0] || "";

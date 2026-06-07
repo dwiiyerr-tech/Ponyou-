@@ -176,8 +176,22 @@ export function updateSessionCapital(currentCapitalUsd) {
   // Tanpa ini, P&L dihitung dari baseline sebelum crash — bisa sangat meleset.
   const today = new Date().toISOString().slice(0, 10);
   if (session.date && session.date !== today && session.calibrated) {
-    log("plan", `Session date mismatch (${session.date} vs ${today}) — forcing recalibration after restart`);
-    session.calibrated = false;
+    const now = new Date();
+    const isRolloverWindow = now.getUTCHours() === 0 && now.getUTCMinutes() < 2;
+    let isYesterday = false;
+    try {
+      const sessionTime = new Date(session.date).getTime();
+      const todayTime = new Date(today).getTime();
+      const diffDays = (todayTime - sessionTime) / (1000 * 60 * 60 * 24);
+      isYesterday = diffDays >= 0.9 && diffDays <= 1.1;
+    } catch (_) {}
+
+    if (plan._lastAdvancedAt === today || (!isRolloverWindow || !isYesterday)) {
+      log("plan", `Session date mismatch (${session.date} vs ${today}) — forcing recalibration after restart`);
+      session.calibrated = false;
+    } else {
+      log("plan", `Session date mismatch (${session.date} vs ${today}) — waiting for midnight advance cron`);
+    }
   }
 
   // Kalibrasi pertama: set startCapitalUsd dari nilai wallet aktual.
@@ -310,6 +324,11 @@ export function resumeSession() {
 export function advanceDay(actualCapitalUsd, activeStrategyId = null) {
   const plan = loadPlan();
   if (!plan) return null;
+
+  if (!Number.isFinite(actualCapitalUsd) || actualCapitalUsd <= 0) {
+    log("plan_error", `advanceDay aborted — invalid actualCapitalUsd: ${actualCapitalUsd}`);
+    return null;
+  }
 
   const today = new Date().toISOString().slice(0, 10);
 

@@ -32,39 +32,39 @@ describe("episodic-memory: fingerprint", () => {
 describe("episodic-memory: recall", () => {
   beforeEach(() => _resetEpisodicMemoryForTests());
 
-  it("returns null when fewer than minSamples recorded", () => {
-    recordEpisode({ mint: "A", symbol: "AA", token: TOKEN_AI_MICRO, pnl_pct: 30, hold_minutes: 20 });
-    recordEpisode({ mint: "B", symbol: "BB", token: TOKEN_AI_MICRO, pnl_pct: -10, hold_minutes: 5 });
-    expect(recallEpisodes(TOKEN_AI_MICRO, { minSamples: 3 })).toBeNull();
+  it("returns null when fewer than minSamples recorded", async () => {
+    await recordEpisode({ mint: "A", symbol: "AA", token: TOKEN_AI_MICRO, pnl_pct: 30, hold_minutes: 20 });
+    await recordEpisode({ mint: "B", symbol: "BB", token: TOKEN_AI_MICRO, pnl_pct: -10, hold_minutes: 5 });
+    expect(await recallEpisodes(TOKEN_AI_MICRO, { minSamples: 3 })).toBeNull();
   });
 
-  it("returns HISTORY_FAVORABLE when win_rate >= 55% and rug_rate < 15%", () => {
+  it("returns HISTORY_FAVORABLE when win_rate >= 55% and rug_rate < 15%", async () => {
     for (let i = 0; i < 5; i++) {
-      recordEpisode({ mint: `W${i}`, symbol: `W${i}`, token: TOKEN_AI_MICRO, pnl_pct: i % 2 === 0 ? 40 : -5, hold_minutes: 15 });
+      await recordEpisode({ mint: `W${i}`, symbol: `W${i}`, token: TOKEN_AI_MICRO, pnl_pct: i % 2 === 0 ? 40 : -5, hold_minutes: 15 });
     }
-    const recall = recallEpisodes(TOKEN_AI_MICRO, { minSamples: 3 });
+    const recall = await recallEpisodes(TOKEN_AI_MICRO, { minSamples: 3 });
     expect(recall).not.toBeNull();
     expect(["HISTORY_FAVORABLE", "HISTORY_MIXED"]).toContain(recall.verdict);
     expect(recall.matches).toBe(5);
   });
 
-  it("returns HISTORY_HOSTILE when rug_rate >= 25%", () => {
+  it("returns HISTORY_HOSTILE when rug_rate >= 25%", async () => {
     for (let i = 0; i < 4; i++) {
-      recordEpisode({ mint: `R${i}`, symbol: `R${i}`, token: TOKEN_AI_MICRO, pnl_pct: -80, is_rug: i < 2, hold_minutes: 3 });
+      await recordEpisode({ mint: `R${i}`, symbol: `R${i}`, token: TOKEN_AI_MICRO, pnl_pct: -80, is_rug: i < 2, hold_minutes: 3 });
     }
-    const recall = recallEpisodes(TOKEN_AI_MICRO, { minSamples: 3 });
+    const recall = await recallEpisodes(TOKEN_AI_MICRO, { minSamples: 3 });
     expect(recall?.verdict).toBe("HISTORY_HOSTILE");
   });
 
-  it("getEpisodicBlock returns null when no history", () => {
-    expect(getEpisodicBlock([TOKEN_AI_MICRO, TOKEN_DOG_MID], { minSamples: 3 })).toBeNull();
+  it("getEpisodicBlock returns null when no history", async () => {
+    expect(await getEpisodicBlock([TOKEN_AI_MICRO, TOKEN_DOG_MID], { minSamples: 3 })).toBeNull();
   });
 
-  it("getEpisodicBlock includes all candidates with history", () => {
+  it("getEpisodicBlock includes all candidates with history", async () => {
     for (let i = 0; i < 4; i++) {
-      recordEpisode({ mint: `X${i}`, symbol: "AITKN", token: { ...TOKEN_AI_MICRO, symbol: "AITKN" }, pnl_pct: 35, hold_minutes: 20 });
+      await recordEpisode({ mint: `X${i}`, symbol: "AITKN", token: { ...TOKEN_AI_MICRO, symbol: "AITKN" }, pnl_pct: 35, hold_minutes: 20 });
     }
-    const block = getEpisodicBlock([{ ...TOKEN_AI_MICRO, symbol: "AITKN" }], { minSamples: 3 });
+    const block = await getEpisodicBlock([{ ...TOKEN_AI_MICRO, symbol: "AITKN" }], { minSamples: 3 });
     expect(block).toContain("[EPISODIC RECALL]");
     expect(block).toContain("AITKN");
   });

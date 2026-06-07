@@ -36,7 +36,10 @@ export async function addToBlacklist({ mint, reason = "" } = {}) {
   if (!mint) return { error: "mint required" };
   return withFileLock(RUG_FILE, async () => {
     const mem = loadMem();
-    if (!mem.blacklisted_tokens.includes(mint)) mem.blacklisted_tokens.push(mint);
+    if (mem.blacklisted_tokens.includes(mint)) {
+      return { saved: false, reason: "already_blacklisted" };
+    }
+    mem.blacklisted_tokens.push(mint);
     mem.blacklist_meta[mint] = { reason, added_at: new Date().toISOString() };
     saveMem(mem);
     return { saved: true, mint, reason };

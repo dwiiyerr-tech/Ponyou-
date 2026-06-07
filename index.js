@@ -858,7 +858,7 @@ function buildDailyGuardLearningContext(status, source = "telegram") {
 }
 
 async function stopTradingForDailyGuard(source = "telegram") {
-  const status = decideDailyTradeGuard("stop", config.dailyTradeGuard);
+  const status = await decideDailyTradeGuard("stop", config.dailyTradeGuard);
   const ctx = buildDailyGuardLearningContext(status, source);
   const duration = config.dailyTradeGuard?.learningModeDurationMin || config.pilot.learningModeDurationMin;
   const activated = activateLearningMode(ctx, ctx.exit_reason, duration);
@@ -1411,7 +1411,7 @@ async function handleStrategyTelegramCommand(text) {
       return true;
     }
     if (mode === "reset") {
-      decideDailyTradeGuard("reset", config.dailyTradeGuard);
+      await decideDailyTradeGuard("reset", config.dailyTradeGuard);
       await sendHTML(`✅ Daily Guard counters reset for today.`);
       return true;
     }
@@ -1432,7 +1432,7 @@ async function handleStrategyTelegramCommand(text) {
   }
 
   if (cmd === "/continue") {
-    const s = decideDailyTradeGuard("continue", config.dailyTradeGuard);
+    const s = await decideDailyTradeGuard("continue", config.dailyTradeGuard);
     await sendHTML(`▶️ Daily Guard: lanjut trading hari ini. W ${s.wins}/${s.max_wins_per_day} · L ${s.losses}/${s.max_losses_per_day}`);
     return true;
   }
@@ -1643,9 +1643,7 @@ async function executePendingIntent(id) {
   let result;
   const swapStartedAt = Date.now();
   try {
-    // Opus B-2 fix: route through sellByChain so EVM intents use gmgnSwap
-    // instead of Jupiter. Was: swapToken(...) directly which ignores chain field.
-    result = await sellByChain({ ...args, executionContext: { source: "pending-intent", approvedIntent: true } });
+    result = await executeTrade({ ...args, executionContext: { source: "pending-intent", approvedIntent: true } });
   } catch (e) {
     await finalizeIntent(id, "failed", { error: e.message });
     recordSwapOutcome({ success: false });
@@ -1847,6 +1845,13 @@ async function refreshSessionPnl(totalUsd) {
   // jangan biarkan itu di-interpret sebagai loss 100%.
   if (!Number.isFinite(totalUsd) || totalUsd <= 0) {
     log("plan_warn", `refreshSessionPnl skipped: invalid totalUsd=${totalUsd} (${executionMode.mode})`);
+    return;
+  }
+  // Prevent date rollover race: skip P&L updates in the first 2 minutes of the UTC day
+  // to let the midnight advance cron run first and record the day's P&L.
+  const now = new Date();
+  if (now.getUTCHours() === 0 && now.getUTCMinutes() < 2) {
+    log("plan", `refreshSessionPnl skipped during midnight rollover window to prevent race condition`);
     return;
   }
   // Kill-switch drawdown check: anchored to the first valid balance the bot
@@ -2536,7 +2541,7 @@ async function checkDeterministicExits(tokens, { solPriceUsd = 0 } = {}) {
         success: !!(partialRes.success || partialRes.dry_run),
         latencyMs: Date.now() - partialStartAt,
       });
-      if (partialRes.success || partialRes.dry_run) {
+      if (partialRes.success || partialRes.dry_run || partialRes.indeterminate) {
         await markPartialTPLanded(posKey);
         // H3: await durability + set in-memory flag so the same cycle does not
         // re-trigger. Without await, a restart between the two guards leaves
@@ -2951,14 +2956,15 @@ export async function runManagementCycle({ silent = false } = {}) {
         }
         continue;
       }
-      if (res.success || res.dry_run) {
+      if (res.success || res.dry_run || res.indeterminate) {
         // Await close-flush: a crash before this lands on disk means the next
         // management cycle would re-attempt the exit on a position already
         // sold, hitting Jupiter with zero balance. Cheap insurance.
-        await recordClose(exit.position_key || exit.mint, exit.reason, exit.wallet_address || null);
+        const reason = res.indeterminate ? `${exit.reason} (INDETERMINATE_SWAP)` : exit.reason;
+        await recordClose(exit.position_key || exit.mint, reason, exit.wallet_address || null);
         _rugMonitor?.detachPosition(exit.position_key || exit.mint);
         await clearPartialTPGuard(exit.position_key || exit.mint);
-        recordRuggedNarrativesForExit({ reason: exit.reason, token: tokenData || {} });
+        recordRuggedNarrativesForExit({ reason, token: tokenData || {} });
         // G2: track for the next iteration's stagger check.
         // C1: propagate this position's PnL back to its cast-net group so
         // the gate's consecutive-loss check has fresh outcomes.
@@ -3127,14 +3133,14 @@ export async function runManagementCycle({ silent = false } = {}) {
         // ── Super Brain: episodic memory + prompt evolution ─────────────
         // Record trade outcome for pattern retrieval and learned rules.
         // Fire-and-forget — never block the exit loop.
-        setImmediate(() => {
+        setImmediate(async () => {
           const tokenCtx = { ...tokenData, rug_score: exit.rug_score ?? tokenData?.rug_score };
           if (config.episodicMemory?.enabled) {
-            recordEpisode({
+            await recordEpisode({
               mint: exit.mint, symbol: exit.symbol, token: tokenCtx,
               pnl_pct: tradePnl, hold_minutes: holdMinutes,
               exit_reason: exit.reason, is_rug: /rug/i.test(exit.reason || ""),
-            });
+            }).catch(() => {});
           }
           if (config.promptEvolution?.enabled) {
             attributeOutcome({
@@ -5029,7 +5035,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
           })
         : null;
       const _episodicBlock = config.episodicMemory?.enabled
-        ? getEpisodicBlock(passingCandidates, { minSamples: config.episodicMemory.minSamples })
+        ? await getEpisodicBlock(passingCandidates, { minSamples: config.episodicMemory.minSamples })
         : null;
       const _learnedRules = config.promptEvolution?.enabled
         ? getLearnedRulesBlock()
@@ -5578,12 +5584,13 @@ function startTurboButtons() {
                   wallet: pos.wallet_address ? getWalletByAddress(pos.wallet_address)?.keypair || null : null,
                 })
               );
-              if (res?.success || res?.dry_run) {
-                log("geyser_exit_emergency", `Emergency exit successful for ${pos.symbol}: PnL ${res.pnl_pct || 0}%`);
-                await recordClose(pos.position_key || mint, `emergency_exit: ${reason}`, pos.wallet_address || null);
+              if (res?.success || res?.dry_run || res?.indeterminate) {
+                const closeReason = res?.indeterminate ? `emergency_exit: ${reason} (INDETERMINATE_SWAP)` : `emergency_exit: ${reason}`;
+                log("geyser_exit_emergency", `Emergency exit marked closed for ${pos.symbol}: PnL ${res?.pnl_pct || 0}% (success=${!!res?.success}, indeterminate=${!!res?.indeterminate})`);
+                await recordClose(pos.position_key || mint, closeReason, pos.wallet_address || null);
                 _rugMonitor?.detachPosition(pos.position_key || mint);
                 await clearPartialTPGuard(pos.position_key || mint);
-                recordRuggedNarrativesForExit({ reason: `emergency_exit: ${reason}`, token: pos });
+                recordRuggedNarrativesForExit({ reason: closeReason, token: pos });
               } else {
                 log("geyser_exit_emergency", `Emergency exit failed for ${pos.symbol}: ${res?.error || "unknown error"}`);
               }
@@ -6481,6 +6488,31 @@ export async function handleIncomingTelegramMessage(msg) {
     return;
   }
 
+  // ── /strategies — list & switch strategies ──
+  if (text === "/strategies" || text.startsWith("/strategies ")) {
+    const arg = text.replace(/^\/strategies\s*/, "").trim().toLowerCase();
+    const { STRATEGY_IDS, getActiveStrategyId, setActiveStrategy, getStrategy, PRESETS } = await import("./strategies.js");
+    if (!arg) {
+      const active = getActiveStrategyId();
+      const lines = [`⚙️ <b>Strategy Registry</b>`, ``];
+      for (const id of STRATEGY_IDS) {
+        const mark = id === active ? "🟢" : "⚫";
+        const strat = PRESETS[id];
+        lines.push(`${mark} <code>/strategies ${id}</code> — ${strat.name}`);
+      }
+      await sendHTML(lines.join("\n"));
+      return;
+    }
+    if (!STRATEGY_IDS.includes(arg)) {
+      await sendHTML(`⚠️ Strategi tidak ditemukan. Gunakan /strategies untuk melihat daftar.`);
+      return;
+    }
+    setActiveStrategy(arg);
+    const activeStrat = getStrategy();
+    await sendHTML(`✅ <b>Strategi diubah</b>\nSistem sekarang menggunakan: <b>${activeStrat.name}</b>\n<i>${activeStrat.description}</i>`);
+    return;
+  }
+
   // /autonomy [manual|supervised|full_auto] — set autonomy level (single control)
   if (text === "/autonomy" || text.startsWith("/autonomy ")) {
     const arg = text.replace(/^\/autonomy\s*/, "").trim().toLowerCase();
@@ -6516,6 +6548,34 @@ export async function handleIncomingTelegramMessage(msg) {
       full_auto:  "⚡ FULL AUTO — bot apply semua learning sendiri tanpa approval.\n<i>Safety trading gate tetap aktif.</i>",
     }[mode];
     await sendHTML(`🎚️ <b>Autonomy → ${mode.toUpperCase()}</b>\n${desc}\n\n<i>Berlaku mulai cycle berikutnya (config hot-reload).</i>`);
+    return;
+  }
+
+  // ── /multichain [on|off] — toggle EVM (Base/BSC) via GMGN ──
+  if (text === "/multichain" || text.startsWith("/multichain ")) {
+    const arg = text.replace(/^\/multichain\s*/, "").trim().toLowerCase();
+    const { writeConfig, readConfig: _rc } = await import("./dashboard/config-writer.js");
+    if (!arg) {
+      const cfg = _rc();
+      const isOn = cfg.gmgnExecEnabled === true;
+      await sendHTML([
+        `🌐 <b>Multi-Chain (EVM) Status: ${isOn ? "🟢 ON" : "🔴 OFF"}</b>`,
+        ``,
+        `Solana selalu aktif (via Jupiter). Multi-Chain menghidupkan eksekusi Base & BSC via GMGN.`,
+        `Ketik: <code>/multichain on</code> atau <code>/multichain off</code>`
+      ].join("\n"));
+      return;
+    }
+    if (arg !== "on" && arg !== "off") {
+      await sendHTML(`⚠️ Perintah tidak dikenal. Gunakan <code>/multichain on</code> atau <code>/multichain off</code>`);
+      return;
+    }
+    const enable = arg === "on";
+    writeConfig({ gmgnExecEnabled: enable });
+    
+    if (typeof config.gmgn === "object") config.gmgn.execEnabled = enable;
+    
+    await sendHTML(`🌐 <b>Multi-Chain (EVM) ${enable ? "diaktifkan 🟢" : "dimatikan 🔴"}</b>\n<i>Perubahan langsung aktif.</i>`);
     return;
   }
 

@@ -166,6 +166,7 @@ const BOT_COMMANDS = [
   { command: "strategies",    description: "List & ganti strategi" },
   { command: "auto",          description: "Start/stop automation (on|off)" },
   { command: "autonomy",      description: "Set autonomy level (manual|supervised|full_auto)" },
+  { command: "multichain",    description: "Toggle eksekusi Base/BSC via GMGN (on|off)" },
   { command: "proposals",     description: "Lihat vault proposals pending" },
   { command: "chains",        description: "Status multi-chain market" },
   { command: "setup_brain",   description: "Hubungkan Obsidian vault ke GitHub (panduan)" },

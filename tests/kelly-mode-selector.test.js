@@ -34,7 +34,7 @@ describe("selectKellyMode", () => {
       winRate: 1.0, liveTrades: 55, conviction: 0.99, mode3Approved: true,
       semanticMemoryEntries: 210 });
     expect(r.mode).toBe(KELLY_MODES.FULL_KELLY);
-    expect(r.effectiveBankroll).toBe(10);
+    expect(r.effectiveBankroll).toBe(7);
   });
 
   it("returns ADAPTIVE (not FULL_KELLY) when mode3Approved=false even if all other criteria met", () => {

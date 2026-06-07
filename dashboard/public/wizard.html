@@ -297,10 +297,16 @@ function escHtmlW(s) {
 
 function renderGmgnKeygen() {
   return `<div class="field-row" style="border:1px solid var(--border);border-radius:8px;padding:.75rem;margin-bottom:1rem">
-    <label>1. Generate GMGN Keypair (Ed25519)</label>
-    <div class="field-hint">Bot membuat keypair, menyimpan PRIVATE key di <code>~/.config/gmgn/.env</code> (0600, untuk signing trade), dan menampilkan PUBLIC key untuk kamu daftarkan. Sudah punya key? Lewati langkah ini.</div>
+    <label>1. GMGN API Keypair (Ed25519)</label>
+    <div class="field-hint">Bot bisa membuatkan keypair otomatis untuk Anda, atau Anda bisa memasukkan Private Key GMGN yang sudah ada (dimulai dengan <code>-----BEGIN PRIVATE KEY-----</code>).</div>
+    
+    <label style="margin-top:.5rem">Paste Existing Private Key (Opsional)</label>
+    <textarea data-key="_gmgnPrivateKey" placeholder="-----BEGIN PRIVATE KEY-----\\n..." style="height:60px; font-family:monospace; margin-bottom:.5rem; width:100%; box-sizing:border-box;"></textarea>
+
+    <div style="text-align:center; margin: .5rem 0; font-size: 12px; color: var(--muted)">-- ATAU --</div>
+
     <label style="display:block;margin:.5rem 0;font-size:13px"><input type="checkbox" id="gmgnOverwrite"> Timpa key lama (regenerate — <b>memutus</b> API key yang sudah terikat)</label>
-    <button type="button" class="btn primary" onclick="generateGmgnKeypair()">🔑 Generate Keypair</button>
+    <button type="button" class="btn primary" onclick="generateGmgnKeypair()">🔑 Generate Keypair Baru</button>
     <div id="gmgnKeygenOut" style="margin-top:.75rem"></div>
   </div>`;
 }
@@ -367,8 +373,8 @@ function renderMultiChain() {
 
   // Execution gate — discovery is always read-only; this enables real EVM swaps.
   html += `<div class="field-row" style="margin-top:.5rem"><label>
-    <input type="checkbox" data-mc-exec ${execOn ? "checked" : ""}> <b>Enable EVM execution</b> (real swaps via GMGN)
-  </label><div class="field-hint">⚠️ Biarkan OFF dulu. Discovery tetap jalan read-only tanpa ini. Validasi size kecil di satu chain sebelum aktif. Demo/DRY_RUN tetap simulasi meski ini ON.</div></div>`;
+    <input type="checkbox" data-mc-exec ${execOn ? "checked" : ""}> <b>Enable Multi-Chain (EVM) execution</b> (Base/BSC swaps via GMGN)
+  </label><div class="field-hint">⚠️ Biarkan OFF dulu jika belum siap. Discovery tetap jalan read-only tanpa ini. Validasi size kecil di satu chain sebelum aktif. Atau gunakan command telegram <code>/multichain on</code>.</div></div>`;
 
   return html;
 }

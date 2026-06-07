@@ -12,7 +12,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { atomicWriteJson } from "./atomic-write.js";
+import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 import { log } from "./logger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -86,32 +86,34 @@ export function fingerprint(token = {}) {
  * Record a closed trade into episodic memory.
  * Called at position exit in index.js.
  */
-export function recordEpisode({ mint, symbol, token = {}, pnl_pct = 0, hold_minutes = 0, exit_reason = "", is_rug = false } = {}) {
-  try {
-    const data = _load();
-    const key  = fingerprint(token);
-    if (!data.episodes[key]) {
-      data.episodes[key] = { n: 0, wins: 0, rugs: 0, pnl_sum: 0, hold_sum_min: 0, last_ts: null, recent: [] };
-    }
-    const entry = data.episodes[key];
-    entry.n++;
-    if (pnl_pct > 0) entry.wins++;
-    if (is_rug)       entry.rugs++;
-    entry.pnl_sum     += pnl_pct;
-    entry.hold_sum_min += hold_minutes;
-    entry.last_ts     = new Date().toISOString();
-    entry.recent      = [{ mint: String(mint || "").slice(0, 44), sym: String(symbol || "").slice(0, 12), pnl_pct: Number(pnl_pct.toFixed(2)), hold_min: Math.round(hold_minutes), reason: String(exit_reason || "").slice(0, 40), ts: entry.last_ts }, ...entry.recent].slice(0, MAX_RECENT_PER_KEY);
+export async function recordEpisode({ mint, symbol, token = {}, pnl_pct = 0, hold_minutes = 0, exit_reason = "", is_rug = false } = {}) {
+  return withFileLock(EPISODIC_FILE, async () => {
+    try {
+      const data = _load();
+      const key  = fingerprint(token);
+      if (!data.episodes[key]) {
+        data.episodes[key] = { n: 0, wins: 0, rugs: 0, pnl_sum: 0, hold_sum_min: 0, last_ts: null, recent: [] };
+      }
+      const entry = data.episodes[key];
+      entry.n++;
+      if (pnl_pct > 0) entry.wins++;
+      if (is_rug)       entry.rugs++;
+      entry.pnl_sum     += pnl_pct;
+      entry.hold_sum_min += hold_minutes;
+      entry.last_ts     = new Date().toISOString();
+      entry.recent      = [{ mint: String(mint || "").slice(0, 44), sym: String(symbol || "").slice(0, 12), pnl_pct: Number(pnl_pct.toFixed(2)), hold_min: Math.round(hold_minutes), reason: String(exit_reason || "").slice(0, 40), ts: entry.last_ts }, ...entry.recent].slice(0, MAX_RECENT_PER_KEY);
 
-    // Evict oldest keys on overflow
-    const keys = Object.keys(data.episodes);
-    if (keys.length > MAX_KEYS) {
-      const sorted = keys.sort((a, b) => (data.episodes[a].last_ts || "").localeCompare(data.episodes[b].last_ts || ""));
-      for (const oldKey of sorted.slice(0, keys.length - MAX_KEYS)) delete data.episodes[oldKey];
+      // Evict oldest keys on overflow
+      const keys = Object.keys(data.episodes);
+      if (keys.length > MAX_KEYS) {
+        const sorted = keys.sort((a, b) => (data.episodes[a].last_ts || "").localeCompare(data.episodes[b].last_ts || ""));
+        for (const oldKey of sorted.slice(0, keys.length - MAX_KEYS)) delete data.episodes[oldKey];
+      }
+      _save(data);
+    } catch (e) {
+      log("episodic_err", e.message || e);
     }
-    _save(data);
-  } catch (e) {
-    log("episodic_err", e.message || e);
-  }
+  });
 }
 
 // ─── Read ─────────────────────────────────────────────────────────────────────
@@ -120,24 +122,26 @@ export function recordEpisode({ mint, symbol, token = {}, pnl_pct = 0, hold_minu
  * Retrieve outcome stats for a candidate's fingerprint.
  * Returns null if fewer than minSamples recorded.
  */
-export function recallEpisodes(token = {}, { minSamples = 3 } = {}) {
-  try {
-    const data = _load();
-    const key  = fingerprint(token);
-    const entry = data.episodes[key];
-    if (!entry || entry.n < minSamples) return null;
-    const win_rate    = entry.n > 0 ? entry.wins / entry.n : 0;
-    const rug_rate    = entry.n > 0 ? entry.rugs / entry.n : 0;
-    const avg_pnl_pct = entry.n > 0 ? entry.pnl_sum / entry.n : 0;
-    const median_hold = entry.n > 0 ? entry.hold_sum_min / entry.n : 0;
+export async function recallEpisodes(token = {}, { minSamples = 3 } = {}) {
+  return withFileLock(EPISODIC_FILE, async () => {
+    try {
+      const data = _load();
+      const key  = fingerprint(token);
+      const entry = data.episodes[key];
+      if (!entry || entry.n < minSamples) return null;
+      const win_rate    = entry.n > 0 ? entry.wins / entry.n : 0;
+      const rug_rate    = entry.n > 0 ? entry.rugs / entry.n : 0;
+      const avg_pnl_pct = entry.n > 0 ? entry.pnl_sum / entry.n : 0;
+      const median_hold = entry.n > 0 ? entry.hold_sum_min / entry.n : 0;
 
-    let verdict;
-    if (rug_rate >= 0.25 || win_rate < 0.30) verdict = "HISTORY_HOSTILE";
-    else if (win_rate >= 0.55 && rug_rate < 0.15) verdict = "HISTORY_FAVORABLE";
-    else verdict = "HISTORY_MIXED";
+      let verdict;
+      if (rug_rate >= 0.25 || win_rate < 0.30) verdict = "HISTORY_HOSTILE";
+      else if (win_rate >= 0.55 && rug_rate < 0.15) verdict = "HISTORY_FAVORABLE";
+      else verdict = "HISTORY_MIXED";
 
-    return { key, matches: entry.n, win_rate, avg_pnl_pct, median_hold, rug_rate, verdict, sample: entry.recent.slice(0, 3) };
-  } catch { return null; }
+      return { key, matches: entry.n, win_rate, avg_pnl_pct, median_hold, rug_rate, verdict, sample: entry.recent.slice(0, 3) };
+    } catch { return null; }
+  });
 }
 
 /**
@@ -145,9 +149,9 @@ export function recallEpisodes(token = {}, { minSamples = 3 } = {}) {
  * Returns null if no enough history.
  * Format: "SYMBOL: similar=N wr=X% avg=Y% rugs=Z% → VERDICT"
  */
-export function getEpisodicPromptLine(token = {}, opts = {}) {
+export async function getEpisodicPromptLine(token = {}, opts = {}) {
   try {
-    const recall = recallEpisodes(token, opts);
+    const recall = await recallEpisodes(token, opts);
     if (!recall) return null;
     const sym = String(token.symbol || token.mint || "?").slice(0, 12);
     return `${sym}: similar=${recall.matches} wr=${(recall.win_rate*100).toFixed(0)}% avg=${recall.avg_pnl_pct.toFixed(0)}% rugs=${(recall.rug_rate*100).toFixed(0)}% → ${recall.verdict}`;
@@ -158,13 +162,13 @@ export function getEpisodicPromptLine(token = {}, opts = {}) {
  * Build a [EPISODIC RECALL] block for all passing candidates.
  * Returns null when no history exists for any candidate.
  */
-export function getEpisodicBlock(candidates = [], opts = {}) {
+export async function getEpisodicBlock(candidates = [], opts = {}) {
   try {
-    const lines = candidates
-      .map(t => getEpisodicPromptLine(t, opts))
-      .filter(Boolean);
-    if (lines.length === 0) return null;
-    return `[EPISODIC RECALL]\n${lines.join("\n")}\n(HISTORY_HOSTILE = default SKIP unless trending_boost>20)`;
+    const linesPromises = candidates.map(t => getEpisodicPromptLine(t, opts));
+    const lines = await Promise.all(linesPromises);
+    const filteredLines = lines.filter(Boolean);
+    if (filteredLines.length === 0) return null;
+    return `[EPISODIC RECALL]\n${filteredLines.join("\n")}\n(HISTORY_HOSTILE = default SKIP unless trending_boost>20)`;
   } catch { return null; }
 }
 

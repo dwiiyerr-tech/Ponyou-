@@ -41,8 +41,22 @@ describe("state — getState / load", () => {
     vi.resetModules();
     const { getState, _resetStateForTests: r2 } = await import("../state.js");
     r2();
+    expect(() => getState()).toThrow();
+  });
+
+  it("restores state from backup when state.json is corrupt", async () => {
+    const { _resetStateForTests } = await import("../state.js");
+    _resetStateForTests();
+    const backupData = { positions: { restoredPos: { mint: "restored" } }, recentEvents: [], lastUpdated: null };
+    fs.writeFileSync(STATE_FILE + ".bak", JSON.stringify(backupData), "utf8");
+    fs.writeFileSync(STATE_FILE, "corrupt JSON {{{", "utf8");
+    vi.resetModules();
+    const { getState, _resetStateForTests: r2 } = await import("../state.js");
+    r2();
     const s = getState();
-    expect(s.positions).toEqual({});
+    expect(s.positions.restoredPos).toBeDefined();
+    expect(s.positions.restoredPos.mint).toBe("restored");
+    try { fs.unlinkSync(STATE_FILE + ".bak"); } catch (_) {}
   });
 });
 

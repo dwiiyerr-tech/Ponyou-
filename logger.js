@@ -54,6 +54,7 @@ function sanitizeLogText(s, max = 2000) {
   if (out.length > max) out = out.slice(0, max) + "…";
   // Redact credential patterns AFTER truncation so a run of repeated chars
   // does not match the key pattern (e.g. "x".repeat(5000) would match base58).
+  out = out.replace(/\b(0[xX])?[0-9a-fA-F]{64}\b/g, "[REDACTED]");
   out = out.replace(/[1-9A-HJ-NP-Za-km-z]{87,88}/g, "[REDACTED]");
   out = out.replace(/sk-[A-Za-z0-9\-_]{20,}/g, "[REDACTED]");
   out = out.replace(/Bearer [A-Za-z0-9\-.+\/]{20,}/gi, "Bearer [REDACTED]");
@@ -151,6 +152,7 @@ export function captureUncaught() {
     // B2: wrap in try/catch — blocking I/O in shutdown path must not deadlock.
     try { fs.appendFileSync(ERROR_LOG_FILE, entry + "\n"); } catch { /* disk full / locked */ }
     console.error("[UNCAUGHT_EXCEPTION]", err);
+    process.exit(1);
   });
 
   process.on("unhandledRejection", (reason) => {

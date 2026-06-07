@@ -59,8 +59,10 @@ export async function withFileLock(filePath, fn) {
   }
 }
 
+let _tmpCounter = 0;
 function uniqueTmp(filePath) {
-  return filePath + ".tmp." + process.pid + "." + Date.now();
+  _tmpCounter = (_tmpCounter + 1) % 1000000;
+  return filePath + ".tmp." + process.pid + "." + Date.now() + "." + _tmpCounter;
 }
 
 function fsyncPath(p) {
