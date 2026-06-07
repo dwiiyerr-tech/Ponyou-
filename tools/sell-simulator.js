@@ -141,10 +141,10 @@ export async function simulateSell(mint, { timeoutMs = 6000 } = {}) {
       if (largest?.value?.length > 0) {
         // Get the account info of the largest holder to find the owner
         const largestAddr = largest.value[0].address;
-        const accInfo = await connection.getParsedAccountInfo(largestAddr);
+        const accInfo = await connection.getParsedAccountInfo(new PublicKey(largestAddr));
         const parsed = accInfo?.value?.data?.parsed?.info;
         if (parsed?.owner) {
-          holderAccount = largestAddr;
+          holderAccount = new PublicKey(largestAddr);
           holderOwner = new PublicKey(parsed.owner);
         }
       }

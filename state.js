@@ -12,7 +12,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
-import { atomicWriteJsonAsync } from "./atomic-write.js";
+import { atomicWriteJsonAsync, atomicWriteText } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = process.env.PONYOU_STATE_FILE || path.join(__dirname, "state.json");
@@ -50,11 +50,33 @@ function load() {
     return _stateCache;
   }
   try {
-    _stateCache = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    const content = fs.readFileSync(STATE_FILE, "utf8");
+    if (!content || content.trim() === "") {
+      throw new Error("state.json is empty");
+    }
+    _stateCache = JSON.parse(content);
     return _stateCache;
   } catch (err) {
     log("state_error", `Failed to read state.json: ${err.message}`);
-    return { positions: {}, recentEvents: [], lastUpdated: null };
+    const backupFile = STATE_FILE + ".bak";
+    if (fs.existsSync(backupFile)) {
+      try {
+        const backupContent = fs.readFileSync(backupFile, "utf8");
+        if (backupContent && backupContent.trim() !== "") {
+          _stateCache = JSON.parse(backupContent);
+          log("state_warn", "Restored state from backup file due to corruption");
+          try {
+            atomicWriteText(STATE_FILE, backupContent);
+          } catch (healErr) {
+            log("state_error", `Failed to restore backup to main file: ${healErr.message}`);
+          }
+          return _stateCache;
+        }
+      } catch (backupErr) {
+        log("state_error", `Failed to read or parse backup file: ${backupErr.message}`);
+      }
+    }
+    throw new Error(`State file is corrupted/empty and backup is unavailable: ${err.message}`);
   }
 }
 
@@ -109,6 +131,11 @@ async function save(state) {
     state.lastUpdated = new Date().toISOString();
     try {
       await atomicWriteJsonAsync(STATE_FILE, state);
+      try {
+        await atomicWriteJsonAsync(STATE_FILE + ".bak", state);
+      } catch (backupErr) {
+        log("state_warn", `Failed to write backup state file: ${backupErr.message}`);
+      }
       _stateCache = state;
       _lastWriteFailed = false;
     } catch (err) {
