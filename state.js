@@ -13,6 +13,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { atomicWriteJsonAsync, atomicWriteText } from "./atomic-write.js";
+import { agentBus } from "./agents/agent-bus.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = process.env.PONYOU_STATE_FILE || path.join(__dirname, "state.json");
@@ -206,6 +207,10 @@ export function trackPosition({
 }) {
   const state = load();
   const position_key = buildPositionKey(position, wallet_address);
+  // New trade vs DCA top-up: a re-track of an existing OPEN key is a staged
+  // entry adding to the position, not a new trade — no buy event for those.
+  const prior = state.positions[position_key];
+  const isNewTrade = !prior || prior.closed === true;
 
   // ST-6: previously, when initial_value_usd was unset/zero, we fell back to
   // amount_sol — but amount_sol is in SOL (e.g. 0.5), not USD (e.g. $100).
@@ -263,6 +268,26 @@ export function trackPosition({
   };
   pushEvent(state, { action: "deploy", position, position_key, pool_name: pool_name || pool, wallet_address });
   const saved = save(state);
+
+  // Single source of truth for buy attribution: every entry path (rule-based
+  // deploy, screening LLM, management LLM, confirm-mode) lands here, so the
+  // learning agent's open-trade tracking can't miss a buy again. Previously
+  // only the management-LLM loop emitted, and every other path's exits were
+  // attributed to source="unknown".
+  if (isNewTrade) {
+    const snap = signal_snapshot || {};
+    agentBus.emit("management:llm_buy", {
+      token: position,
+      mint: position,
+      symbol: snap.symbol || pool_name || null,
+      amount: amount_sol,
+      success: true,
+      timestamp: Date.now(),
+      _hunt_source: snap._hunt_source
+        || (snap.workflow?.verdict === "manual" ? "manual" : "unknown"),
+      _social_source: snap._social_source || null,
+    });
+  }
   log("state", `Tracked new position: ${position_key} in pool ${pool}`);
   return saved;
 }

@@ -13,7 +13,14 @@
  *
  * Bus events emitted:
  *   shadow:rug_detected   — token rugged without being bought → free learning
+ *   shadow:winner_missed  — skipped token mooned anyway → free learning
  *   shadow:stats          — periodic watchlist health report
+ *
+ * Darwin feedback: every terminal outcome (rugged / mooned) also updates the
+ * signal-component weights via updateDarwinWeights, using the components that
+ * voted for the token at screening time (active_signals). This is what lets
+ * Ponyou learn from the whole market — dozens of watched candidates per day —
+ * instead of only its own handful of closed trades.
  */
 
 import fs from "fs";
@@ -23,6 +30,9 @@ import { atomicWriteJson, withFileLock } from "../atomic-write.js";
 import { getTokenMarketInfo } from "./dexscreener.js";
 import { agentBus } from "../agents/agent-bus.js";
 import { log } from "../logger.js";
+import { updateDarwinWeights } from "../lessons.js";
+import { triggeredSignals } from "../signal-aggregator.js";
+import { config } from "../config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WATCHLIST_FILE  = path.join(__dirname, "../shadow-watchlist.json");
@@ -32,6 +42,7 @@ const CHECK_INTERVAL_MS  = 30 * 60 * 1000;         // check every 30 min
 const RUG_DROP_THRESHOLD = 0.70;                    // price dropped 70%+ = rug
 const RUG_LIQ_THRESHOLD  = 200;                     // liquidity < $200 = LP pulled
 const MAX_WATCHLIST_SIZE = 200;                      // cap — no unbounded growth
+const MISSED_WINNER_PCT  = 50;                       // peak ≥ +50% from entry = mooned
 
 // Major tokens / stablecoins / quote assets are not memecoin candidates. Their
 // SOL-denominated prices fluctuate with SOL/USD, causing false "rug crash" alerts
@@ -85,10 +96,16 @@ export function shadowWatch(token) {
       entry_liq:     token.liquidity || null,
       signal_score:  token.signal?.signal_score ?? null,
       rug_score:     token.rug_score ?? null,
+      // Darwinian genome: which signal components voted for this token. The
+      // terminal outcome (rugged/mooned) feeds back into their weights.
+      active_signals: Array.isArray(token.active_signals) && token.active_signals.length > 0
+        ? token.active_signals
+        : triggeredSignals(token.signal),
+      peak_price:    token.price || token.priceUsd || token.price_usd || null,
       added_at:      Date.now(),
       expires_at:    Date.now() + WATCH_DURATION_MS,
       checks:        [],
-      status:        "watching", // watching | rugged | survived | expired
+      status:        "watching", // watching | rugged | survived | mooned
     };
 
     data.tokens.push(entry);
@@ -126,9 +143,21 @@ export async function checkAll() {
   const active = data.tokens.filter(t => t.status === "watching");
 
   for (const token of active) {
-    // Expire old tokens
+    // Expire old tokens: classify by what the price DID during the window.
+    // A skipped token that mooned is as much a lesson as one that rugged —
+    // without it, darwinian selection only ever sees the downside.
     if (now > token.expires_at) {
-      token.status = "survived"; // survived the window — probably not a rug
+      const peakGain = (token.entry_price > 0 && token.peak_price > 0)
+        ? ((token.peak_price - token.entry_price) / token.entry_price) * 100
+        : 0;
+      if (peakGain >= MISSED_WINNER_PCT) {
+        token.status = "mooned";
+        token.peak_gain_pct = parseFloat(peakGain.toFixed(1));
+        _emitWinnerMissed(token);
+        _feedDarwin(token.active_signals, peakGain);
+      } else {
+        token.status = "survived"; // flat/mild — neutral, no darwin signal
+      }
       expired++;
       continue;
     }
@@ -153,6 +182,9 @@ export async function checkAll() {
       const currentPrice = info.price || 0;
       const currentLiq   = info.liquidity || 0;
       const checkResult  = { ts: now, price: currentPrice, liq: currentLiq };
+
+      // Track the high-water mark for missed-winner classification at expiry.
+      if (currentPrice > (token.peak_price || 0)) token.peak_price = currentPrice;
 
       // Liquidity pull
       if (currentLiq < RUG_LIQ_THRESHOLD && (token.entry_liq || 0) > 1000) {
@@ -196,6 +228,7 @@ export async function checkAll() {
     watching: data.tokens.filter(t => t.status === "watching").length,
     rugged: data.tokens.filter(t => t.status === "rugged").length,
     survived: data.tokens.filter(t => t.status === "survived").length,
+    mooned: data.tokens.filter(t => t.status === "mooned").length,
     rugs_this_cycle: rugsFound,
     expired_this_cycle: expired,
   };
@@ -226,6 +259,39 @@ function _emitRug(token, reason) {
     rug_score:    token.rug_score,
     timestamp:    Date.now(),
   });
+  // Skipping this token was the RIGHT call — decay the components that
+  // voted for it so the same vote pattern scores lower next time.
+  _feedDarwin(token.active_signals, -100);
+}
+
+function _emitWinnerMissed(token) {
+  log("shadow_watchlist", `WINNER MISSED (no buy): ${token.symbol} peaked +${token.peak_gain_pct}% — source=${token.hunt_source}`);
+  agentBus.emit("shadow:winner_missed", {
+    mint:          token.mint,
+    symbol:        token.symbol,
+    name:          token.name,
+    hunt_source:   token.hunt_source,
+    social_source: token.social_source,
+    peak_gain_pct: token.peak_gain_pct,
+    signal_score:  token.signal_score,
+    rug_score:     token.rug_score,
+    timestamp:     Date.now(),
+  });
+}
+
+/**
+ * Feed a shadow outcome into the darwin signal weights. Positive pnl boosts
+ * the components that voted for the token, negative decays them. Best-effort:
+ * darwin failures must never break the watchlist cycle.
+ */
+function _feedDarwin(activeSignals, pnlPct) {
+  if (config?.darwin?.enabled === false) return;
+  if (!Array.isArray(activeSignals) || activeSignals.length === 0) return;
+  try {
+    updateDarwinWeights(activeSignals, pnlPct, config?.darwin || {});
+  } catch (e) {
+    log("shadow_watchlist_error", `darwin update failed: ${e.message}`);
+  }
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
@@ -250,12 +316,14 @@ export function getShadowStats() {
     watching: tokens.filter(t => t.status === "watching").length,
     rugged:   tokens.filter(t => t.status === "rugged").length,
     survived: tokens.filter(t => t.status === "survived").length,
+    mooned:   tokens.filter(t => t.status === "mooned").length,
     by_source: Object.fromEntries(
       [...new Set(tokens.map(t => t.hunt_source))].map(src => [
         src,
         {
           total:  tokens.filter(t => t.hunt_source === src).length,
           rugged: tokens.filter(t => t.hunt_source === src && t.status === "rugged").length,
+          mooned: tokens.filter(t => t.hunt_source === src && t.status === "mooned").length,
         },
       ])
     ),

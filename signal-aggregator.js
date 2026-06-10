@@ -33,6 +33,7 @@ export function aggregateSignal({
   marketCondition = "UNKNOWN",
   narrativeTags = [],
   socialBuzz = 0,
+  darwinWeights = null,
 } = {}) {
   // Default params only catch `undefined`; callers can pass `null` explicitly
   // (e.g. index.js leaves `technicals` null when klines/momentum are missing),
@@ -117,15 +118,42 @@ export function aggregateSignal({
   components.social_buzz = clamp(Number(socialBuzz) || 0, 0, 100);
 
   // ─── Weighted composite ────────────────────────────────────────
-  // Weights sum = 1.00. social_buzz takes 0.08 from kelly + technicals.
+  // Base weights sum = 1.00. social_buzz takes 0.08 from kelly + technicals.
+  const baseWeights = {
+    conviction:        0.28,
+    velocity:          0.20,
+    cross_batch:       0.12,
+    narrative_boost:   0.12,
+    kelly:             0.12,
+    technicals_regime: 0.08,
+    social_buzz:       0.08,
+  };
+
+  // Darwin re-weighting: each component's base weight is scaled by its
+  // learned fitness (darwin-weights.json, fed by trade closes + shadow
+  // outcomes), then the set is renormalized to sum 1 so signal_score keeps
+  // its 0..100 scale. No darwin data → base weights unchanged.
+  const effWeights = { ...baseWeights };
+  if (darwinWeights && typeof darwinWeights === "object") {
+    let sum = 0;
+    for (const k of Object.keys(effWeights)) {
+      const w = Number(darwinWeights[k]?.weight);
+      if (Number.isFinite(w) && w > 0) effWeights[k] *= w;
+      sum += effWeights[k];
+    }
+    if (sum > 0) {
+      for (const k of Object.keys(effWeights)) effWeights[k] /= sum;
+    }
+  }
+
   const signalScore = clamp(
-    components.conviction        * 0.28 +
-    components.velocity          * 0.20 +
-    components.cross_batch       * 0.12 +
-    components.narrative_boost   * 0.12 +
-    components.kelly             * 0.12 +
-    components.technicals_regime * 0.08 +
-    components.social_buzz       * 0.08,
+    components.conviction        * effWeights.conviction +
+    components.velocity          * effWeights.velocity +
+    components.cross_batch       * effWeights.cross_batch +
+    components.narrative_boost   * effWeights.narrative_boost +
+    components.kelly             * effWeights.kelly +
+    components.technicals_regime * effWeights.technicals_regime +
+    components.social_buzz       * effWeights.social_buzz,
     0,
     100
   );
@@ -141,14 +169,20 @@ export function aggregateSignal({
     signal_score: signalScore,
     summary,
     components,
-    weights: {
-      conviction:        0.28,
-      velocity:          0.20,
-      cross_batch:       0.12,
-      narrative_boost:   0.12,
-      kelly:             0.12,
-      technicals_regime: 0.08,
-      social_buzz:       0.08,
-    },
+    weights: effWeights,
   };
+}
+
+/**
+ * Which signal components "voted" for this token — the components whose score
+ * crossed the threshold when the buy/skip decision was made. This is the
+ * darwinian genome of the decision: trade closes and shadow outcomes feed
+ * these names into updateDarwinWeights so future aggregateSignal calls weigh
+ * proven components heavier and failed ones lighter.
+ */
+export function triggeredSignals(signal, { threshold = 60 } = {}) {
+  const comps = signal?.components || {};
+  return Object.entries(comps)
+    .filter(([, v]) => Number(v) >= threshold)
+    .map(([k]) => k);
 }

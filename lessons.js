@@ -751,12 +751,18 @@ export function updateDarwinWeights(signalsTriggered = [], tradePnl = 0, config 
   const isWin = tradePnl > 0;
 
   for (let signal of signalsTriggered) {
+    if (!signal || typeof signal !== "string") continue;
     if (!data.signals[signal]) {
-      if (signal && !_unknownDarwinSignalsSeen.has(signal)) {
+      // Darwinian auto-registration: an unseen signal name enters the gene
+      // pool at neutral weight and earns/loses fitness from outcomes.
+      // (Previously unknown names were dropped, which orphaned the registry —
+      // the seeded buy_vol/hot_level names matched nothing in the live
+      // pipeline, so the weighting loop never ran at all.)
+      data.signals[signal] = { weight: 1.0, success_count: 0, failure_count: 0 };
+      if (!_unknownDarwinSignalsSeen.has(signal)) {
         _unknownDarwinSignalsSeen.add(signal);
-        console.warn(`[darwin] unknown signal "${signal}" — not in registry; add it to darwin-weights.json or check for a typo`);
+        console.warn(`[darwin] new signal registered: "${signal}" at weight 1.0`);
       }
-      continue;
     }
 
     if (isWin) {

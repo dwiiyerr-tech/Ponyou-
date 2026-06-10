@@ -386,6 +386,23 @@ export function initLearningAgent() {
     });
   }));
 
+  // ── Shadow watchlist missed winners → the upside half of free learning ──
+  // A skipped token that mooned means the source surfaced a real winner; credit
+  // it so source ranking reflects find-quality, not just rug-avoidance. The
+  // signal-weight (darwin) feedback happens inside shadow-watchlist itself.
+  _unsubscribers.push(agentBus.subscribe("shadow:winner_missed", (payload) => {
+    const symbol = payload?.symbol || "";
+    const source = payload?.hunt_source || "unknown";
+    log("learning", `SHADOW WINNER MISSED: ${symbol} peaked +${payload?.peak_gain_pct}% source=${source}`);
+    bumpSource(source, "win");
+    if (payload?.social_source) bumpSource(`social:${payload.social_source}`, "win");
+    updateAgentHealth(AGENT_NAME, {
+      last_missed_winner: new Date().toISOString(),
+      last_missed_symbol: symbol,
+      last_missed_peak_pct: payload?.peak_gain_pct ?? null,
+    });
+  }));
+
   // Start shadow watchlist price monitor
   startShadowWatchlist();
   _unsubscribers.push(() => stopShadowWatchlist());

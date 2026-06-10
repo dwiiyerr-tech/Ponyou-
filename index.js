@@ -50,7 +50,7 @@ import {
 } from "./narrative-contagion.js";
 import { analyzeHolderStructure } from "./holder-memory.js";
 import { summarizeSmartWalletHistory } from "./smart-wallet-history.js";
-import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinAnalytics } from "./lessons.js";
+import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinWeights, getDarwinAnalytics } from "./lessons.js";
 import { executeTool, executeTrade, registerCronRestarter, registerPonyouControls, selectFilledExecutions } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape, handleCallMessage, registerBotCommands } from "./telegram.js";
 import { startUserClient, stopUserClient, isUserClientEnabled, getUserClientStatus } from "./telegram-user-client.js";
@@ -170,7 +170,7 @@ import { initStagedEntry, checkStagedEntryTrigger, advanceStagedEntry, getStage1
 import { getRugCheckReport, rugCheckToSignals } from "./tools/rugcheck.js";
 import { blacklistDev, checkDevBlacklist, getDevBlacklist } from "./tools/dev-blacklist.js";
 import { recordNarrativeOutcome, detectNarrativeVelocity, trackCrossBatchVelocity, getCrossBatchVelocity } from "./tools/narratives.js";
-import { aggregateSignal } from "./signal-aggregator.js";
+import { aggregateSignal, triggeredSignals } from "./signal-aggregator.js";
 import { computePortfolioDecision, rebalancePortfolioBook, recordSkillAttribution } from "./agents/portfolio-manager.js";
 import { registerDefaultFeatures, runAllFeatures, listFeatures, getHealthSummary, enableFeature, disableFeature, autoResetBreakers } from "./feature-registry.js";
 import { analyzeCabalPlay, CabalAgentAction } from "./tools/cabal-play-analyzer.js";
@@ -3517,16 +3517,20 @@ TUGAS:
           if (name === "swap_token") {
             recordSwapOutcome({ success: !!(result?.success || result?.dry_run) });
             const isBuy = (result.token_in || result.would_swap?.token_in) === "SOL";
-            agentBus.emit(isBuy ? "management:llm_buy" : "management:llm_sell", {
-              token: result.token_out || result.would_swap?.token_out,
-              symbol: result.symbol,
-              amount: result.amount,
-              dry_run: result.dry_run,
-              success: !!(result?.success || result?.dry_run),
-              timestamp: Date.now(),
-              _hunt_source: "management-llm",
-              _social_source: null,
-            });
+            // BUY events are emitted by trackPosition (single source of truth
+            // for all entry paths) — emitting here too double-counted LLM buys.
+            if (!isBuy) {
+              agentBus.emit("management:llm_sell", {
+                token: result.token_out || result.would_swap?.token_out,
+                symbol: result.symbol,
+                amount: result.amount,
+                dry_run: result.dry_run,
+                success: !!(result?.success || result?.dry_run),
+                timestamp: Date.now(),
+                _hunt_source: "management-llm",
+                _social_source: null,
+              });
+            }
           }
           if (name === "swap_token" && (result.success || result.dry_run)) {
             const tokenOut = result.token_out || result.would_swap?.token_out;
@@ -3612,6 +3616,7 @@ TUGAS:
                   entry_price: mgmtEntryPrice,
                   entry_reason: "management_llm_decision",
                   market_condition: getMarketIntelligence()?.condition || "UNKNOWN",
+                  _hunt_source: "management-llm",
                 },
               }).catch(e => log("management_warn", `trackPosition failed for LLM buy ${tokenOut?.slice(0, 8)}: ${e.message}`));
 
@@ -4471,6 +4476,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
         socialBuzz: config.useSocialHunter !== false
           ? getSocialScore(token.symbol || enhancedToken?.symbol || "", token.mint || null)
           : 0,
+        // Darwin: learned component fitness re-weights the composite. The
+        // weights file is tiny and read per candidate — cheap vs the network
+        // enrichment that dominates this loop.
+        darwinWeights: config.darwin?.enabled !== false ? getDarwinWeights() : null,
       });
 
       // ─── CoinGecko Enrichment (social + community + CEX data) ──
@@ -4932,6 +4941,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
         conviction,
         cabal,
         signal,
+        // Darwinian genome: components that voted for this candidate. Flows to
+        // trackPosition (own-trade feedback on close) and shadowWatch (market
+        // feedback on rug/moon without buying).
+        active_signals: triggeredSignals(signal),
         feature_aggregate: featureResult.aggregate,
         feature_scores: featureResult.scores,
         regime,
@@ -5162,6 +5175,9 @@ export async function runScreeningCycle({ silent = false } = {}) {
               initial_value_usd: entryUsd,
               chain: best.chain || "sol",
               strategy_used: best.selected_strategy || getActiveStrategyId(),
+              // Darwin: the components that voted for this entry — fed back
+              // into signal weights when the trade closes (updateDarwinWeights).
+              active_signals: best.active_signals || triggeredSignals(best.signal),
               signal_snapshot: {
                 mint: best.mint,
                 symbol: best.symbol,
@@ -5361,6 +5377,8 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                     entry_fee_breakdown: entryFeeBreakdown,
                     entry_dex: token.dex || token.launchpad || "unknown",
                     portfolio_skill_votes: token.portfolio_skill_votes || [],
+                    _hunt_source: token._hunt_source || null,
+                    _social_source: token._social_source || null,
                     execution_context: {
                       wallet_address: exec.wallet_address || null,
                       provider: result?.execution_provider || "auto",
@@ -5368,6 +5386,7 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                     },
                   },
                   strategy_used: token.selected_strategy || getActiveStrategyId(),
+                  active_signals: token.active_signals || triggeredSignals(token.signal),
                   wallet_address: exec.wallet_address || null,
                   paper_trade: process.env.DRY_RUN === 'true' || process.env.PAPER_TRADING === 'true',
                 });
