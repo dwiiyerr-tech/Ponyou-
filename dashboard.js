@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import "dotenv/config";
+import "./config.js";
 import { createDashboardServer } from "./dashboard/server.js";
 
 const portArg = process.argv.indexOf("--port");

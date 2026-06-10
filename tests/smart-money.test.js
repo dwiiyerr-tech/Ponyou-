@@ -98,3 +98,21 @@ describe("analyzeSmartWalletPerformance", () => {
     expect(stats.buy_pressure).toBe(0.5);
   });
 });
+
+describe("GMGN fallback policy", () => {
+  it("uses Helius only when every GMGN wallet request failed", () => {
+    expect(_internalSmartMoney.shouldFallbackToHelius({
+      gmgnEnabled: true,
+      attempts: 3,
+      successes: 0,
+    })).toBe(true);
+  });
+
+  it("does not use Helius when GMGN returned a valid empty result", () => {
+    expect(_internalSmartMoney.shouldFallbackToHelius({
+      gmgnEnabled: true,
+      attempts: 3,
+      successes: 1,
+    })).toBe(false);
+  });
+});

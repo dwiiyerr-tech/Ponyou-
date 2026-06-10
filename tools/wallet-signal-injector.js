@@ -15,6 +15,7 @@ import { listBlacklist, addToBlacklist } from "../token-blacklist.js";
 import { agentBus } from "../agents/agent-bus.js";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { passesSmartMoneyFilter } from "../smart-money-filter.js";
 
 // ─── In-memory signal cache (like hunter prey cache) ────
 
@@ -42,9 +43,19 @@ let _injectorStats = {
  */
 export function detectSmartMoneySignals({ minWinRate = 0.60 } = {}) {
   const wallets = listSmartWallets();
+  const smfEnabled = config.smartMoneyFilter?.enabled;
   const priorityWallets = wallets.filter(w => {
     const wr = w.stats?.winrate ?? w.selection?.win_rate ?? 0;
-    return wr >= minWinRate;
+    if (wr < minWinRate) return false;
+    // Quality filter: reject wallets that don't meet copy-trade criteria.
+    if (smfEnabled) {
+      const result = passesSmartMoneyFilter(w.stats || {}, config.smartMoneyFilter);
+      if (!result.passes) {
+        log("signal_injector", `${w.address?.slice(0, 8)} skipped (quality filter): ${result.failures.join(", ")}`);
+        return false;
+      }
+    }
+    return true;
   });
 
   // For now, signals come from the copy-trade signal log

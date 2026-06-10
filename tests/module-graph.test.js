@@ -92,7 +92,14 @@ async function buildModuleGraph() {
 
   for (const file of files) {
     const source = fs.readFileSync(file, "utf8");
-    const [imports, exports] = parse(source);
+    let parsed;
+    try {
+      parsed = parse(source);
+    } catch {
+      // Skip CJS or otherwise non-ESM files (e.g. stale *.cjs scripts)
+      continue;
+    }
+    const [imports, exports] = parsed;
     const moduleInfo = {
       file: path.resolve(file),
       dependencies: [],

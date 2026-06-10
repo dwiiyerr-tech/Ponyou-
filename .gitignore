@@ -52,6 +52,8 @@ rug-patterns-learned.json
 metrics.json
 kill-switch.flag
 kill-switch-state.json
+capital-guard-state.json
+streak-sizer-state.json
 pending-intents.json
 active-strategy.json
 trading-plan-state.json

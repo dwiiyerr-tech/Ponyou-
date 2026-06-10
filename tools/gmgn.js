@@ -25,7 +25,7 @@
 
 import crypto from "crypto";
 import { log } from "../logger.js";
-import { recordCounter } from "../metrics.js";
+import { recordCounter, setGauge } from "../metrics.js";
 
 const BASE = "https://openapi.gmgn.ai";
 const DEFAULT_CHAIN = "sol";
@@ -120,6 +120,7 @@ async function gmgnFetch(method, path, query = {}, body = null, retries = 2, cha
         // circuit and bail so every other in-flight path also stands down.
         recordCounter("gmgn_rate_limit");
         _circuitUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
+        setGauge("gmgn_circuit_until", _circuitUntil);
         log("gmgn_warn", `429 rate-limited — circuit open ${CIRCUIT_COOLDOWN_MS / 1000}s`);
         return null;
       }
@@ -127,6 +128,7 @@ async function gmgnFetch(method, path, query = {}, body = null, retries = 2, cha
         // Auth failure — retrying won't help. Open circuit briefly (10 min)
         // so callers don't keep hammering with a bad key.
         _circuitUntil = Date.now() + 10 * 60_000;
+        setGauge("gmgn_circuit_until", _circuitUntil);
         log("gmgn_warn", `401 auth failure on ${path} — circuit open 10min`);
         return null;
       }
@@ -136,6 +138,8 @@ async function gmgnFetch(method, path, query = {}, body = null, retries = 2, cha
       }
       const json = await res.json();
       recordCounter("gmgn_ok");
+      setGauge("gmgn_last_ok_at", Date.now());
+      setGauge("gmgn_circuit_until", _circuitUntil);
       return json?.data ?? json;
     } catch (e) {
       lastErr = e;
@@ -439,6 +443,50 @@ function asFeed(raw) {
   if (Array.isArray(raw?.list)) return raw.list;
   if (Array.isArray(raw?.data)) return raw.data;
   return null;
+}
+
+/**
+ * Normalize the live GMGN wallet activity shape into the stable trade fields
+ * consumed by smart-money ranking, inflow tracking, and wallet insight import.
+ * Returns [] for a valid empty feed and null when GMGN was unavailable or the
+ * response shape is not recognized.
+ */
+export function normalizeWalletActivity(raw) {
+  const rows = Array.isArray(raw) ? raw
+    : Array.isArray(raw?.activities) ? raw.activities
+    : Array.isArray(raw?.trades) ? raw.trades
+    : Array.isArray(raw?.swaps) ? raw.swaps
+    : Array.isArray(raw?.list) ? raw.list
+    : Array.isArray(raw?.data) ? raw.data
+    : null;
+  if (rows == null) return null;
+
+  return rows.map((row) => {
+    if (!row || typeof row !== "object") return null;
+    const side = String(row.event_type ?? row.type ?? row.side ?? "").toLowerCase();
+    if (side !== "buy" && side !== "sell") return null;
+    const mint = row.token?.address || row.token_address || row.token_mint || row.mint || "";
+    if (!mint) return null;
+    const rawTimestamp = Number(row.timestamp ?? row.time ?? 0);
+    const timestamp = rawTimestamp > 1_000_000_000_000
+      ? Math.floor(rawTimestamp / 1000)
+      : rawTimestamp;
+    const quoteAmount = Number(row.sol_amount ?? row.quote_amount ?? row.value ?? 0);
+
+    return {
+      ...row,
+      type: side,
+      side,
+      token_address: mint,
+      token_mint: mint,
+      symbol: row.token?.symbol || row.symbol || "?",
+      token_amount: Number(row.token_amount ?? row.amount ?? 0),
+      sol_amount: quoteAmount,
+      value: quoteAmount,
+      timestamp,
+      price_usd: Number(row.price_usd ?? row.price ?? 0),
+    };
+  }).filter(Boolean);
 }
 
 /**

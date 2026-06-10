@@ -96,6 +96,7 @@ Ponyou agent command surface
 
 Usage:
   ponyou             Open chat mode (default)
+  ponyou web         Start web dashboard and setup tutorial
   ponyou chat        Open chat mode (explicit)
   ponyou monitor     Open live dashboard
   ponyou wizard      Open setup wizard
@@ -140,6 +141,12 @@ NODE
 case "${cmd}" in
   wizard|chat|monitor|dashboard|logs|"")
     exec node "${ROOT_DIR}/terminal-app/src/index.js" "$@"
+    ;;
+  web)
+    echo "Memulai Web Dashboard..."
+    echo "Silakan buka browser Anda di: http://localhost:3000"
+    echo "Jika Anda belum melakukan setup, buka: http://localhost:3000/wizard.html"
+    exec node "${ROOT_DIR}/dashboard.js" --port 3000
     ;;
   agent|start|live)
     exec npm start

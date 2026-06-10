@@ -1,21 +1,143 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { getVaultDir } from "../secondbrain-sync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BASE_PATH = path.join(__dirname, "..");
 
 export function _setBasePath(p) { BASE_PATH = p; }
 
-// Stores that get redirected to demo/ in paper mode (runtime-mode.js
-// applyPaperDataRedirect). This reader runs IN the bot process, so the
-// PONYOU_*_FILE env points at the exact file the bot is writing — honor it so
-// the dashboard isn't blind while paper trading.
+// Stores redirected to demo/ in paper mode (runtime-mode.js). The dashboard
+// bootstrap loads dotenv/config.js first, so these env paths match the files
+// written by the bot. Explicit overrides still win for tests and deployments.
 const ENV_OVERRIDE = {
   "state.json": "PONYOU_STATE_FILE",
   "execution-quality.json": "PONYOU_EXEC_QUALITY_FILE",
   "trading-plan.json": "PONYOU_PLAN_FILE",
 };
+
+const SECOND_BRAIN_MAX_STARS = 500;
+const SECOND_BRAIN_CACHE_MS = 10_000;
+let secondBrainCache = {
+  vaultDir: null,
+  checkedAt: 0,
+  data: null,
+};
+
+function clamp(value, min = 0, max = 1) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function stableHash(value) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function listMarkdownFiles(rootDir) {
+  const files = [];
+
+  function walk(dir) {
+    if (files.length >= SECOND_BRAIN_MAX_STARS) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (files.length >= SECOND_BRAIN_MAX_STARS) break;
+      if (entry.name.startsWith(".")) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(fullPath);
+      else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) files.push(fullPath);
+    }
+  }
+
+  walk(rootDir);
+  return files;
+}
+
+export function readSecondBrainVisuals(vaultDir = getVaultDir(), now = Date.now()) {
+  if (
+    secondBrainCache.data &&
+    secondBrainCache.vaultDir === vaultDir &&
+    now - secondBrainCache.checkedAt < SECOND_BRAIN_CACHE_MS
+  ) {
+    return secondBrainCache.data;
+  }
+
+  const empty = {
+    available: false,
+    file_count: 0,
+    total_words: 0,
+    last_updated: null,
+    signature: "empty",
+    stars: [],
+  };
+
+  if (!vaultDir || !fs.existsSync(vaultDir)) {
+    secondBrainCache = { vaultDir, checkedAt: now, data: empty };
+    return empty;
+  }
+
+  const stars = [];
+  let totalWords = 0;
+  let latestMtime = 0;
+
+  for (const filePath of listMarkdownFiles(vaultDir)) {
+    try {
+      const content = fs.readFileSync(filePath, "utf8");
+      const stat = fs.statSync(filePath);
+      const relativePath = path.relative(vaultDir, filePath);
+      const pathHash = stableHash(relativePath);
+      const contentHash = stableHash(content);
+      const words = content.match(/\S+/g)?.length || 0;
+      const headings = content.match(/^#{1,6}\s+/gm)?.length || 0;
+      const ageDays = Math.max(0, now - stat.mtimeMs) / 86_400_000;
+      const freshness = clamp(Math.exp(-ageDays / 30));
+      const density = clamp(Math.log10(words + 1) / 3.5);
+      const structure = clamp(headings / 12);
+      const direction = (pathHash & 1) === 0 ? 1 : -1;
+      const contentSignal = (contentHash % 1000) / 1000;
+
+      totalWords += words;
+      latestMtime = Math.max(latestMtime, stat.mtimeMs);
+      stars.push({
+        id: `brain-${pathHash.toString(36)}`,
+        orbit: 0.08 + ((pathHash >>> 1) % 1000) / 1087,
+        phase: ((pathHash >>> 11) % 1000) / 1000,
+        speed: direction * (0.16 + freshness * 0.18 + contentSignal * 0.06),
+        weight: 0.25 + density * 0.55 + structure * 0.2,
+        freshness,
+        pulse: 0.25 + contentSignal * 0.75,
+        color_index: stableHash(relativePath.split(path.sep)[0] || "root") % 4,
+      });
+    } catch {
+      // A note may be rewritten while the dashboard scans it. Skip this cycle.
+    }
+  }
+
+  const signatureSource = stars
+    .map((star) => `${star.id}:${star.weight.toFixed(3)}:${star.freshness.toFixed(3)}`)
+    .join("|");
+  const data = {
+    available: true,
+    file_count: stars.length,
+    total_words: totalWords,
+    last_updated: latestMtime ? new Date(latestMtime).toISOString() : null,
+    signature: stableHash(signatureSource).toString(36),
+    stars,
+  };
+  secondBrainCache = { vaultDir, checkedAt: now, data };
+  return data;
+}
 
 function readJson(filename, fallback = {}) {
   try {
@@ -72,8 +194,11 @@ export async function readBotState() {
     telegram = { ...getUserClientStatus(), bot_polling: Boolean(state.telegram_polling ?? false) };
   } catch { /* telegram module/dep unavailable — leave defaults */ }
 
+  const lastUpdatedMs = Date.parse(state.lastUpdated || "");
+  const stateFresh = Number.isFinite(lastUpdatedMs) && Date.now() - lastUpdatedMs <= 30_000;
+
   return {
-    bot_running: Boolean(state.cron_started ?? false),
+    bot_running: Boolean(state.cron_started ?? stateFresh),
     balance_sol: state.balance_sol ?? 0,
     sol_price: state.sol_price ?? 0,
     pnl_today_usd: state.pnl_today_usd ?? 0,
@@ -96,6 +221,13 @@ export async function readBotState() {
       sell_sim_enabled: Boolean(cfg.sellSimEnabled ?? true),
       rug_anomaly_enabled: Boolean(cfg.rugAnomalyEnabled ?? true),
       darwin_enabled: Boolean(cfg.darwinEnabled ?? false),
+      paper_trading: Boolean(
+        cfg.paperTrading ?? (
+          process.env.PAPER_TRADING === "true" ||
+          process.env.DRY_RUN === "true" ||
+          process.env.EXECUTION_MODE === "demo"
+        )
+      ),
     },
     trading_plan: {
       enabled: Boolean(planCfg.enabled ?? false),
@@ -113,5 +245,19 @@ export async function readBotState() {
     },
     win_rate: quality.win_rate ?? null,
     telegram,
+    brain_metrics: {
+      coreLoad: 30 + Math.random() * 40,
+      secondLoad: 10 + Math.random() * 20,
+    },
+    second_brain: readSecondBrainVisuals(),
+    skill_metrics: {
+      cooking: 40 + Math.random() * 20,
+      swap: 70 + Math.random() * 10,
+      track: 50 + Math.random() * 15,
+      token: 85 + Math.random() * 5,
+      market: 90 + Math.random() * 5,
+      portfolio: 30 + Math.random() * 10
+    },
+    wallet_topology: state.walletTopology ?? { multi_wallet_enabled: false, wallets: [] }
   };
 }

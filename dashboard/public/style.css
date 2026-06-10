@@ -1,16 +1,16 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #0d1117;
-  --surface: #161b22;
-  --border: #30363d;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --green: #3fb950;
-  --red: #f85149;
-  --yellow: #d29922;
-  --blue: #58a6ff;
-  --accent: #1f6feb;
+  --bg: #fdfbf7;
+  --surface: #ffffff;
+  --border: #e5e3db;
+  --text: #1c1917;
+  --muted: #64748b;
+  --green: #059669;
+  --red: #e11d48;
+  --yellow: #d97706;
+  --blue: #2563eb;
+  --accent: #0284c7;
 }
 
 body { background: var(--bg); color: var(--text); font: 14px/1.5 "Consolas", "Monaco", monospace; }

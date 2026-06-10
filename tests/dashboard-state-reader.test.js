@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readBotState, _setBasePath } from "../dashboard/state-reader.js";
 
 let tmpDir;
-const ENV_KEYS = ["PONYOU_STATE_FILE", "PONYOU_EXEC_QUALITY_FILE", "PONYOU_PLAN_FILE"];
+const ENV_KEYS = [
+  "PONYOU_STATE_FILE",
+  "PONYOU_EXEC_QUALITY_FILE",
+  "PONYOU_PLAN_FILE",
+  "PONYOU_VAULT_DIR",
+];
 let savedEnv;
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ponyou-dash-state-"));
@@ -14,6 +19,7 @@ beforeEach(() => {
   // those vars here to let _setBasePath drive reads to this test's tmpDir.
   savedEnv = {};
   for (const k of ENV_KEYS) { savedEnv[k] = process.env[k]; delete process.env[k]; }
+  process.env.PONYOU_VAULT_DIR = path.join(tmpDir, "ponyou-brain");
 });
 afterEach(() => {
   for (const k of ENV_KEYS) {
@@ -30,6 +36,15 @@ describe("readBotState", () => {
     expect(s.balance_sol).toBe(0);
     expect(s.positions).toEqual([]);
     expect(s.features).toBeDefined();
+  });
+
+  it("uses a fresh state timestamp as the bot heartbeat", async () => {
+    const statePath = path.join(tmpDir, "state.json");
+    fs.writeFileSync(statePath, JSON.stringify({ lastUpdated: new Date().toISOString() }));
+    expect((await readBotState()).bot_running).toBe(true);
+
+    fs.writeFileSync(statePath, JSON.stringify({ lastUpdated: new Date(Date.now() - 60_000).toISOString() }));
+    expect((await readBotState()).bot_running).toBe(false);
   });
 
   it("reads open positions from state.json", async () => {
@@ -80,5 +95,36 @@ describe("readBotState", () => {
     expect(s.features.vault_enabled).toBe(true);
     expect(s.features.trading_plan_enabled).toBe(true);
     expect(s.features.daily_guard_enabled).toBe(true);
+  });
+
+  it("maps Second Brain markdown files to anonymous visual stars", async () => {
+    const vaultDir = process.env.PONYOU_VAULT_DIR;
+    fs.mkdirSync(path.join(vaultDir, "01-Strategies"), { recursive: true });
+    fs.mkdirSync(path.join(vaultDir, "03-Performance"), { recursive: true });
+    fs.writeFileSync(
+      path.join(vaultDir, "01-Strategies", "scalping.md"),
+      "# Scalping\n\nFast entries with strict risk controls.\n"
+    );
+    fs.writeFileSync(
+      path.join(vaultDir, "03-Performance", "daily.md"),
+      "# Daily\n\nWin rate improved after the latest review.\n"
+    );
+
+    const s = await readBotState();
+
+    expect(s.second_brain.file_count).toBe(2);
+    expect(s.second_brain.total_words).toBeGreaterThan(0);
+    expect(s.second_brain.stars).toHaveLength(2);
+    expect(s.second_brain.stars[0]).toEqual(expect.objectContaining({
+      id: expect.any(String),
+      orbit: expect.any(Number),
+      phase: expect.any(Number),
+      speed: expect.any(Number),
+      weight: expect.any(Number),
+      freshness: expect.any(Number),
+      color_index: expect.any(Number),
+    }));
+    expect(JSON.stringify(s.second_brain)).not.toContain("scalping.md");
+    expect(JSON.stringify(s.second_brain)).not.toContain("Fast entries");
   });
 });

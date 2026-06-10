@@ -40,6 +40,7 @@ const _gauges = new Map();
 // Session metadata
 const _startedAt = Date.now();
 let _lastPersistAt = 0;
+let _persistScheduled = false;
 
 // ─── Recording ────────────────────────────────────────────────────
 
@@ -158,9 +159,13 @@ export function getStats() {
  */
 function maybePersist() {
   const now = Date.now();
-  if (now - _lastPersistAt < PERSIST_INTERVAL_MS) return;
+  if (_persistScheduled || now - _lastPersistAt < PERSIST_INTERVAL_MS) return;
   _lastPersistAt = now;
-  flushMetrics().catch((e) => { if (process.env.NODE_ENV !== "production") console.warn("[metrics] persist failed:", e.message); });
+  _persistScheduled = true;
+  queueMicrotask(() => {
+    _persistScheduled = false;
+    flushMetrics().catch((e) => { if (process.env.NODE_ENV !== "production") console.warn("[metrics] persist failed:", e.message); });
+  });
 }
 
 export async function flushMetrics() {
@@ -168,6 +173,21 @@ export async function flushMetrics() {
   await atomicWriteJsonAsync(METRICS_FILE, snapshot);
   _lastPersistAt = Date.now();
   return snapshot;
+}
+
+/**
+ * Read the latest persisted snapshot written by the bot process. Dashboard and
+ * other sidecar processes have separate in-memory counters, so operational
+ * health must use this file when available.
+ */
+export function readPersistedStats() {
+  try {
+    if (!fs.existsSync(METRICS_FILE)) return null;
+    const parsed = JSON.parse(fs.readFileSync(METRICS_FILE, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 // ─── Test helpers (exported for unit tests, not for runtime use) ──
@@ -179,6 +199,7 @@ export function _resetForTests() {
   // Set lastPersistAt to "now" so subsequent record* calls in tests won't
   // trigger a real disk write (throttle window keeps them in memory).
   _lastPersistAt = Date.now();
+  _persistScheduled = false;
   if (fs.existsSync(METRICS_FILE)) {
     try { fs.unlinkSync(METRICS_FILE); } catch { /* best-effort */ }
   }

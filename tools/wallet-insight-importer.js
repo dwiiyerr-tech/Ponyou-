@@ -83,7 +83,7 @@ function parseBengbeng(raw, source = "bengbeng.fun") {
  * Fetch wallet data from GMGN API and normalise into the same shape.
  */
 async function fetchFromGmgn(walletAddress) {
-  const { getWalletActivity, getWalletStats } = await import("./gmgn.js");
+  const { getWalletActivity, getWalletStats, normalizeWalletActivity } = await import("./gmgn.js");
 
   const [activity, stats] = await Promise.all([
     getWalletActivity(walletAddress, 50).catch(() => null),
@@ -91,7 +91,7 @@ async function fetchFromGmgn(walletAddress) {
   ]);
 
   const statRow = Array.isArray(stats) ? stats[0] : stats;
-  const trades  = Array.isArray(activity) ? activity : [];
+  const trades  = normalizeWalletActivity(activity) || [];
 
   const winRate      = statRow?.winRate ?? null;
   const totalTrades  = statRow?.tradeCount ?? trades.length;

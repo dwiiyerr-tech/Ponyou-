@@ -172,6 +172,56 @@ export async function getEpisodicBlock(candidates = [], opts = {}) {
   } catch { return null; }
 }
 
+/**
+ * Aggregate all episodic patterns into a strategy-design prompt block.
+ * Unlike getEpisodicBlock (per-candidate recall), this scans the FULL store
+ * and surfaces which coarse token shapes historically WIN vs LOSE —
+ * giving the strategy evolution LLM concrete evidence to write better rules.
+ *
+ * Returns null when the store is empty or all patterns are below minSamples.
+ */
+export function getEpisodicSummaryBlock({ minSamples = 3, topN = 3 } = {}) {
+  try {
+    const data = _load();
+    const entries = Object.entries(data.episodes || {});
+    if (entries.length === 0) return null;
+
+    const scored = entries
+      .filter(([, e]) => e.n >= minSamples)
+      .map(([key, e]) => ({
+        key,
+        n:       e.n,
+        wr:      e.n > 0 ? e.wins / e.n : 0,
+        avgPnl:  e.n > 0 ? e.pnl_sum / e.n : 0,
+        rugRate: e.n > 0 ? e.rugs / e.n : 0,
+      }));
+
+    if (scored.length === 0) return null;
+
+    const favorable = scored
+      .filter(p => p.wr >= 0.55 && p.rugRate < 0.15)
+      .sort((a, b) => b.wr - a.wr)
+      .slice(0, topN);
+
+    const hostile = scored
+      .filter(p => p.rugRate >= 0.25 || p.wr < 0.30)
+      .sort((a, b) => (b.rugRate - a.rugRate) || (a.wr - b.wr))
+      .slice(0, topN);
+
+    if (favorable.length === 0 && hostile.length === 0) return null;
+
+    const fmt = p =>
+      `${p.key} → n=${p.n} wr=${(p.wr*100).toFixed(0)}% avg=${p.avgPnl.toFixed(0)}% rugs=${(p.rugRate*100).toFixed(0)}%`;
+
+    const lines = [`[EPISODIC PATTERNS — ${scored.length} fingerprints from trade history]`];
+    for (const p of favorable) lines.push(`  FAVORABLE: ${fmt(p)}`);
+    for (const p of hostile)   lines.push(`  HOSTILE:   ${fmt(p)}`);
+    lines.push("  (Target FAVORABLE patterns, exclude HOSTILE ones in your strategy rules)");
+
+    return lines.join("\n");
+  } catch { return null; }
+}
+
 export function _resetEpisodicMemoryForTests() {
   try { if (fs.existsSync(EPISODIC_FILE)) fs.unlinkSync(EPISODIC_FILE); } catch { /* ignore */ }
 }

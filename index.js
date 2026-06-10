@@ -90,6 +90,14 @@ import {
   readKillState, isKilled, setSessionBaseline, reportBalance,
   recordSwapOutcome, trip as tripKillSwitch, reset as resetKillSwitch,
 } from "./kill-switch.js";
+import {
+  initCapitalGuard, reportCapital, checkCapitalGuard,
+  resetCapitalGuardLayer, getCapitalGuardStatus,
+} from "./capital-guard.js";
+import {
+  recordStreakOutcome, getStreakMultiplier, getStreakStatus, resetStreak,
+} from "./streak-sizer.js";
+import { checkRiskReward } from "./rr-guard.js";
 import { runFastTrackBatch } from "./fast-buy.js";
 import { startGeyserStream } from "./geyser.js";
 import { attachExitMonitor, checkPriceDrop } from "./geyser-exit-monitor.js";
@@ -178,7 +186,7 @@ import {
   recordVaultTransfer, getVaultStatus, buildVaultNotification, computeProfitSweepAmount,
 } from "./vault.js";
 import { isTokenOnCooldown, setTokenCooldown } from "./trade-cooldowns.js";
-import { recordEpisode, getEpisodicBlock }   from "./episodic-memory.js";
+import { recordEpisode, getEpisodicBlock, getEpisodicSummaryBlock } from "./episodic-memory.js";
 import { adaptDeployAmount, getAdaptiveRiskPromptLine } from "./adaptive-risk.js";
 import { attributeOutcome, getLearnedRulesBlock }       from "./prompt-evolution.js";
 import {
@@ -219,6 +227,7 @@ import { withProgressiveSlippage, getExitSlippage } from "./exit-slippage.js";
 import { isPartialTPLanded, markPartialTPLanded, clearPartialTPGuard } from "./partial-tp-guard.js";
 
 log("startup", "Ponyou AI Agent starting...");
+await flushMetrics().catch((e) => log("metrics_warn", "startup metrics flush failed: " + e.message));
 const executionMode = resolveExecutionMode();
 log("startup", `Mode: ${executionMode.label}${executionMode.isDemo ? " — paper trading (mainnet data, simulated execution, no real SOL)" : " — live mainnet (real SOL)"}`);
 import("./paper-wallet.js").then(({ isPaperMode, getPaperStartSol }) => {
@@ -518,6 +527,12 @@ if (config.strategy?.evolution?.enabled) {
         .map(s => `${s.id} (WR:${((s.scores?.live ?? s.scores?.winRate ?? 0)*100).toFixed(0)}%)`)
         .join(", ");
 
+      // Second Brain: pull learned rules, vault lessons, and episodic patterns
+      // so the strategy LLM designs from actual live experience, not just market intel.
+      const _sbLearnedRules   = config.promptEvolution?.enabled   ? getLearnedRulesBlock()        : null;
+      const _sbVaultCtx       = config.vault?.intelligenceEnabled  ? getVaultIntelligenceContext() : getVaultContext();
+      const _sbEpisodicPatts  = config.episodicMemory?.enabled     ? getEpisodicSummaryBlock()     : null;
+
       const prompt = [
         "You are a trading strategy designer for a Solana memecoin bot.",
         "Create ONE new strategy rule set as a JSON object. Be creative but safe.",
@@ -529,6 +544,9 @@ if (config.strategy?.evolution?.enabled) {
         "",
         "Evidence from fundamental signals:",
         `  ${JSON.stringify(context?.evidence?.scores || {})}`,
+        ...(_sbEpisodicPatts  ? ["", _sbEpisodicPatts]  : []),
+        ...(_sbLearnedRules   ? ["", _sbLearnedRules]   : []),
+        ...(_sbVaultCtx       ? ["", _sbVaultCtx]       : []),
         "",
         "Output ONLY a JSON object with these fields:",
         '  {',
@@ -1550,6 +1568,26 @@ async function handleStrategyTelegramCommand(text) {
     return true;
   }
 
+  if (cmd === "/web") {
+    const sub = (parts[1] || "").toLowerCase();
+    if (sub === "on") {
+      import("child_process").then(({ exec }) => {
+        exec("pm2 start ponyou-dashboard");
+      });
+      await sendHTML("🌐 <b>Website Dashboard diaktifkan.</b>\nAkses di <code>http://[IP-VPS]:3000</code>");
+      return true;
+    }
+    if (sub === "off") {
+      import("child_process").then(({ exec }) => {
+        exec("pm2 stop ponyou-dashboard");
+      });
+      await sendHTML("🛑 <b>Website Dashboard dimatikan.</b>\nResource VPS kembali dihemat.");
+      return true;
+    }
+    await sendHTML("Gunakan <code>/web on</code> untuk menyalakan dashboard, dan <code>/web off</code> untuk mematikan.");
+    return true;
+  }
+
   if (cmd === "/wallets") {
     // Subcommand: /wallets on|off → toggle multi-wallet mode (persists to
     // user-config.json; takes effect after restart since config is pinned at start).
@@ -1783,7 +1821,20 @@ async function checkAllGates(source = "") {
     };
   }
 
-  // 1. Rug wave circuit breaker
+  // 1. Capital guard — 4-layer timed hard stops (daily PnL %, peak drawdown).
+  //    Only checked for entry-generating cycles; management exits are always allowed
+  //    so open risk can still be reduced when the guard is active.
+  if (["screening", "geyser", "pending-intent", "fast-track", "hunters"].includes(source)) {
+    if (config.capitalGuard?.enabled) {
+      const cgState = checkCapitalGuard();
+      if (cgState.blocked) {
+        log("capital_guard", `Gate [${source}]: L${cgState.level} blocked — ${cgState.reason}`);
+        return { blocked: true, reason: `CAPITAL_GUARD_L${cgState.level}: ${cgState.reason}` };
+      }
+    }
+  }
+
+  // 2. Rug wave circuit breaker
   const cbStatus = _rugCircuitBreaker.getStatus();
   if (cbStatus.locked) {
     log("rug_circuit_breaker", `Hard lock active — ${cbStatus.resumeInMin}min remaining`);
@@ -1860,6 +1911,26 @@ async function refreshSessionPnl(totalUsd) {
   setSessionBaseline(totalUsd);
   setGauge("wallet_total_usd", totalUsd);
   reportBalance(totalUsd);
+
+  // Capital guard — 4-layer timed hard stops. Runs after kill-switch so the
+  // kill-switch flag is already set if layer 4 fires; no double-notification.
+  if (config.capitalGuard?.enabled) {
+    initCapitalGuard(totalUsd);
+    const cgTrip = reportCapital(totalUsd, config.capitalGuard);
+    if (cgTrip.tripped) {
+      const emoji = ["", "🟡", "🔴", "⛔", "🛑"][cgTrip.level] || "⚠️";
+      const cgStatus = getCapitalGuardStatus(totalUsd);
+      if (telegramEnabled()) {
+        sendHTML(
+          `${emoji} <b>Capital Guard L${cgTrip.level} tripped</b>\n` +
+          `${cgTrip.reason}\n` +
+          (cgStatus.resume_at
+            ? `Resume: <code>${new Date(cgStatus.resume_at).toUTCString()}</code>`
+            : "Permanent halt — reset kill switch to resume")
+        );
+      }
+    }
+  }
 
   const result = updateSessionCapital(totalUsd);
 
@@ -2815,6 +2886,23 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     await syncOpenPositions(tokens.map(t => t.position_key || t.mint));
 
+    // Save live wallet topology state for dashboard monitoring
+    const { updateWalletTopology } = await import("./state.js");
+    const { getAllWallets, isMultiWalletEnabled, getActiveWallet } = await import("./tools/wallet-manager.js");
+    const activeW = getActiveWallet();
+    await updateWalletTopology({
+      multi_wallet_enabled: isMultiWalletEnabled(),
+      wallets: getAllWallets().map(w => ({
+        address: w.address,
+        label: w.label,
+        status: w.status,
+        capital_pct: w.capital_pct,
+        error_count: w.error_count,
+        cold_until: w.cold_until,
+        is_active: activeW && activeW.address === w.address
+      }))
+    });
+
     if (tokens.length === 0) {
       mgmtReport = "No open token positions.";
       return mgmtReport;
@@ -3062,6 +3150,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           pnl_pct: truePnl.net_pnl_pct ?? tradePnl,
           exit_reason: exit.reason,
         });
+        if (config.streakSizer?.enabled) recordStreakOutcome(!netIsLoss, config.streakSizer);
 
         recordTradeOutcome({
           mint: exit.mint,
@@ -3414,6 +3503,7 @@ TUGAS:
                   pnl_pct: pnlPct,
                   exit_reason: "LLM Manager Decision",
                 });
+                if (config.streakSizer?.enabled) recordStreakOutcome(isWin, config.streakSizer);
               } else {
                 log("management_warn",
                   `LLM exit ${tokenIn?.slice(0, 8)}: PnL unavailable (entry=$${entryUsd.toFixed(2)}, exit=$${exitUsd.toFixed(2)}) — missing entry/exit value, skipping win/loss telemetry`,
@@ -4267,9 +4357,20 @@ export async function runScreeningCycle({ silent = false } = {}) {
       };
       // Use Kelly output when it has enough trade data; apply conviction multiplier
       // on the fallback path (no trade history yet) for per-token differentiation.
-      const sizedAmount = kelly.used_fallback
+      let sizedAmount = kelly.used_fallback
         ? parseFloat((preKellyAmount * _convMult).toFixed(4))
         : (kelly.deploy_amount_sol || preKellyAmount);
+      // Streak sizer: compound win/loss multiplier on top of Kelly sizing.
+      if (config.streakSizer?.enabled) {
+        const streakMult = getStreakMultiplier(config.streakSizer);
+        if (streakMult !== 1.0) {
+          const prev = sizedAmount;
+          sizedAmount = parseFloat((sizedAmount * streakMult).toFixed(4));
+          if (sizedAmount !== prev) {
+            log("streak_sizer", `mult=${streakMult.toFixed(3)} ${prev}→${sizedAmount} SOL`);
+          }
+        }
+      }
       const narrativeTags = Array.isArray(token.narrative_tags)
         ? token.narrative_tags
         : [];
@@ -4636,6 +4737,31 @@ export async function runScreeningCycle({ silent = false } = {}) {
           `Portfolio book gate: ${portfolioShadow.decision} `
           + `(ens=${portfolioShadow.ensemble?.ensembleScore} agree=${portfolioShadow.ensemble?.agreeCount}/${portfolioShadow.ensemble?.activeCount})`
         );
+      }
+
+      // ─── R:R Guard ───────────────────────────────────────────────
+      if (finalPassed && config.rrGuard?.enabled) {
+        // Prefer strategy-specific SL/trailing over global config — strategies
+        // have very different SL widths (scalping -15%, degen -30%, swing -25%).
+        // stoploss in strategy-presets is a decimal (e.g. -0.30 = -30%).
+        const stratSlDecimal = matchedStrategy?.stoploss;
+        const stratTrailingDecimal = matchedStrategy?.trailing_stop?.positive_offset;
+        const slPct = Number.isFinite(stratSlDecimal) && stratSlDecimal < 0
+          ? stratSlDecimal * 100
+          : (config.management?.stopLossPct ?? -20);
+        const tpPct = config.management?.takeProfitPct ?? null;
+        const trailing = Number.isFinite(stratTrailingDecimal) && stratTrailingDecimal > 0
+          ? stratTrailingDecimal * 100
+          : (config.management?.trailingTriggerPct ?? null);
+        const rrResult = checkRiskReward(slPct, tpPct, {
+          minRatio: config.rrGuard.minRatio ?? 1.5,
+          trailingTriggerPct: trailing,
+        });
+        if (!rrResult.passes) {
+          finalPassed = false;
+          flags.push(`R:R guard: ${rrResult.reason}`);
+          log("rr_guard", `${token.symbol}: SKIP ${rrResult.reason} [strat=${matchedStrategyId}]`);
+        }
       }
 
       // ─── G3: Per-coin strategy match ─────────────────────────────
@@ -6100,6 +6226,26 @@ export function startCronJobs() {
 
 // ─── Dashboard IPC ────────────────────────────────────────────────
 export async function checkDashboardCommands() {
+  try {
+    const { updateWalletTopology } = await import("./state.js");
+    const { getAllWallets, isMultiWalletEnabled, getActiveWallet } = await import("./tools/wallet-manager.js");
+    const activeW = getActiveWallet();
+    await updateWalletTopology({
+      multi_wallet_enabled: isMultiWalletEnabled(),
+      wallets: getAllWallets().map(w => ({
+        address: w.address,
+        label: w.label,
+        status: w.status,
+        capital_pct: w.capital_pct,
+        error_count: w.error_count,
+        cold_until: w.cold_until,
+        is_active: activeW && activeW.address === w.address
+      }))
+    });
+  } catch (e) {
+    log("dashboard_ipc", "Topology flush failed: " + e.stack);
+  }
+
   const { default: fs } = await import("fs");
   const { default: path } = await import("path");
   const { fileURLToPath } = await import("url");
@@ -6963,3 +7109,16 @@ ensureTelegramAutomationSurface();
 _automationCommandTimer = setInterval(processAutomationCommand, 2000);
 
 registerCronRestarter(() => { if (cronStarted) startCronJobs(); });
+
+console.log(`
+============================================================
+🌐 PONYOU DASHBOARD TUTORIAL
+Untuk menyalakan/mengaktifkan fitur Web Monitor (Dashboard):
+1. Ketik "/web on" di Telegram Bot Anda
+2. Atau jalankan: pm2 start ponyou-dashboard di terminal ini
+
+Untuk mematikannya (menghemat VPS):
+1. Ketik "/web off" di Telegram Bot Anda
+2. Atau jalankan: pm2 stop ponyou-dashboard
+============================================================
+`);

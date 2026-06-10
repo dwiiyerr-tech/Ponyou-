@@ -8,6 +8,8 @@ import {
   recordCounter,
   setGauge,
   getStats,
+  readPersistedStats,
+  flushMetrics,
   _resetForTests,
 } from "../metrics.js";
 
@@ -101,5 +103,17 @@ describe("setGauge", () => {
   it("ignores non-finite", () => {
     setGauge("x", NaN);
     expect(getStats().gauges.x).toBeUndefined();
+  });
+});
+
+describe("readPersistedStats", () => {
+  it("reads the latest cross-process metrics snapshot", async () => {
+    recordCounter("gmgn_ok", 4);
+    setGauge("gmgn_circuit_until", 12345);
+    await flushMetrics();
+
+    const persisted = readPersistedStats();
+    expect(persisted.counters.gmgn_ok).toBe(4);
+    expect(persisted.gauges.gmgn_circuit_until).toBe(12345);
   });
 });

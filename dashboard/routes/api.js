@@ -34,7 +34,7 @@ import { getPortfolioDashboard } from "../../agents/portfolio-manager.js";
 import { getSkillLoopDashboard, promoteSkillWithApproval, buildApprovalRequest } from "../../agents/skill-codifier.js";
 import { listImportedSkills } from "../../skill-registry.js";
 import { setStrategySkillStatus, setStrategySkillWeight } from "../../strategy-skills.js";
-import { getStats } from "../../metrics.js";
+import { getStats, readPersistedStats } from "../../metrics.js";
 import { config } from "../../config.js";
 
 const ALLOWED_LIFECYCLE_CMDS = new Set(["start", "stop"]);
@@ -81,11 +81,20 @@ export function createApiRouter() {
   // on its signals.
   router.get("/gmgn-health", (req, res) => {
     try {
-      const counters = getStats()?.counters || {};
+      const live = getStats();
+      const persisted = readPersistedStats();
+      const snapshot = persisted || live || {};
+      const counters = snapshot.counters || {};
+      const gauges = snapshot.gauges || {};
+      const circuitUntil = Number(gauges.gmgn_circuit_until || 0);
+      const lastOkAt = Number(gauges.gmgn_last_ok_at || 0);
       res.json({
         ok: true,
         enabled: isGmgnEnabled(),
-        circuit_open: gmgnCircuitOpen(),
+        circuit_open: gmgnCircuitOpen() || circuitUntil > Date.now(),
+        circuit_until: circuitUntil > 0 ? new Date(circuitUntil).toISOString() : null,
+        last_ok_at: lastOkAt > 0 ? new Date(lastOkAt).toISOString() : null,
+        metrics_session_started_at: snapshot.session_started_at || null,
         features: config.gmgn || null,
         counters: {
           ok: counters.gmgn_ok || 0,
@@ -196,6 +205,7 @@ export function createApiRouter() {
       darwin: "darwinEnabled",
       strategyProposal: "strategy.evolution.proposalEnabled",
       vaultProposal: "vault.proposalEnabled",
+      paperTrading: "paperTrading",
     };
     if (!FEATURES[feature]) return res.status(400).json({ error: "Unknown feature" });
     const current = readConfig();

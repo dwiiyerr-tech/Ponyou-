@@ -24,6 +24,7 @@ import {
   getTrenches,
   getTokenSecurity,
   extractGmgnRowRisk,
+  normalizeWalletActivity,
   normalizeChain,
   GMGN_CHAINS,
   _resetGmgnCache,
@@ -56,6 +57,40 @@ describe("gmgn: enablement gate", () => {
   it("is enabled for a plausible real key", () => {
     process.env.GMGN_API_KEY = "gmgn_live_abcdef1234567890";
     expect(isGmgnEnabled()).toBe(true);
+  });
+});
+
+describe("gmgn: wallet activity normalizer", () => {
+  it("parses the live activities/event_type/token.address response shape", () => {
+    const rows = normalizeWalletActivity({
+      activities: [{
+        event_type: "sell",
+        timestamp: 1_717_171_717,
+        token: { address: "MintLive", symbol: "LIVE" },
+        token_amount: "12.5",
+        quote_amount: "0.75",
+        price_usd: "1.25",
+      }],
+      next: "cursor",
+    });
+
+    expect(rows).toEqual([expect.objectContaining({
+      type: "sell",
+      side: "sell",
+      token_address: "MintLive",
+      token_mint: "MintLive",
+      symbol: "LIVE",
+      token_amount: 12.5,
+      sol_amount: 0.75,
+      timestamp: 1_717_171_717,
+      price_usd: 1.25,
+    })]);
+  });
+
+  it("distinguishes a valid empty feed from an unavailable response", () => {
+    expect(normalizeWalletActivity({ activities: [] })).toEqual([]);
+    expect(normalizeWalletActivity(null)).toBeNull();
+    expect(normalizeWalletActivity({ unexpected: [] })).toBeNull();
   });
 });
 

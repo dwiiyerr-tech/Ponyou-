@@ -257,6 +257,47 @@ export const config = {
     learningModeDurationMin: u.dailyTradeGuard?.learningModeDurationMin ?? u.learningModeDurationMin ?? 60,
   },
 
+  // ─── Capital Guard (4-layer hard stops) ──────────────────────────
+  // Layer 1: daily PnL ≤ layer1DailyPct  → block entries for layer1PauseMin
+  // Layer 2: daily PnL ≤ layer2DailyPct  → block entries until midnight UTC
+  // Layer 3: peak drawdown ≥ layer3PeakDdPct → block entries 24 h
+  // Layer 4: daily PnL ≤ layer4HaltPct   → trip kill switch permanently
+  capitalGuard: {
+    enabled:         u.capitalGuard?.enabled         ?? false,
+    layer1DailyPct:  u.capitalGuard?.layer1DailyPct  ?? -5,
+    layer2DailyPct:  u.capitalGuard?.layer2DailyPct  ?? -10,
+    layer3PeakDdPct: u.capitalGuard?.layer3PeakDdPct ?? -25,
+    layer4HaltPct:   u.capitalGuard?.layer4HaltPct   ?? -30,
+    layer1PauseMin:  u.capitalGuard?.layer1PauseMin  ?? 60,
+  },
+
+  // ─── Smart Money Quality Filter ──────────────────────────────────
+  // 4-criterion gate: win rate, trade count, profit factor, consistency.
+  // Applied in wallet discovery and signal injection when enabled.
+  smartMoneyFilter: {
+    enabled:         u.smartMoneyFilter?.enabled         ?? false,
+    minWinRate:      u.smartMoneyFilter?.minWinRate      ?? 0.60,
+    minTrades:       u.smartMoneyFilter?.minTrades       ?? 30,
+    minProfitFactor: u.smartMoneyFilter?.minProfitFactor ?? 1.5,
+    minConsistency:  u.smartMoneyFilter?.minConsistency  ?? 0.60,
+  },
+
+  // ─── Streak Sizer — compounding position-size multiplier ─────────
+  // Win:  mult × (1 + winScaleUp),  capped at maxMultiplier
+  // Loss: mult × (1 - lossScaleDown), floored at minMultiplier
+  streakSizer: {
+    enabled:       u.streakSizer?.enabled       ?? false,
+    lossScaleDown: u.streakSizer?.lossScaleDown ?? 0.20,
+    winScaleUp:    u.streakSizer?.winScaleUp    ?? 0.10,
+    minMultiplier: u.streakSizer?.minMultiplier ?? 0.25,
+    maxMultiplier: u.streakSizer?.maxMultiplier ?? 1.50,
+  },
+
+  rrGuard: {
+    enabled:  u.rrGuard?.enabled  ?? false,
+    minRatio: u.rrGuard?.minRatio ?? 1.5,
+  },
+
   // ─── Trading Plan ─────────────────────────
   tradingPlan: {
     enabled:           u.tradingPlan?.enabled           ?? u.tradingPlanEnabled           ?? false,

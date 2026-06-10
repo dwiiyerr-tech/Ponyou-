@@ -146,6 +146,12 @@ async function save(state) {
   return _writeQueue;
 }
 
+export async function updateWalletTopology(topology) {
+  const state = getState();
+  state.walletTopology = topology;
+  return save(state);
+}
+
 export function wasLastWriteFailed() {
   return _lastWriteFailed;
 }

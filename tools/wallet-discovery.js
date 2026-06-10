@@ -23,6 +23,7 @@ import { getAdaptiveSmartWalletContext, evaluateSmartWalletCandidate, selectSmar
 import { applyScoreDecay } from "../wallet-score-decay.js";
 import { getSmartMoneyWallets, getKolWallets, getWalletStats, isGmgnEnabled } from "./gmgn.js";
 import { config } from "../config.js";
+import { passesSmartMoneyFilter } from "../smart-money-filter.js";
 
 export { applyScoreDecay } from "../wallet-score-decay.js";
 
@@ -176,6 +177,8 @@ function analyzeWallet(txns) {
 
   let wins = 0, losses = 0;
   let realized_pnl_sol = 0;
+  let total_win_sol = 0;
+  let total_loss_sol = 0; // stored as positive magnitude
   let total_hold_seconds = 0;
   let completed_trades = 0;
 
@@ -213,7 +216,8 @@ function analyzeWallet(txns) {
           const pnl = proceeds - matched_cost;
           realized_pnl_sol += pnl;
           completed_trades += 1;
-          if (pnl > 0) wins += 1; else losses += 1;
+          if (pnl > 0) { wins += 1; total_win_sol += pnl; }
+          else { losses += 1; total_loss_sol += Math.abs(pnl); }
           if (earliest_buy_ts) total_hold_seconds += (s.ts - earliest_buy_ts);
         }
       }
@@ -222,6 +226,9 @@ function analyzeWallet(txns) {
 
   const winrate = completed_trades > 0 ? wins / completed_trades : 0;
   const avg_hold = completed_trades > 0 ? total_hold_seconds / completed_trades : 0;
+  const profit_factor = total_loss_sol > 0
+    ? Number((total_win_sol / total_loss_sol).toFixed(3))
+    : (total_win_sol > 0 ? null : null); // null = not enough data
 
   return {
     skip: false,
@@ -232,6 +239,9 @@ function analyzeWallet(txns) {
     losses,
     winrate: Number(winrate.toFixed(3)),
     realized_pnl_sol: Number(realized_pnl_sol.toFixed(4)),
+    total_win_sol: Number(total_win_sol.toFixed(4)),
+    total_loss_sol: Number(total_loss_sol.toFixed(4)),
+    profit_factor,
     avg_hold_seconds: Math.round(avg_hold),
     last_active: lastActive > 0 ? new Date(lastActive * 1000).toISOString() : null,
   };
@@ -314,7 +324,7 @@ export async function discoverSmartWallets({
   const results = [];
 
   const useGmgn = gmgnOK;
-  const scoringSource = useGmgn ? "gmgn" : "helius";
+  const scoringSource = useGmgn ? (heliusOK ? "gmgn (Helius fallback)" : "gmgn") : "helius";
   log("discovery", `Scoring source: ${scoringSource}`);
 
   for (let i = 0; i < SCAN_CAP; i++) {
@@ -331,36 +341,46 @@ export async function discoverSmartWallets({
       // wallets the hold-time filter exists to reject. Track presence explicitly.
       let holdKnown = true;
 
+      let gmgnUnavailable = false;
       if (useGmgn) {
-        // GMGN path — wallet stats without Helius quota. getWalletStats returns
-        // the NORMALIZED shape (winRate 0–1, realizedPnlUsd in USD, tradeCount).
+        // GMGN is primary. A null result means the provider was unavailable;
+        // an empty array is a valid response and must not spend Helius quota.
         const raw = await getWalletStats(addr, "30d");
-        const w = Array.isArray(raw) ? raw[0] : raw;
-        if (!w) continue;
-        // GMGN wallet_stats does not expose an avg-hold figure — leave it unknown
-        // so the hold-time ceiling is skipped rather than fabricated.
-        holdKnown = false;
-        // B3: w.winRate ?? 0 coerces missing field to 0, indistinguishable from
-        // a real 0% win rate. Guard: if GMGN returned a non-null winRate use it;
-        // otherwise treat as unknown (null) so scoring can skip this wallet.
-        stats = {
-          winrate: w.winRate != null ? Number(w.winRate) : 0,
-          realized_pnl_sol: null,            // unknown — GMGN reports USD, not SOL
-          realized_pnl_usd: Number(w.realizedPnlUsd ?? 0),
-          completed_trades: Number(w.tradeCount ?? 0),
-          total_swaps: Number(w.tradeCount ?? 0),
-          avg_hold_seconds: null,
-          unique_tokens: Number(w.uniqueTokens ?? 0),
-          skip: false,
-          _source: "gmgn",
-        };
-        if (stats.completed_trades < 1) continue; // GMGN returned nothing useful
-      } else {
-        // Helius fallback path
+        if (raw === null) {
+          gmgnUnavailable = true;
+        } else {
+          const w = Array.isArray(raw) ? raw[0] : raw;
+          if (!w) continue;
+          holdKnown = false;
+          stats = {
+            winrate: w.winRate != null ? Number(w.winRate) : 0,
+            realized_pnl_sol: null,
+            realized_pnl_usd: Number(w.realizedPnlUsd ?? 0),
+            completed_trades: Number(w.tradeCount ?? 0),
+            total_swaps: Number(w.tradeCount ?? 0),
+            avg_hold_seconds: null,
+            unique_tokens: Number(w.uniqueTokens ?? 0),
+            skip: false,
+            _source: "gmgn",
+          };
+          if (stats.completed_trades < 1) continue;
+        }
+      }
+
+      if (!useGmgn || gmgnUnavailable) {
+        if (!heliusOK) continue;
+        if (heliusCircuitOpen()) {
+          log("discovery", "Helius circuit open - skipping fallback for " + addr.slice(0, 8));
+          continue;
+        }
+        if (gmgnUnavailable) {
+          log("discovery", "GMGN unavailable for " + addr.slice(0, 8) + " - using Helius fallback");
+        }
         const txns = await fetchHeliusTxns(addr, apiKey, 50);
         if (!txns?.length) continue;
         stats = analyzeWallet(txns);
         if (stats.skip) continue;
+        holdKnown = true;
       }
 
       const botReason = looksLikeBot(stats);
@@ -370,13 +390,24 @@ export async function discoverSmartWallets({
       const pnlQualifies = stats._source === "gmgn"
         ? (stats.realized_pnl_usd ?? 0) >= MIN_GMGN_PNL_USD
         : (stats.realized_pnl_sol ?? 0) >= min_realized_pnl_sol;
-      const qualifies =
+      const baseQualifies =
         !botReason &&
         stats.completed_trades >= min_trades &&
         stats.winrate >= min_winrate &&
         pnlQualifies &&
         // Only enforce the hold-time ceiling when we actually have the figure.
         (!holdKnown || stats.avg_hold_seconds <= max_avg_hold_seconds);
+
+      // Smart money quality filter (4-criteria gate, enabled via config).
+      let smfResult = null;
+      let qualifies = baseQualifies;
+      if (baseQualifies && config.smartMoneyFilter?.enabled) {
+        smfResult = passesSmartMoneyFilter(stats, config.smartMoneyFilter);
+        if (!smfResult.passes) {
+          log("discovery", `${addr.slice(0, 8)} rejected by quality filter: ${smfResult.failures.join(", ")}`);
+          qualifies = false;
+        }
+      }
 
       const sourceTokens = [...new Set([...(discovered[addr]?.source_tokens || []), ...sourcesSet])];
 
@@ -387,6 +418,7 @@ export async function discoverSmartWallets({
         stats,
         bot_filter: botReason,
         qualifies,
+        smf: smfResult ? { score: smfResult.score, failures: smfResult.failures, metrics: smfResult.metrics } : null,
         promoted: discovered[addr]?.promoted || false,
         source_tokens: sourceTokens,
       };

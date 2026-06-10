@@ -32,6 +32,8 @@ export default defineConfig({
       PONYOU_KILL_SWITCH_FLAG: path.join(STATE_TMP, "kill-switch.flag"),
       PONYOU_KILL_SWITCH_STATE: path.join(STATE_TMP, "kill-switch-state.json"),
       PONYOU_DAILY_GUARD_STATE: path.join(STATE_TMP, "daily-trade-guard-state.json"),
+      PONYOU_CAPITAL_GUARD_STATE: path.join(STATE_TMP, "capital-guard-state.json"),
+      PONYOU_STREAK_SIZER_STATE: path.join(STATE_TMP, "streak-sizer-state.json"),
       // analytics / memory written by BOTH the live bot and tests
       PONYOU_METRICS_FILE: path.join(STATE_TMP, "metrics.json"),
       PONYOU_TRADE_ATTRIBUTION_FILE: path.join(STATE_TMP, "trade-attribution.json"),
