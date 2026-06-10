@@ -34,7 +34,6 @@
       "Write(.env)",
       "Write(.env.*)",
       "Write(secrets/**)",
-      "Bash(git push:*)",
       "Bash(git push --force:*)",
       "Bash(rm -rf:*)",
       "Bash(rm -r:*)",
