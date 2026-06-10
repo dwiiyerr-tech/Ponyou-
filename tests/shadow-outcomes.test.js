@@ -33,7 +33,7 @@ vi.mock("fs", async (importOriginal) => {
   return { ...patched, default: patched };
 });
 
-const { checkAll } = await import("../tools/shadow-watchlist.js");
+const { checkAll, shadowWatch } = await import("../tools/shadow-watchlist.js");
 
 const WATCHLIST_KEY = () => [...files.keys()].find(k => k.includes("shadow-watchlist")) || null;
 
@@ -101,5 +101,17 @@ describe("shadow-watchlist terminal outcomes", () => {
     expect(updateDarwinWeights).toHaveBeenCalledWith(
       ["velocity", "social_buzz"], -100, expect.any(Object),
     );
+  });
+
+  it("shadowWatch captures GMGN row-risk fields for exp #1 outcome correlation", () => {
+    seedWatchlist([]);
+    shadowWatch({
+      mint: "GmgnMint", symbol: "GMG", name: "Gmgn", price: 1, liquidity: 5000,
+      _gmgn_risk: { rug_ratio: 0.93, is_honeypot: false },
+    });
+    const saved = JSON.parse(files.get(WATCHLIST_KEY()));
+    const entry = saved.tokens.find(t => t.mint === "GmgnMint");
+    expect(entry.gmgn_rug_ratio).toBe(0.93);
+    expect(entry.gmgn_honeypot).toBe(false);
   });
 });

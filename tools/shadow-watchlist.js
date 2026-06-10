@@ -96,6 +96,10 @@ export function shadowWatch(token) {
       entry_liq:     token.liquidity || null,
       signal_score:  token.signal?.signal_score ?? null,
       rug_score:     token.rug_score ?? null,
+      // GMGN row-risk fields — lets experiment #1's hard-reject review
+      // correlate skipped-token OUTCOMES (rugged/mooned) with rug_ratio.
+      gmgn_rug_ratio: token._gmgn_risk?.rug_ratio ?? null,
+      gmgn_honeypot:  token._gmgn_risk?.is_honeypot ?? null,
       // Darwinian genome: which signal components voted for this token. The
       // terminal outcome (rugged/mooned) feeds back into their weights.
       active_signals: Array.isArray(token.active_signals) && token.active_signals.length > 0
