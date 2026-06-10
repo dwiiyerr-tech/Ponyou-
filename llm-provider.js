@@ -114,6 +114,24 @@ const PROVIDER_CONFIGS = {
     fallbackModel: "llama2-70b-4096",
   },
 
+  nvidia: {
+    name: "NVIDIA NIM",
+    baseURL: "https://integrate.api.nvidia.com/v1",
+    apiKeyEnv: "NVIDIA_API_KEY",
+    type: "openai-compatible",
+    features: {
+      systemRole: true,
+      toolChoice: true, // llama-3.x nemotron instruct models support OpenAI tools
+      vision: false,
+      streaming: true,
+      promptCaching: false,
+    },
+    // Instruct model for agent decisions. NOTE: the *-content-safety nemotron
+    // variants are moderation classifiers — they cannot drive the agent loop.
+    defaultModel: "nvidia/llama-3.3-nemotron-super-49b-v1",
+    fallbackModel: "meta/llama-3.3-70b-instruct",
+  },
+
   together: {
     name: "Together AI",
     baseURL: "https://api.together.xyz/v1",
@@ -221,6 +239,7 @@ export function detectProvider(config) {
     const model = config.llmModel.toLowerCase();
     if (model.includes("claude")) return "anthropic";
     if (model.includes("gpt")) return "openai";
+    if (model.includes("nemotron") || model.startsWith("nvidia/")) return "nvidia";
     if (model.includes("groq")) return "groq";
     if (model.includes("mistral")) return "mistral";
     if (model.includes("together")) return "together";

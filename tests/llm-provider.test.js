@@ -46,6 +46,17 @@ describe("detectProvider", () => {
     expect(detectProvider({ llmProvider: "weird", llmModel: "claude-3.5-sonnet" })).toBe("anthropic");
     expect(detectProvider({ llmProvider: "weird", llmModel: "gpt-4o" })).toBe("openai");
     expect(detectProvider({ llmProvider: "weird", llmModel: "mistral-large" })).toBe("mistral");
+    expect(detectProvider({ llmProvider: "weird", llmModel: "nvidia/llama-3.3-nemotron-super-49b-v1" })).toBe("nvidia");
+    expect(detectProvider({ llmProvider: "weird", llmModel: "llama-3.1-nemotron-70b-instruct" })).toBe("nvidia");
+  });
+
+  it("resolves the nvidia NIM built-in provider", () => {
+    expect(detectProvider({ llmProvider: "nvidia" })).toBe("nvidia");
+    const cfg = getProviderConfig("nvidia");
+    expect(cfg.baseURL).toBe("https://integrate.api.nvidia.com/v1");
+    expect(cfg.apiKeyEnv).toBe("NVIDIA_API_KEY");
+    expect(cfg.type).toBe("openai-compatible");
+    expect(cfg.features.toolChoice).toBe(true);
   });
 
   it("defaults to openrouter when nothing matches", () => {
