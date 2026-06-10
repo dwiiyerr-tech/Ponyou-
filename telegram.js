@@ -90,7 +90,7 @@ function looksLikeHtml(s) {
 
 // ─── Low-level send ──────────────────────────────────────────────
 
-async function postTelegram(endpoint, body) {
+async function postTelegram(endpoint, body, _retry = true) {
   if (!isEnabled()) return null;
   try {
     const res = await fetch(`${API_BASE}/${endpoint}`, {
@@ -101,6 +101,12 @@ async function postTelegram(endpoint, body) {
     });
     return await res.json();
   } catch (e) {
+    // Sends are single-shot, so a transient blip ("fetch failed" / abort
+    // timeout) loses the notification forever — retry once before giving up.
+    if (_retry) {
+      await new Promise((r) => setTimeout(r, 1500));
+      return postTelegram(endpoint, body, false);
+    }
     console.error(`[Telegram] ${endpoint} failed: ${e.message}`);
     return null;
   }
@@ -192,6 +198,7 @@ export function startPolling(onMessage) {
     ? ` | group monitor: ${_MONITOR_ALL ? "ALL groups" : `${_MONITORED_IDS.size} groups`}`
     : ""));
 
+  let _pollErrors = 0;
   const poll = async () => {
     if (!_pollingActive) return;
     try {
@@ -200,6 +207,7 @@ export function startPolling(onMessage) {
         { signal: AbortSignal.timeout(35_000) }
       );
       const data = await res.json();
+      _pollErrors = 0;
 
       if (data?.ok && data.result?.length > 0) {
         for (const update of data.result) {
@@ -239,9 +247,15 @@ export function startPolling(onMessage) {
         }
       }
     } catch (e) {
+      _pollErrors += 1;
       console.error(`[Telegram] Polling error: ${e.message}`);
     }
-    if (_pollingActive) _pollTimer = setTimeout(poll, 1000);
+    // Exponential backoff during an outage (1s → 60s cap) so the unrotated
+    // pm2 error log isn't flooded at 1 line/s; resets on the first success.
+    const delay = _pollErrors > 0
+      ? Math.min(60_000, 1000 * 2 ** Math.min(_pollErrors, 6))
+      : 1000;
+    if (_pollingActive) _pollTimer = setTimeout(poll, delay);
   };
 
   poll();

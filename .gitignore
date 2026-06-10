@@ -157,6 +157,9 @@ demo/
 # Slipped the gitignore net before this rule was added.
 dev-reputation.json
 hunter-performance.json
+performance.json
+strategy-performance.json
+open-trades-learning.json
 name-patterns-learned.json
 market-chain-intel.json
 .claude/worktrees/

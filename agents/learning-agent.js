@@ -67,11 +67,15 @@ function _loadOpenTrades() {
 
 function _saveOpenTrades() {
   const obj = Object.fromEntries(_openTrades);
-  atomicWriteJson(OPEN_TRADES_FILE, obj).catch((e) => {
+  try {
+    // atomicWriteJson is sync — .catch() on its (undefined) return value threw
+    // a TypeError that killed every buy/exit listener before any learning ran.
+    atomicWriteJson(OPEN_TRADES_FILE, obj);
+  } catch (e) {
     // B1: log instead of swallowing — silent failure loses source attribution
     // permanently on next restart. Operator can investigate disk/permission.
     log("learning_error", `_saveOpenTrades failed: ${e.message}`);
-  });
+  }
 }
 
 // ─── Strategy performance persistence ─────────────────────────────────────

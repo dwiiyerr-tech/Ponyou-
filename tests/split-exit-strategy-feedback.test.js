@@ -246,3 +246,39 @@ describe("HN1: hunter fetchDS rate-limit handling", () => {
     vi.unstubAllGlobals();
   });
 });
+
+// ─── Learning agent open-trade persistence (sync atomicWriteJson) ──────────
+
+describe("LA2: buy/exit listeners survive _saveOpenTrades", () => {
+  // Regression: _saveOpenTrades called .catch() on sync atomicWriteJson's
+  // undefined return — a TypeError that killed every llm_buy/llm_exit_executed
+  // listener before any learning logic ran (and surfaced as unhandled
+  // rejections in the live management cycle).
+  it("llm_buy → llm_exit_executed round-trip produces no unhandled rejection", async () => {
+    const rejections = [];
+    const onRejection = (err) => rejections.push(err);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const { agentBus } = await import("../agents/agent-bus.js");
+      const { initLearningAgent } = await import("../agents/learning-agent.js");
+      initLearningAgent();
+
+      agentBus.emit("management:llm_buy", {
+        mint: "LA2TestMint1111111111111111111111111111111",
+        symbol: "LA2T",
+        _hunt_source: "pumpfun",
+      });
+      agentBus.emit("management:llm_exit_executed", {
+        mint: "LA2TestMint1111111111111111111111111111111",
+        symbol: "LA2T",
+        reason: "takeProfit",
+        pnl_pct: 12,
+      });
+      // Listeners are async — give them a tick to settle (or reject).
+      await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+    expect(rejections.map((e) => String(e?.message || e))).toEqual([]);
+  });
+});
