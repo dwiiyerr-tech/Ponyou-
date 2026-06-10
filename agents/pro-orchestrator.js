@@ -60,9 +60,13 @@ const ANALYSIS_CACHE_TTL_MS = 120_000; // 2 min — matches orchestrator cycle
 const MAX_CONSECUTIVE_ERRORS = 5;      // auto-suspend pro mode after this many errors
 
 function proValidationModeEnabled() {
-  const requested = process.env.PRO_VALIDATION_MODE === "true" || _runtimeConfig.pro?.validationMode === true;
-  const demoSafe = process.env.EXECUTION_MODE === "demo" && process.env.DRY_RUN === "true";
-  return requested && demoSafe;
+  // Shadow-only testing tool — hard demo gate, never active in live.
+  // EXECUTION_MODE is set authoritatively by applyExecutionMode at startup
+  // (the old DRY_RUN === "true" check silently failed for DRY_RUN=1 etc).
+  if (process.env.EXECUTION_MODE !== "demo") return false;
+  // Default ON in demo/paper: decisions are logged but never veto, and the
+  // engine auto-suspends after repeated errors. Opt out: proValidationMode:false.
+  return _runtimeConfig.pro?.validationMode !== false;
 }
 
 /**

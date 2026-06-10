@@ -308,23 +308,36 @@ export function approveAutomation() {
   // means the safety gate opens for a bot that no longer meets the bar.
   const fresh = checkAutomationQualification();
   if (!fresh.qualified) {
-    log("automation_rules",
-      `Approve blocked — re-check failed: ${fresh.failed.length} checks now missing (${fresh.progressPct}%)`,
-    );
-    // Sync the cached state so isAutomationQualified() reads accurately.
-    _automationState.qualified = false;
-    _automationState.qualificationSummary = fresh;
-    saveAutomationState();
-    return {
-      ok: false,
-      reason: "Re-check at approve time failed",
-      failedChecks: fresh.failed,
-      progressPct: fresh.progressPct,
-    };
+    // Operator override (user-config proForceApprove: true): activate anyway.
+    // Still requires the explicit /approve_automation command — the flag alone
+    // never activates anything, so live enablement stays a two-step decision.
+    if (config.pro?.forceApprove === true) {
+      log("automation_rules",
+        `⚠️ Approve OVERRIDE (proForceApprove): activating with ${fresh.failed.length} unmet checks — ${fresh.failed.join("; ")}`,
+      );
+    } else {
+      log("automation_rules",
+        `Approve blocked — re-check failed: ${fresh.failed.length} checks now missing (${fresh.progressPct}%)`,
+      );
+      // Sync the cached state so isAutomationQualified() reads accurately.
+      _automationState.qualified = false;
+      _automationState.qualificationSummary = fresh;
+      saveAutomationState();
+      return {
+        ok: false,
+        reason: "Re-check at approve time failed",
+        failedChecks: fresh.failed,
+        progressPct: fresh.progressPct,
+      };
+    }
   }
 
-  _automationState.qualified = true;
+  // Record the real qualification result — a forced activation must not
+  // masquerade as a passed gate (isAutomationActive() only needs the two
+  // flags below; `qualified` keeps reporting honest progress).
+  _automationState.qualified = fresh.qualified;
   _automationState.qualificationSummary = fresh;
+  _automationState.forcedApproval = !fresh.qualified;
   _automationState.proposalApproved = true;
   _automationState.approvedAt = new Date().toISOString();
   _automationState.automationActive = true;
@@ -336,8 +349,8 @@ export function approveAutomation() {
     timestamp: Date.now(),
   });
 
-  log("automation_rules", "AUTOMATION ACTIVATED — full auto strategy selection + BUY/SELL enabled");
-  return { ok: true, message: "Full automation activated" };
+  log("automation_rules", `AUTOMATION ACTIVATED${fresh.qualified ? "" : " (FORCED — gate not met)"} — full auto strategy selection + BUY/SELL enabled`);
+  return { ok: true, message: `Full automation activated${fresh.qualified ? "" : " (forced override — qualification gate not met)"}`, forced: !fresh.qualified };
 }
 
 export function rejectAutomation(reason = "") {

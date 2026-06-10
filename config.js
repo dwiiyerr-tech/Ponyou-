@@ -235,7 +235,16 @@ export const config = {
   // validationMode = shadow-only: pro logic runs + logs but never vetoes entries.
   // Thresholds tunable via user-config without touching pro-orchestrator.js.
   pro: {
-    validationMode:           u.proValidationMode === true || process.env.PRO_VALIDATION_MODE === "true",
+    // Tri-state: true = explicit on, false = opt out, null = default
+    // (pro-orchestrator auto-enables validation mode in demo/paper).
+    validationMode: typeof u.proValidationMode === "boolean" ? u.proValidationMode
+      : process.env.PRO_VALIDATION_MODE === "true" ? true
+      : process.env.PRO_VALIDATION_MODE === "false" ? false
+      : null,
+    // Operator override: /approve_automation activates full pro mode in live
+    // even when the 8 qualification requirements aren't all met. Explicit
+    // opt-in only — the two-step (flag + Telegram command) is deliberate.
+    forceApprove:             u.proForceApprove === true,
     minConvictionScore:       finiteNumber(u.proMinConvictionScore, 65),
     minSignalAggregate:       finiteNumber(u.proMinSignalAggregate, 55),
     minKellyEdge:             finiteNumber(u.proMinKellyEdge, 0.08),

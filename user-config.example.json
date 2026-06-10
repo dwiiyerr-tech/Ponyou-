@@ -19,6 +19,10 @@
   "_comment_hunter_prey_cap": "Maks 'prey' hunter (kandidat pra-skor, kini diisi GMGN) yang disuntik ke satu siklus screening. Membatasi beban pipeline screening yang sensitif timeout.",
   "hunterPreyCap": 10,
 
+  "_comment_pro": "Pro-orchestrator. Validation (shadow) mode: ON otomatis di demo/paper — keputusan pro dihitung+dilog tapi TIDAK pernah veto entry; set proValidationMode:false untuk mematikan. proForceApprove:true mengizinkan /approve_automation mengaktifkan FULL automation di live walau gate 8-syarat belum terpenuhi (tetap dua langkah: flag ini + perintah Telegram; flag sendirian tidak mengaktifkan apa pun). RESTART setelah ubah.",
+  "proValidationMode": null,
+  "proForceApprove": false,
+
   "_comment_portfolio": "Phase 2 PortfolioManager (OpenClaw multi-strategi). Jalankan N strategy-skill PARALEL (ensemble) alih-alih satu strategi rotasi. Bertahap seperti gmgn.*: default OFF, dan saat enabled mulai di mode 'shadow' (keputusan dihitung+dilog, TIDAK dieksekusi). Pindah portfolioMode ke 'active' hanya di balik experiment_id (lihat CLAUDE.md). RESTART proses setelah ubah.",
   "portfolioEnabled": false,
   "portfolioMode": "shadow",

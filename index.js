@@ -239,6 +239,27 @@ import("./paper-wallet.js").then(({ isPaperMode, getPaperStartSol }) => {
 }).catch(() => {});
 log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
 
+// Opt-in feature banner. These flags default OFF and live in user-config.json
+// (gitignored), so a lost/renamed file silently disables them — it happened
+// on 2026-06-10 and went unnoticed. One glance at startup beats discovering
+// a dead subsystem days later.
+{
+  const onOff = (v) => (v ? "ON" : "off");
+  const flags = [
+    `portfolio=${config.portfolio?.enabled ? config.portfolio.mode : "off"}`,
+    `skillLoop=${onOff(config.skillLoop?.enabled)}`,
+    `vaultIntel=${onOff(config.vault?.intelligenceEnabled)}`,
+    `episodic=${onOff(config.episodicMemory?.enabled)}`,
+    `adaptiveRisk=${onOff(config.adaptiveRisk?.enabled)}`,
+    `promptEvo=${onOff(config.promptEvolution?.enabled)}`,
+    `proValidation=${config.pro?.validationMode === false ? "off" : executionMode.isDemo ? "ON(demo)" : "off(live)"}`,
+    `proForceApprove=${onOff(config.pro?.forceApprove)}`,
+    `gmgnKey=${process.env.GMGN_API_KEY ? "set" : "MISSING"}`,
+    `shyftKey=${process.env.SHYFT_API_KEY ? "set" : "MISSING"}`,
+  ];
+  log("startup", `Opt-in features: ${flags.join(" | ")}`);
+}
+
 // Devnet faucet: auto-fund wallet with devnet SOL only when using devnet RPC.
 // Paper-trading demo mode uses mainnet — no faucet needed.
 if (executionMode.isDemo && (process.env.RPC_URL || "").includes("devnet")) {
@@ -6842,17 +6863,24 @@ export async function handleIncomingTelegramMessage(msg) {
 
   // ── Automation Commands ──────────────────────────
   if (text === "/approve_automation") {
-    const state = getAutomationState();
-    if (!state.qualified) {
-      await sendHTML("Automation not qualified yet. Requirements not met.");
-      return;
-    }
+    // approveAutomation re-checks qualification itself and honors the
+    // user-config proForceApprove override — no pre-check here, or the
+    // override could never be exercised.
     const result = approveAutomation();
-    await sendHTML(
-      result.ok
-        ? "<b>AUTOMATION ACTIVATED</b>\nFull auto strategy selection + BUY/SELL now enabled.\nRevoke: /revoke_automation"
-        : `Cannot activate: ${result.reason}`
-    );
+    if (result.ok) {
+      await sendHTML(
+        `<b>AUTOMATION ACTIVATED${result.forced ? " (FORCED)" : ""}</b>\n`
+        + (result.forced ? "⚠️ Qualification gate not met — activated via proForceApprove override.\n" : "")
+        + "Full auto strategy selection + BUY/SELL now enabled.\nRevoke: /revoke_automation"
+      );
+    } else {
+      const missing = (result.failedChecks || []).map(f => `• ${htmlEscape(f)}`).join("\n");
+      await sendHTML(
+        `Cannot activate: ${htmlEscape(result.reason || "not qualified")} (${result.progressPct ?? 0}%)\n`
+        + (missing ? missing + "\n" : "")
+        + "Override: set <code>proForceApprove: true</code> in user-config.json, restart, then /approve_automation again."
+      );
+    }
     return;
   }
 
