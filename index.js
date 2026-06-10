@@ -157,7 +157,7 @@ import { outerShieldScreen } from "./tools/trash-filter.js";
 import { runCommunityAssessment, getDevReputation, scoreDevReputation } from "./tools/community-detector.js";
 import { startOnChainListener, getFreshOnChainCandidates, getOnChainListenerStatus } from "./tools/onchain-listener.js";
 import { enrichCoin, coinGeckoToSocialVelocity, getTrendingCoins, getSolanaMarkets } from "./tools/coingecko-enrichment.js";
-import { runHunterExpedition, injectHunterPrey, getHunterStats, getCachedPrey } from "./tools/hunter-agent.js";
+import { runHunterExpedition, injectHunterPrey, selectDeepScreenBatch, getHunterStats, getCachedPrey } from "./tools/hunter-agent.js";
 import { getSmartMoneyCandidates, injectWalletPingCandidates, initWalletSignalInjector, checkRugDevDeployer, autoBlockRugDevToken, getWalletSignalStats } from "./tools/wallet-signal-injector.js";
 import { getStrategyPositionLimit, canActivateStrategy, canEnterToken, getStrategyMinSolToActivate } from "./tools/position-limits.js";
 import { computeTradeFeeBreakdown, calcTruePnl, calcDexFee, calcPlatformFee, extractSlippageFromSwapResult, recordTokenAccountCreated, recordSimCall } from "./tools/fee-tracker.js";
@@ -4021,7 +4021,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     const scoredCandidates = [];
     const batchTokens = [];
-    for (const token of preScreened.slice(0, 8)) {
+    for (const token of selectDeepScreenBatch(preScreened, 8)) {
       if (isTokenBlacklisted(token.mint)) continue;
       if (await isTokenOnCooldown(token.mint)) continue;
       if (token.creator && isDevBlocked(token.creator)) continue;

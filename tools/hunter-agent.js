@@ -1157,6 +1157,28 @@ export function injectHunterPrey(screeningTokens, hunterTokens, maxInject = 15) 
 }
 
 /**
+ * Pick the deep-screen batch from trash-gate survivors by alternating discovery
+ * tokens with pre-scored prey (_hunter_score >= 50: GOOD/PRIORITY tier).
+ * Injected sources (GMGN trending/trenches, smart-money pings) are appended
+ * AFTER discovery in the candidate list, so a plain slice(0, budget) starved
+ * them out of rug scoring entirely — no _gmgn_risk token was ever evaluated.
+ * Interleaving gives both sources slots without starving either.
+ */
+export function selectDeepScreenBatch(tokens, budget = 8) {
+  if (!Array.isArray(tokens)) return [];
+  if (tokens.length <= budget) return tokens;
+  const prey = [];
+  const discovery = [];
+  for (const t of tokens) ((t._hunter_score ?? 0) >= 50 ? prey : discovery).push(t);
+  const batch = [];
+  for (let i = 0; batch.length < budget && (i < prey.length || i < discovery.length); i++) {
+    if (i < discovery.length && batch.length < budget) batch.push(discovery[i]);
+    if (i < prey.length && batch.length < budget) batch.push(prey[i]);
+  }
+  return batch;
+}
+
+/**
  * Get hunter token stats for dashboard.
  */
 export function getHunterDashboard() {
