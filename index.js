@@ -78,6 +78,7 @@ import {
   listPendingIntents, getIntent, consumeIntent, claimIntent, finalizeIntent,
 } from "./intents.js";
 import { trackPosition, recordClose, getTrackedPosition, getState, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl, cleanStaleTestPositions, flushState, listTrackedPositions } from "./state.js";
+import { shouldForceExitStalePaper } from "./paper-wallet.js";
 import { pruneClosedPositions } from "./state-pruner.js";
 import { pruneOldSnapshots } from "./tools/holder-dump-monitor.js";
 import { atomicWriteJson } from "./atomic-write.js";
@@ -2263,6 +2264,29 @@ async function checkDeterministicExits(tokens, { solPriceUsd = 0 } = {}) {
     });
 
     const ageMinutes = (Date.now() - new Date(tracked.deployed_at).getTime()) / 60000;
+
+    // Exp #7: unquotable stale paper position. No live quote → token.usd never
+    // moves off cost basis → no PnL gate can ever close it → it wedges the book
+    // at the position limit. After the grace window treat the token as dead.
+    if (shouldForceExitStalePaper({
+      tracked,
+      token,
+      ageMinutes,
+      staleExitMinutes: config.risk?.paperStaleExitMinutes ?? 360,
+    })) {
+      log("exit_signal", `Stale unquotable paper position ${token?.mint?.slice(0, 8)} (age ${Math.round(ageMinutes)}m) — force exit`);
+      exits.push({
+        mint: token.mint,
+        symbol: token.symbol,
+        reason: "paper_stale_unquotable",
+        pnl_pct: -100,
+        is_loss: true,
+        wallet_address: token.wallet_address || null,
+        position_key: token.position_key || token.mint,
+        chain: token.chain || tracked.chain || "sol",
+      });
+      continue;
+    }
 
     // C1: pnl_unknown positions have initial_value_usd=0 because solPriceUsd was 0
     // at entry time. Attempt a one-time backfill using the current cycle's SOL price

@@ -96,6 +96,9 @@ export function derivePaperBalance({ walletAddress = null, solPrice = 0, positio
       wallet_address: p.wallet_address || walletAddress || null,
       symbol: snap.symbol || p.pool_name || (p.position ? String(p.position).slice(0, 8) : "?"),
       balance: qty,
+      chain: p.chain || "sol",
+      entry_price: entryPrice,
+      cost_usd: Math.round(costUsd * 100) / 100,
       // Keep ≥ 0.1 so the management cycle's dust filter never silently drops a
       // paper position (which would orphan it — bought but never managed/exited).
       usd: Math.max(0.1, Math.round(costUsd * 100) / 100),
@@ -116,6 +119,55 @@ export function derivePaperBalance({ walletAddress = null, solPrice = 0, positio
     total_usd: Math.round((sol_usd + tokenUsd) * 100) / 100,
     paper: true,
   };
+}
+
+/**
+ * Pure: mark open paper tokens to market from a mint→live-price map.
+ *
+ * Cost-basis valuation made paper PnL ≡ 0 forever (token.usd never moved, so
+ * SL/TP/trailing could not fire and positions wedged the book at the position
+ * limit). Re-pricing uses the entry-price RATIO (cost × live/entry) instead of
+ * qty × price, because qty can be a coarse placeholder for legacy positions.
+ *
+ *   live quote + entry price  → usd = max(0.1, cost × live/entry), priceUsd set
+ *   live quote, no entry      → priceUsd set (drop detector), usd stays cost
+ *   no quote                  → price_unavailable=true (stale-exit signal),
+ *                               usd stays cost
+ *
+ * The ≥ 0.1 floor stays: a rugged-to-zero token shows ~-99% PnL (exit fires)
+ * instead of vanishing under the dust filter as an orphan.
+ */
+export function applyMarkToMarket(tokens = [], quotes = {}) {
+  for (const t of tokens) {
+    if (!t || (t.chain && t.chain !== "sol")) continue; // quotes are sol-chain only
+    const live = Number(quotes[t.mint]) || 0;
+    if (live > 0) {
+      t.priceUsd = live;
+      const entry = Number(t.entry_price) || 0;
+      const cost = Number(t.cost_usd) || 0;
+      if (entry > 0 && cost > 0) {
+        t.usd = Math.max(0.1, Math.round(cost * (live / entry) * 100) / 100);
+      }
+    } else {
+      t.price_unavailable = true;
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Pure: should this paper position be force-exited as stale/unquotable?
+ *
+ * A paper token that DexScreener can no longer quote (delisted / rugged off
+ * the index) never moves off cost basis, so no PnL gate will ever close it —
+ * it sits in the book forever and blocks new entries. After a grace window
+ * (default 6h, config.risk.paperStaleExitMinutes) treat it as dead.
+ * Live positions are never force-exited here (paper_trade guard).
+ */
+export function shouldForceExitStalePaper({ tracked, token, ageMinutes, staleExitMinutes = 360 } = {}) {
+  if (tracked?.paper_trade !== true) return false;
+  if (token?.price_unavailable !== true) return false;
+  return Number(ageMinutes) > Number(staleExitMinutes);
 }
 
 /**
@@ -154,12 +206,26 @@ async function paperCapitalFraction(walletAddress) {
  * Build the virtual balance for the current open positions.
  * @param {string|null} walletAddress
  * @param {() => Promise<number>} getSolPrice  price fetcher (injected to avoid a wallet.js cycle)
+ * @param {(mint: string) => Promise<number>} [getQuote]  live token price fetcher
+ *        (injected the same way; omitted → cost-basis valuation as before)
  */
-export async function getPaperBalances(walletAddress, getSolPrice) {
+export async function getPaperBalances(walletAddress, getSolPrice, getQuote) {
   let solPrice = 0;
   try { solPrice = typeof getSolPrice === "function" ? Number(await getSolPrice()) || 0 : 0; } catch { /* stale 0 ok */ }
   const positions = listTrackedPositions(null, { open_only: true });
   const fraction = await paperCapitalFraction(walletAddress);
   const startSol = getPaperStartSol() * fraction;
-  return derivePaperBalance({ walletAddress, solPrice, positions, startSol });
+  const balance = derivePaperBalance({ walletAddress, solPrice, positions, startSol });
+
+  if (typeof getQuote === "function" && balance.tokens.length > 0) {
+    const quotes = {};
+    await Promise.all(balance.tokens.map(async (t) => {
+      if (t.chain && t.chain !== "sol") return;
+      try { quotes[t.mint] = Number(await getQuote(t.mint)) || 0; } catch { quotes[t.mint] = 0; }
+    }));
+    applyMarkToMarket(balance.tokens, quotes);
+    const tokenUsd = balance.tokens.reduce((s, t) => s + (t.usd || 0), 0);
+    balance.total_usd = Math.round((balance.sol_usd + tokenUsd) * 100) / 100;
+  }
+  return balance;
 }

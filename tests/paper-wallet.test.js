@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
-import { isPaperMode, getPaperStartSol, derivePaperBalance, capitalFractionFor } from "../paper-wallet.js";
+import { isPaperMode, getPaperStartSol, derivePaperBalance, capitalFractionFor, applyMarkToMarket, shouldForceExitStalePaper } from "../paper-wallet.js";
 
 const SAVED = {};
 const KEYS = ["DRY_RUN", "EXECUTION_MODE", "PAPER_TRADING", "PAPER_START_SOL"];
@@ -180,5 +180,99 @@ describe("capitalFractionFor (multi-wallet split)", () => {
       startSol: getPaperStartSol() * capitalFractionFor("walletA", wallets), // 5 * 0.6 = 3
     });
     expect(b.sol).toBe(2);
+  });
+});
+
+describe("applyMarkToMarket (exp #7: live re-pricing)", () => {
+  const SOL_PRICE = 150;
+
+  function openToken(overrides = {}) {
+    const positions = [{
+      position: "MintAAA", amount_sol: 1, initial_value_usd: 150, closed: false,
+      signal_snapshot: { symbol: "AAA", entry_price: 0.002, token_amount: 75000 },
+      ...overrides.position,
+    }];
+    const b = derivePaperBalance({ solPrice: SOL_PRICE, positions, startSol: 5 });
+    return b.tokens[0];
+  }
+
+  it("derivePaperBalance exposes entry_price, cost_usd and chain on tokens", () => {
+    const t = openToken();
+    expect(t.entry_price).toBe(0.002);
+    expect(t.cost_usd).toBe(150);
+    expect(t.chain).toBe("sol");
+  });
+
+  it("re-prices usd by the live/entry ratio, not qty", () => {
+    const t = openToken();
+    applyMarkToMarket([t], { MintAAA: 0.001 }); // price halved
+    expect(t.usd).toBe(75);
+    expect(t.priceUsd).toBe(0.001);
+    expect(t.price_unavailable).toBeUndefined();
+  });
+
+  it("a winner re-prices upward so TP gates can fire", () => {
+    const t = openToken();
+    applyMarkToMarket([t], { MintAAA: 0.003 }); // +50%
+    expect(t.usd).toBe(225);
+  });
+
+  it("keeps the ≥0.1 floor for rugged-to-zero tokens (no dust orphan)", () => {
+    const t = openToken();
+    applyMarkToMarket([t], { MintAAA: 0.0000001 });
+    expect(t.usd).toBe(0.1); // ~-99.9% PnL, still visible to management
+  });
+
+  it("flags price_unavailable on quote miss and keeps cost basis", () => {
+    const t = openToken();
+    applyMarkToMarket([t], {}); // no quote
+    expect(t.price_unavailable).toBe(true);
+    expect(t.usd).toBe(150);
+  });
+
+  it("sets priceUsd but keeps cost basis when entry price is missing", () => {
+    const t = openToken({ position: { signal_snapshot: { symbol: "AAA" } } });
+    applyMarkToMarket([t], { MintAAA: 0.005 });
+    expect(t.priceUsd).toBe(0.005);
+    expect(t.usd).toBe(150); // no entry → no ratio → cost basis stands
+  });
+
+  it("skips non-sol chain tokens (quotes are sol-only)", () => {
+    const t = openToken({ position: { chain: "base" } });
+    applyMarkToMarket([t], { MintAAA: 0.001 });
+    expect(t.usd).toBe(150);
+    expect(t.price_unavailable).toBeUndefined();
+  });
+});
+
+describe("shouldForceExitStalePaper (exp #7: dead-token guard)", () => {
+  const base = {
+    tracked: { paper_trade: true },
+    token: { price_unavailable: true },
+    ageMinutes: 600,
+    staleExitMinutes: 360,
+  };
+
+  it("fires for an old unquotable paper position", () => {
+    expect(shouldForceExitStalePaper(base)).toBe(true);
+  });
+
+  it("never fires for live positions (paper_trade guard)", () => {
+    expect(shouldForceExitStalePaper({ ...base, tracked: { paper_trade: false } })).toBe(false);
+    expect(shouldForceExitStalePaper({ ...base, tracked: {} })).toBe(false);
+  });
+
+  it("does not fire while the token is still quotable", () => {
+    expect(shouldForceExitStalePaper({ ...base, token: {} })).toBe(false);
+  });
+
+  it("respects the grace window", () => {
+    expect(shouldForceExitStalePaper({ ...base, ageMinutes: 100 })).toBe(false);
+    expect(shouldForceExitStalePaper({ ...base, ageMinutes: 361 })).toBe(true);
+  });
+
+  it("is safe on empty input", () => {
+    expect(shouldForceExitStalePaper()).toBe(false);
+    expect(shouldForceExitStalePaper({})).toBe(false);
   });
 });

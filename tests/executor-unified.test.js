@@ -279,3 +279,69 @@ describe("executeTrade — blocked result shape", () => {
     expect(typeof r.error).toBe("string");
   });
 });
+
+describe("exp #7 (C): atomic position-limit backstop in sharedSwapGuards", () => {
+  const openPos = (mint) => ({ position: mint, closed: false });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.isKilled.mockReturnValue(false);
+    process.env.DRY_RUN = "true";
+    h.getStrategy.mockReturnValue({ protections: { max_open_trades: 3 } });
+    h.getTrackedPosition.mockReturnValue(null);
+    h.swapToken.mockResolvedValue({ success: true, hash: "ok" });
+  });
+
+  it("blocks a NEW entry when the book is at the limit", async () => {
+    h.listTrackedPositions.mockReturnValue([openPos("A"), openPos("B"), openPos("C")]);
+    const r = await executeTrade({ token_in: "SOL", token_out: "MINT_NEW", amount: 0.1 });
+    expect(r.blocked).toBe(true);
+    expect(r.error).toMatch(/Position limit reached \(3\/3\)/);
+    expect(h.swapToken).not.toHaveBeenCalled();
+  });
+
+  it("blocks when the book is already OVER the limit", async () => {
+    h.listTrackedPositions.mockReturnValue([openPos("A"), openPos("B"), openPos("C"), openPos("D"), openPos("E")]);
+    const r = await executeTrade({ token_in: "SOL", token_out: "MINT_NEW", amount: 0.1 });
+    expect(r.blocked).toBe(true);
+    expect(r.error).toMatch(/5\/3/);
+  });
+
+  it("allows a new entry while below the limit", async () => {
+    h.listTrackedPositions.mockReturnValue([openPos("A"), openPos("B")]);
+    const r = await executeTrade({ token_in: "SOL", token_out: "MINT_NEW", amount: 0.1 });
+    expect(r.blocked).toBeUndefined();
+    expect(h.swapToken).toHaveBeenCalled();
+  });
+
+  it("allows adding to an EXISTING open position (staged DCA) even at the limit", async () => {
+    h.listTrackedPositions.mockReturnValue([openPos("A"), openPos("B"), openPos("C")]);
+    h.getTrackedPosition.mockReturnValue({ position: "MINT_A", closed: false });
+    const r = await executeTrade({ token_in: "SOL", token_out: "MINT_A", amount: 0.1 });
+    expect(r.blocked).toBeUndefined();
+    expect(h.swapToken).toHaveBeenCalled();
+  });
+
+  it("treats a CLOSED tracked position as a new slot (re-entry counts)", async () => {
+    h.listTrackedPositions.mockReturnValue([openPos("A"), openPos("B"), openPos("C")]);
+    h.getTrackedPosition.mockReturnValue({ position: "MINT_X", closed: true });
+    const r = await executeTrade({ token_in: "SOL", token_out: "MINT_X", amount: 0.1 });
+    expect(r.blocked).toBe(true);
+  });
+
+  it("never blocks SELLS regardless of book size", async () => {
+    h.listTrackedPositions.mockReturnValue([openPos("A"), openPos("B"), openPos("C"), openPos("D")]);
+    const r = await executeTrade({ token_in: "MINT_A", token_out: "SOL", amount: 0.1 });
+    expect(r.blocked).toBeUndefined();
+    expect(h.swapToken).toHaveBeenCalled();
+  });
+
+  it("falls back to config.risk.maxPositions when strategy has no protections", async () => {
+    h.getStrategy.mockReturnValue(null);
+    const { config } = await import("../config.js");
+    const limit = Number(config.risk?.maxPositions ?? 3);
+    h.listTrackedPositions.mockReturnValue(Array.from({ length: limit }, (_, i) => openPos(`P${i}`)));
+    const r = await executeTrade({ token_in: "SOL", token_out: "MINT_NEW", amount: 0.1 });
+    expect(r.blocked).toBe(true);
+  });
+});

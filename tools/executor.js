@@ -955,6 +955,22 @@ async function sharedSwapGuards(args) {
     return { pass: false, reason: `Invalid swap amount: ${args.amount} — must be a finite positive number.` };
   }
 
+  // Exp #7 (C): atomic position-limit backstop. The screening cycle checks the
+  // limit once at cycle start, but buys can land later (LLM management buys,
+  // multi-candidate cycles), letting the book overfill (5/3 on 2026-06-05).
+  // This is the last gate every buy path passes through, so re-check here.
+  // Adding to an existing open position (staged DCA) is not a new slot.
+  if (args.token_in === "SOL" && args.token_out && !isSolMint(args.token_out)) {
+    const existing = getTrackedPosition(args.token_out, args.wallet_address || null);
+    if (!existing || existing.closed) {
+      const limit = Number(getStrategy()?.protections?.max_open_trades ?? config.risk?.maxPositions ?? 3);
+      const open = listTrackedPositions(null, { open_only: true }).length;
+      if (limit > 0 && open >= limit) {
+        return { pass: false, reason: `Position limit reached (${open}/${limit}) — new entry blocked.` };
+      }
+    }
+  }
+
   if (chain !== "sol") {
     // EVM: kill-switch + amount validated above. GMGN handles its own balance/gas.
     return { pass: true };

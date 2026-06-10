@@ -25,6 +25,20 @@ async function getSolPrice() {
   }
 }
 
+// Live quote for paper mark-to-market (exp #7). Dynamic import keeps this
+// cycle-safe (dexscreener → cache-util/logger only, but stay defensive) and
+// rides dexscreener's own market-info cache, so ≤ positionLimit requests per
+// cycle. Returns 0 on miss → paper-wallet flags price_unavailable.
+async function getPaperTokenQuote(mint) {
+  try {
+    const { getTokenMarketInfo } = await import("./dexscreener.js");
+    const info = await getTokenMarketInfo({ mint });
+    return info && !info.error ? Number(info.price) || 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
 let _wallet = null;
 
 function getWallet() {
@@ -113,7 +127,7 @@ export async function getWalletBalances(walletAddress = null) {
   // isPaperMode() guard hard-fails in live). Resolved before any wallet lookup
   // so it also works with no real wallet configured.
   if (isPaperMode()) {
-    return getPaperBalances(walletAddress, getSolPrice);
+    return getPaperBalances(walletAddress, getSolPrice, getPaperTokenQuote);
   }
 
   if (!walletAddress) {
