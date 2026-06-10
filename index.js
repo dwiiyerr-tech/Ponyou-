@@ -78,7 +78,7 @@ import {
   listPendingIntents, getIntent, consumeIntent, claimIntent, finalizeIntent,
 } from "./intents.js";
 import { trackPosition, recordClose, getTrackedPosition, getState, getStateSummary, syncOpenPositions, markPartialTPDone, updatePeakPnl, cleanStaleTestPositions, flushState, listTrackedPositions } from "./state.js";
-import { shouldForceExitStalePaper } from "./paper-wallet.js";
+import { shouldForceExitStalePaper, withPositionIdentity } from "./paper-wallet.js";
 import { pruneClosedPositions } from "./state-pruner.js";
 import { pruneOldSnapshots } from "./tools/holder-dump-monitor.js";
 import { atomicWriteJson } from "./atomic-write.js";
@@ -758,11 +758,7 @@ function buildPrompt() {
 async function getPortfolioSnapshot() {
   if (!isMultiWalletEnabled()) {
     const balance = await withTimeout(getWalletBalances(), CYCLE_RPC_TIMEOUT_MS, "getWalletBalances");
-    const tokens = (balance.tokens || []).map(token => ({
-      ...token,
-      wallet_address: balance.wallet || null,
-      position_key: balance.wallet ? `${token.mint}::${balance.wallet}` : token.mint,
-    }));
+    const tokens = (balance.tokens || []).map(token => withPositionIdentity(token, balance.wallet));
     return {
       ...balance,
       tokens,
@@ -794,11 +790,7 @@ async function getPortfolioSnapshot() {
     aggregate.usdc += balance.usdc || 0;
     aggregate.total_usd += balance.total_usd || 0;
     for (const token of balance.tokens || []) {
-      aggregate.tokens.push({
-        ...token,
-        wallet_address: balance.wallet || null,
-        position_key: balance.wallet ? `${token.mint}::${balance.wallet}` : token.mint,
-      });
+      aggregate.tokens.push(withPositionIdentity(token, balance.wallet));
     }
   }
 

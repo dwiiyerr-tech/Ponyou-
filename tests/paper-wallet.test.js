@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
-import { isPaperMode, getPaperStartSol, derivePaperBalance, capitalFractionFor, applyMarkToMarket, shouldForceExitStalePaper } from "../paper-wallet.js";
+import { isPaperMode, getPaperStartSol, derivePaperBalance, capitalFractionFor, applyMarkToMarket, shouldForceExitStalePaper, withPositionIdentity } from "../paper-wallet.js";
 
 const SAVED = {};
 const KEYS = ["DRY_RUN", "EXECUTION_MODE", "PAPER_TRADING", "PAPER_START_SOL"];
@@ -274,5 +274,47 @@ describe("shouldForceExitStalePaper (exp #7: dead-token guard)", () => {
   it("is safe on empty input", () => {
     expect(shouldForceExitStalePaper()).toBe(false);
     expect(shouldForceExitStalePaper({})).toBe(false);
+  });
+});
+
+describe("withPositionIdentity", () => {
+  it("preserves the token's own position_key and wallet_address (paper mode)", () => {
+    // Regression: getPortfolioSnapshot used to rewrite position_key to
+    // "mint::paper-wallet", which never matches state keyed by the real
+    // pubkey — getTrackedPosition missed and every exit was silently skipped.
+    const token = {
+      mint: "MintA",
+      position_key: "MintA::RealPubkey111",
+      wallet_address: "RealPubkey111",
+      usd: 2.5,
+    };
+    const out = withPositionIdentity(token, "paper-wallet");
+    expect(out.position_key).toBe("MintA::RealPubkey111");
+    expect(out.wallet_address).toBe("RealPubkey111");
+    expect(out.usd).toBe(2.5);
+  });
+
+  it("derives mint::wallet for tokens without identity (real-wallet path)", () => {
+    const out = withPositionIdentity({ mint: "MintB" }, "WalletX");
+    expect(out.position_key).toBe("MintB::WalletX");
+    expect(out.wallet_address).toBe("WalletX");
+  });
+
+  it("falls back to the bare mint when there is no wallet at all", () => {
+    const out = withPositionIdentity({ mint: "MintC" }, null);
+    expect(out.position_key).toBe("MintC");
+    expect(out.wallet_address).toBe(null);
+  });
+
+  it("round-trips derivePaperBalance tokens with their tracked-state keys intact", () => {
+    const positions = [
+      { position: "MintD", position_key: "MintD::Pubkey222", wallet_address: "Pubkey222",
+        amount_sol: 1, initial_value_usd: 150, signal_snapshot: { symbol: "DDD" } },
+    ];
+    const b = derivePaperBalance({ solPrice: 150, positions, startSol: 5 });
+    const out = withPositionIdentity(b.tokens[0], b.wallet); // b.wallet = "paper-wallet"
+    expect(b.wallet).toBe("paper-wallet");
+    expect(out.position_key).toBe("MintD::Pubkey222");
+    expect(out.wallet_address).toBe("Pubkey222");
   });
 });

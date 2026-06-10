@@ -171,6 +171,26 @@ export function shouldForceExitStalePaper({ tracked, token, ageMinutes, staleExi
 }
 
 /**
+ * Pure: attach position-tracking identity to a balance token.
+ *
+ * Prefers the token's own position_key/wallet_address when the balance source
+ * supplies them — paper mode does, straight from tracked state. Re-deriving
+ * from the snapshot's wallet name breaks paper positions: the synthetic
+ * "paper-wallet" label yields "mint::paper-wallet" keys that never match state
+ * keyed by the real pubkey, so getTrackedPosition misses and every
+ * deterministic exit is silently skipped. Real-wallet tokens carry neither
+ * field, so they keep the derived mint::wallet key as before.
+ */
+export function withPositionIdentity(token, snapshotWallet = null) {
+  return {
+    ...token,
+    wallet_address: token.wallet_address || snapshotWallet || null,
+    position_key: token.position_key
+      || (snapshotWallet ? `${token.mint}::${snapshotWallet}` : token.mint),
+  };
+}
+
+/**
  * Pure: a wallet's share of the virtual capital from a wallet list. Multi-wallet
  * splits the starting SOL by capital_pct so the *total* across wallets stays =
  * paperStartSol (previously every wallet got the full amount → N× inflated
