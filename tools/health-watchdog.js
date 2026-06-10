@@ -214,6 +214,10 @@ export async function runWatchdogCycle({ send, overrides = {} } = {}) {
       _alertState.set(c.id, { ok: true, lastAlertTs: prev.lastAlertTs });
     }
   }
+  // One summary line per cycle even when all green — a watchdog whose health
+  // is itself only inferable from silence would repeat the disease it treats.
+  const fails = checks.filter(c => !c.ok).length;
+  log("watchdog", `cycle: ${checks.length - fails}/${checks.length} alive${fails ? ` — FAILING: ${checks.filter(c => !c.ok).map(c => c.id).join(", ")}` : ""}`);
   return checks;
 }
 
