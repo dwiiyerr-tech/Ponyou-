@@ -12,6 +12,8 @@ vi.mock("../llm-provider.js", () => ({
   }),
   getProviderFeatures: () => ({ systemRole: true, toolChoice: true }),
   handleProviderError: (err) => ({ type: "unknown", shouldRetry: false }),
+  markLlmSuccess: () => {},
+  getLastLlmSuccessTs: () => null,
 }));
 
 vi.mock("../prompt.js", () => ({

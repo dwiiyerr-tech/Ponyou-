@@ -181,6 +181,7 @@ import { computeMarketRegime, getMaxPositions as getHeatmapMaxPositions } from "
 import { discoverSmartWallets } from "./tools/wallet-discovery.js";
 import { getVaultOverrides, getVaultContext, getVaultIntelligenceContext, getDevOverrides, getWalletOverrides, getSmartMoneyContext, getPatternOverrides, getChainOverrides } from "./tools/vault-reader.js";
 import { logScreeningDecision, logTradeOutcome, refreshVaultSnapshots, ensureIntelligenceTemplates, logSkippedTokens, appendOperatorLesson } from "./tools/vault-writer.js";
+import { runWatchdogCycle, collectLiveness, formatLivenessReport } from "./tools/health-watchdog.js";
 import { bulkRegister as bulkRegisterTickers } from "./tools/ticker-registry.js";
 import {
   isVaultDue, computeVaultAmount, executeVaultTransfer,
@@ -988,6 +989,16 @@ async function handleStrategyTelegramCommand(text) {
       fmt.it("/strategy /strategies /stratset /health /feature /confirm /dailyguard /auto /dayphase /devcheck /agent /pending /yes /no /pnl /status /plan /resetplan /vault_proposals /autonomy"),
     ];
     await sendHTML(lines.join("\n"));
+    return true;
+  }
+
+  if (cmd === "/alive") {
+    try {
+      const checks = collectLiveness();
+      await sendHTML(formatLivenessReport(checks));
+    } catch (e) {
+      await sendHTML(`watchdog error: ${htmlEscape(e.message)}`);
+    }
     return true;
   }
 
@@ -6285,6 +6296,11 @@ export function startCronJobs() {
 
   // Vault snapshots (second brain — refresh every 5 min, fire-and-forget)
   tasks.push(cron.schedule("*/5 * * * *", () => refreshVaultSnapshots().catch(e => log("vault_snapshot_error", e.message))));
+
+  // Health watchdog — liveness assertions every 15 min, Telegram alert on
+  // alive→dead transitions (alert-only; never restarts anything)
+  tasks.push(cron.schedule("*/15 * * * *", () =>
+    runWatchdogCycle({ send: (msg) => sendMessage(msg) }).catch(e => log("watchdog_error", e.message))));
 
   // Vault (daily check — cron checks if 7 days elapsed)
   tasks.push(cron.schedule("0 */6 * * *", () => runVaultCycle().catch(e => log("vault_error", e.message))));

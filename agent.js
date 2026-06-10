@@ -9,6 +9,7 @@ import {
   createLLMClient,
   getProviderFeatures,
   handleProviderError,
+  markLlmSuccess,
 } from "./llm-provider.js";
 import { compressToolOutput } from "./compressor.js";
 
@@ -358,6 +359,7 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           }, { signal: controller.signal });
           clearTimeout(timeout);
+          markLlmSuccess();
         } catch (error) {
           if (timeout) clearTimeout(timeout);
           // Handle LLM timeout / abort

@@ -776,6 +776,14 @@ jupiter: {
   //
   // ABC improvements enabled by default, starting with low beta rollout %
   // to monitor false positives before expanding (5% → 25% → 100%).
+  // Health watchdog — liveness assertions + Telegram alerts (alert-only,
+  // never restarts anything). Override via user-config.json watchdog*.
+  watchdog: {
+    enabled:      u.watchdogEnabled      ?? true,
+    frozenHours:  finiteNumber(u.watchdogFrozenHours, 6),   // book full + no close ≥ this = exits dead
+    reAlertHours: finiteNumber(u.watchdogReAlertHours, 6),  // repeat alert cadence while still down
+  },
+
   // Override via user-config.json: { holderAnalysis: { dumpMonitor: { enabled: false } } }
   holderAnalysis: {
     // A) Holder Dump Monitor — detect large holder exits (>20% in 1h)

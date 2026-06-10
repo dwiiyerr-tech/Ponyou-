@@ -491,6 +491,15 @@ export function listProviders(config = null) {
   return [...builtIns, ...customs];
 }
 
+// ── LLM liveness marker ───────────────────────────────────────────────────
+// The health-watchdog asserts the LLM actually COMPLETES calls — a client
+// that initializes fine but never succeeds (proxy down for 8 days, June 2026)
+// is indistinguishable from healthy without this.
+let _lastLlmSuccessTs = null;
+export function markLlmSuccess() { _lastLlmSuccessTs = Date.now(); }
+export function getLastLlmSuccessTs() { return _lastLlmSuccessTs; }
+export function _resetLlmSuccessTs() { _lastLlmSuccessTs = null; }
+
 export default {
   detectProvider,
   getProviderConfig,

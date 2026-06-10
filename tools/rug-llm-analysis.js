@@ -14,6 +14,7 @@
 import { getLLMClient } from "../agent.js";
 import { log } from "../logger.js";
 import { config } from "../config.js";
+import { markLlmSuccess } from "../llm-provider.js";
 
 const TIMEOUT_MS = 8000;
 const MIN_RUG_CORPUS = 10; // 10+ known rugs before LLM analysis activates
@@ -114,6 +115,7 @@ export async function analyzeRugWithLLM(token, signals = {}, anomaly = null, rug
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
+    markLlmSuccess();
 
     const content = response?.choices?.[0]?.message?.content || "";
     const parsed = parseRugVerdict(content);
