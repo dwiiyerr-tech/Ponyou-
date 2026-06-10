@@ -62,7 +62,7 @@ function applyState(s) {
   document.getElementById("balance").textContent = `${(s.balance_sol||0).toFixed(4)} SOL`;
   const pnlEl = document.getElementById("pnlToday");
   const pnl = s.pnl_today_usd || 0;
-  pnlEl.textContent = `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)} today`;
+  pnlEl.textContent = `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)} session`;
   pnlEl.className = `pnl ${pnl >= 0 ? "positive" : "negative"}`;
 
   const tbody = document.getElementById("positionsBody");

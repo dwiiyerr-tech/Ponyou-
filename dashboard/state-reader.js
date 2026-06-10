@@ -15,6 +15,8 @@ const ENV_OVERRIDE = {
   "state.json": "PONYOU_STATE_FILE",
   "execution-quality.json": "PONYOU_EXEC_QUALITY_FILE",
   "trading-plan.json": "PONYOU_PLAN_FILE",
+  "kill-switch-state.json": "PONYOU_KILL_SWITCH_STATE",
+  "metrics.json": "PONYOU_METRICS_FILE",
 };
 
 const SECOND_BRAIN_MAX_STARS = 500;
@@ -148,18 +150,37 @@ function readJson(filename, fallback = {}) {
   } catch { return fallback; }
 }
 
+function fileMtimeMs(filename) {
+  try {
+    const envVar = ENV_OVERRIDE[filename];
+    const fp = (envVar && process.env[envVar]) || path.join(BASE_PATH, filename);
+    return fs.statSync(fp).mtimeMs;
+  } catch { return null; }
+}
+
 export async function readBotState() {
   const state = readJson("state.json");
   const vaultState = readJson("vault-state.json");
   const planState = readJson("trading-plan-state.json");
   const cfg = readJson("user-config.json");
   const quality = readJson("execution-quality.json");
+  // The bot's metrics snapshot is the only store a sidecar process can read
+  // that the bot refreshes on every active cycle (flushed at most once a
+  // minute). state.json only changes on position events, so it can sit
+  // untouched for hours while the bot is perfectly alive.
+  const metrics = readJson("metrics.json");
+  const gauges = metrics.gauges || {};
+  const killSwitch = readJson("kill-switch-state.json");
 
   // SR-1: only compute entry_sol when sol_price is actually known. The
   // previous fallback of 150 silently lied to the dashboard when the
   // bot hadn't published a fresh SOL price yet — turning a $100 entry
-  // into ~0.67 SOL regardless of the real rate.
-  const knownSolPrice = Number(state.sol_price) > 0 ? Number(state.sol_price) : null;
+  // into ~0.67 SOL regardless of the real rate. The bot publishes
+  // sol_price_usd as a metrics gauge each management cycle.
+  const solPrice = Number(state.sol_price) > 0 ? Number(state.sol_price)
+    : Number(gauges.sol_price_usd) > 0 ? Number(gauges.sol_price_usd)
+    : 0;
+  const knownSolPrice = solPrice > 0 ? solPrice : null;
   const positions = Object.values(state.positions || {})
     .filter(p => !p?.closed)
     .map(p => ({
@@ -196,12 +217,27 @@ export async function readBotState() {
 
   const lastUpdatedMs = Date.parse(state.lastUpdated || "");
   const stateFresh = Number.isFinite(lastUpdatedMs) && Date.now() - lastUpdatedMs <= 30_000;
+  // SR-2: state.json freshness alone made the dashboard report STOPPED
+  // whenever the book was quiet for >30s. A fresh metrics.json mtime is the
+  // real cross-process heartbeat: the management cron (10 min) always records
+  // activity, so 20 min of silence genuinely means the process is gone.
+  const metricsMtime = fileMtimeMs("metrics.json");
+  const metricsFresh = metricsMtime != null && Date.now() - metricsMtime <= 20 * 60_000;
+
+  // state.json never carried pnl_today_usd / balance_sol — they rendered as
+  // permanent zeros. Derive session PnL from the bot's last observed wallet
+  // value vs the kill-switch session baseline (resets on bot restart).
+  const walletUsd = Number(gauges.wallet_total_usd);
+  const sessionBaseline = Number(killSwitch.sessionBaseline);
+  const pnlSessionUsd = Number.isFinite(walletUsd) && sessionBaseline > 0
+    ? walletUsd - sessionBaseline
+    : 0;
 
   return {
-    bot_running: Boolean(state.cron_started ?? stateFresh),
-    balance_sol: state.balance_sol ?? 0,
-    sol_price: state.sol_price ?? 0,
-    pnl_today_usd: state.pnl_today_usd ?? 0,
+    bot_running: Boolean(state.cron_started ?? (stateFresh || metricsFresh)),
+    balance_sol: Number(state.balance_sol ?? gauges.balance_sol) || 0,
+    sol_price: solPrice,
+    pnl_today_usd: state.pnl_today_usd ?? pnlSessionUsd,
     positions,
     features: {
       vault_enabled: Boolean(vaultCfg.enabled ?? true),

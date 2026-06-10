@@ -10,6 +10,8 @@ const ENV_KEYS = [
   "PONYOU_EXEC_QUALITY_FILE",
   "PONYOU_PLAN_FILE",
   "PONYOU_VAULT_DIR",
+  "PONYOU_KILL_SWITCH_STATE",
+  "PONYOU_METRICS_FILE",
 ];
 let savedEnv;
 beforeEach(() => {
@@ -45,6 +47,63 @@ describe("readBotState", () => {
 
     fs.writeFileSync(statePath, JSON.stringify({ lastUpdated: new Date(Date.now() - 60_000).toISOString() }));
     expect((await readBotState()).bot_running).toBe(false);
+  });
+
+  it("treats a fresh metrics.json as the bot heartbeat even when state.json is stale", async () => {
+    // state.json only changes on position events; a quiet book must not
+    // render the bot as STOPPED while metrics are still being flushed.
+    fs.writeFileSync(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({ lastUpdated: new Date(Date.now() - 3 * 60 * 60_000).toISOString() })
+    );
+    fs.writeFileSync(path.join(tmpDir, "metrics.json"), JSON.stringify({ counters: {}, gauges: {} }));
+    expect((await readBotState()).bot_running).toBe(true);
+
+    const stale = (Date.now() - 30 * 60_000) / 1000;
+    fs.utimesSync(path.join(tmpDir, "metrics.json"), stale, stale);
+    expect((await readBotState()).bot_running).toBe(false);
+  });
+
+  it("falls back to metrics gauges for balance and SOL price", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "metrics.json"),
+      JSON.stringify({ gauges: { balance_sol: 1.25, sol_price_usd: 160 } })
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({
+        positions: {
+          abc: { symbol: "WIF", mint: "abc", closed: false, initial_value_usd: 8 },
+        },
+      })
+    );
+    const s = await readBotState();
+    expect(s.balance_sol).toBe(1.25);
+    expect(s.sol_price).toBe(160);
+    // entry_sol should resolve via the gauge-supplied price (8 / 160).
+    expect(s.positions[0].entry_sol).toBe(0.05);
+  });
+
+  it("derives session PnL from wallet gauge vs kill-switch baseline", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "metrics.json"),
+      JSON.stringify({ gauges: { wallet_total_usd: 318.5 } })
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "kill-switch-state.json"),
+      JSON.stringify({ sessionBaseline: 322.13 })
+    );
+    const s = await readBotState();
+    expect(s.pnl_today_usd).toBeCloseTo(-3.63, 2);
+  });
+
+  it("reports zero PnL when the baseline is missing", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "metrics.json"),
+      JSON.stringify({ gauges: { wallet_total_usd: 318.5 } })
+    );
+    const s = await readBotState();
+    expect(s.pnl_today_usd).toBe(0);
   });
 
   it("reads open positions from state.json", async () => {

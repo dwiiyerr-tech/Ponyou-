@@ -2977,6 +2977,12 @@ export async function runManagementCycle({ silent = false } = {}) {
     const totalUsd = (balance.sol_usd || 0) + tokens.reduce((s, t) => s + (t.usd || 0), 0);
     await refreshSessionPnl(totalUsd);
 
+    // Publish balance gauges for sidecar processes (dashboard /api/status):
+    // state.json never carries balance_sol/sol_price, so without these the
+    // web monitor renders zeros even while the bot trades.
+    setGauge("balance_sol", balance.sol || 0);
+    if (Number(balance.sol_price) > 0) setGauge("sol_price_usd", Number(balance.sol_price));
+
     await syncOpenPositions(tokens.map(t => t.position_key || t.mint));
 
     // Save live wallet topology state for dashboard monitoring (deduped helper)
