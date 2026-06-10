@@ -35,6 +35,7 @@ import { getSkillLoopDashboard, promoteSkillWithApproval, buildApprovalRequest }
 import { listImportedSkills } from "../../skill-registry.js";
 import { setStrategySkillStatus, setStrategySkillWeight } from "../../strategy-skills.js";
 import { getStats, readPersistedStats } from "../../metrics.js";
+import { WATCHDOG_STATE_FILE } from "../../tools/health-watchdog.js";
 import { config } from "../../config.js";
 
 const ALLOWED_LIFECYCLE_CMDS = new Set(["start", "stop"]);
@@ -101,6 +102,66 @@ export function createApiRouter() {
           rate_limit: counters.gmgn_rate_limit || 0,
           circuit_skip: counters.gmgn_circuit_skip || 0,
         },
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  // Aggregate internals for the monitoring SPA: watchdog liveness, metrics
+  // counters/gauges, darwin learned weights, shadow watchlist outcomes. All
+  // read-only, all from files the bot process writes — no fabricated values:
+  // a subsystem that has produced nothing reports null/empty, not a number.
+  router.get("/internals", (req, res) => {
+    try {
+      const readFile = (fp) => {
+        try { return JSON.parse(_fs.readFileSync(fp, "utf8")); } catch { return null; }
+      };
+      const root = _path.join(_path.dirname(new URL(import.meta.url).pathname), "..", "..");
+
+      const watchdog = readFile(WATCHDOG_STATE_FILE);
+      const snapshot = readPersistedStats() || {};
+      const counters = snapshot.counters || {};
+      const darwin = readFile(process.env.PONYOU_DARWIN_FILE || _path.join(root, "darwin-weights.json"));
+      const shadowRaw = readFile(_path.join(root, "shadow-watchlist.json"));
+
+      const shadowTokens = Array.isArray(shadowRaw?.tokens) ? shadowRaw.tokens : [];
+      const byStatus = {};
+      for (const t of shadowTokens) byStatus[t.status || "unknown"] = (byStatus[t.status || "unknown"] || 0) + 1;
+      const shadow = {
+        total: shadowTokens.length,
+        by_status: byStatus,
+        recent: shadowTokens
+          .slice()
+          .sort((a, b) => Date.parse(b.added_at || 0) - Date.parse(a.added_at || 0))
+          .slice(0, 12)
+          .map(t => ({
+            symbol: t.symbol || (t.mint || "?").slice(0, 6),
+            status: t.status || "watching",
+            signal_score: t.signal_score ?? null,
+            rug_score: t.rug_score ?? null,
+            hunt_source: t.hunt_source || null,
+            added_at: t.added_at || null,
+            peak_x: t.peak_price > 0 && t.entry_price > 0
+              ? Number((t.peak_price / t.entry_price).toFixed(2)) : null,
+          })),
+      };
+
+      res.json({
+        ok: true,
+        watchdog, // { ts, checks:[{id,ok,critical,detail}] } or null before first cycle
+        metrics: {
+          session_started_at: snapshot.session_started_at || null,
+          gauges: snapshot.gauges || {},
+          counters,
+        },
+        experiment_gmgn_row: {
+          evaluated: counters.gmgn_row_risk_evaluated || 0,
+          contributed: counters.gmgn_row_risk_contributed || 0,
+          blocked: counters.gmgn_row_risk_blocked || 0,
+        },
+        darwin, // null until the first trade close / shadow outcome feeds weights
+        shadow,
       });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });

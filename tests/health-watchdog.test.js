@@ -3,6 +3,9 @@
  * Every check is exercised through injected deps; no real fs/state/agents.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import fs from "fs";
+import os from "os";
+import path from "path";
 
 vi.mock("../config.js", () => ({
   config: { risk: { maxPositions: 3 }, watchdog: { enabled: true, frozenHours: 6, reAlertHours: 6 } },
@@ -40,9 +43,13 @@ function deps(over = {}) {
     maxPositions: 3,
     frozenHours: 6,
     fileMtime: vi.fn(() => NOW - 4 * MIN),
+    // Cycle persistence must never land in the repo root during tests —
+    // /api/internals would serve those fabricated checks as real liveness.
+    statePath: _TEST_STATE_PATH,
     ...over,
   };
 }
+const _TEST_STATE_PATH = path.join(os.tmpdir(), `watchdog-state-test-${process.pid}.json`);
 
 beforeEach(() => _resetWatchdogState());
 
@@ -145,6 +152,16 @@ describe("runWatchdogCycle alerting", () => {
     const send = vi.fn(() => { throw new Error("telegram down"); });
     await expect(runWatchdogCycle({ send, overrides: deps({ lastLlmSuccessTs: null }) }))
       .resolves.toBeTruthy();
+  });
+
+  it("persists the cycle's checks for sidecar processes (web monitor)", async () => {
+    fs.rmSync(_TEST_STATE_PATH, { force: true });
+    await runWatchdogCycle({ overrides: deps() });
+    const persisted = JSON.parse(fs.readFileSync(_TEST_STATE_PATH, "utf8"));
+    expect(persisted.ts).toBe(new Date(NOW).toISOString());
+    expect(persisted.checks.length).toBeGreaterThan(0);
+    expect(persisted.checks.every(c => typeof c.id === "string" && typeof c.ok === "boolean")).toBe(true);
+    fs.rmSync(_TEST_STATE_PATH, { force: true });
   });
 });
 

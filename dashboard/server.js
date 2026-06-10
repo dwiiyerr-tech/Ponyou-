@@ -48,13 +48,14 @@ export function createDashboardServer({ port = 3000 } = {}) {
     return next(); // Temporarily bypass auth for all routes
   });
 
-  // First-time redirect: no walletAddress → wizard
+  // First-time redirect: only when user-config.json does not exist at all.
+  // Keying on walletAddress hid the monitor forever on deployments that keep
+  // the wallet in .env (this one) — a configured, trading bot was redirected
+  // to the setup wizard on every visit to "/".
   app.get("/", (req, res, next) => {
     try {
       const cfgPath = path.join(__dirname, "..", "user-config.json");
       if (!fs.existsSync(cfgPath)) return res.redirect("/wizard.html");
-      const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
-      if (!cfg.walletAddress) return res.redirect("/wizard.html");
     } catch {}
     next();
   });

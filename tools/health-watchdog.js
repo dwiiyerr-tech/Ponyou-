@@ -20,8 +20,15 @@ import { log } from "../logger.js";
 import { getAllAgentStatuses } from "../agents/agent-registry.js";
 import { getState } from "../state.js";
 import { getLastLlmSuccessTs } from "../llm-provider.js";
+import { atomicWriteJson } from "../atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Last cycle's checks, persisted for sidecar processes (web dashboard). The
+// watchdog stays alert-only toward the BOT — this file is pure observability
+// output, never read back by the bot itself.
+export const WATCHDOG_STATE_FILE =
+  process.env.PONYOU_WATCHDOG_STATE_FILE || path.join(__dirname, "..", "watchdog-state.json");
 
 // Max heartbeat age per running agent before it counts as dead. Cron-driven
 // agents get cron interval + slack; event-driven agents get a long leash.
@@ -218,6 +225,9 @@ export async function runWatchdogCycle({ send, overrides = {} } = {}) {
   // is itself only inferable from silence would repeat the disease it treats.
   const fails = checks.filter(c => !c.ok).length;
   log("watchdog", `cycle: ${checks.length - fails}/${checks.length} alive${fails ? ` — FAILING: ${checks.filter(c => !c.ok).map(c => c.id).join(", ")}` : ""}`);
+  try {
+    atomicWriteJson(overrides.statePath || WATCHDOG_STATE_FILE, { ts: new Date(now).toISOString(), checks });
+  } catch (e) { log("watchdog_error", `state persist failed: ${e.message}`); }
   return checks;
 }
 

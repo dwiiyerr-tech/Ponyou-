@@ -64,6 +64,7 @@ closed-positions-archive.json
 dashboard-cmd.json
 dashboard-response.json
 dashboard-token.txt
+watchdog-state.json
 agentdb.rvf
 agentdb.rvf.lock
 

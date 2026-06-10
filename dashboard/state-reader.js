@@ -281,19 +281,16 @@ export async function readBotState() {
     },
     win_rate: quality.win_rate ?? null,
     telegram,
-    brain_metrics: {
-      coreLoad: 30 + Math.random() * 40,
-      secondLoad: 10 + Math.random() * 20,
-    },
     second_brain: readSecondBrainVisuals(),
-    skill_metrics: {
-      cooking: 40 + Math.random() * 20,
-      swap: 70 + Math.random() * 10,
-      track: 50 + Math.random() * 15,
-      token: 85 + Math.random() * 5,
-      market: 90 + Math.random() * 5,
-      portfolio: 30 + Math.random() * 10
-    },
+    // Trade timeline for the monitor — wallet addresses deliberately omitted.
+    // (The old brain_metrics/skill_metrics fields were Math.random() theater;
+    // removed rather than fixed — there is no real signal behind them.)
+    recent_events: (state.recentEvents || []).slice(-40).reverse().map(e => ({
+      ts: e.ts || null,
+      action: e.action || "?",
+      symbol: e.pool_name || e.symbol || (e.position || "?").slice(0, 8),
+      reason: e.reason || null,
+    })),
     wallet_topology: state.walletTopology ?? { multi_wallet_enabled: false, wallets: [] }
   };
 }
