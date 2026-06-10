@@ -525,6 +525,55 @@ export async function writeStrategyInsights() {
   } catch { /* best-effort */ }
 }
 
+/** 60-Learning/_darwin.md — what the darwin loop has learned: signal fitness + shadow outcomes */
+export async function writeDarwinLearning() {
+  try {
+    const { getDarwinAnalytics } = await import("../lessons.js");
+    const { getShadowStats } = await import("./shadow-watchlist.js");
+
+    const vaultDir = _getVaultWriterDir();
+    const dir = path.join(vaultDir, "60-Learning");
+    _ensureDir(dir);
+
+    const analytics = getDarwinAnalytics(); // sorted by weight desc
+    const shadow    = getShadowStats();
+    const now       = new Date().toISOString();
+
+    // Compact frontmatter encodings (name:weight|wr%|uses) for the reader.
+    const enc = s => `${s.signal}:${s.weight.toFixed(2)}|${(s.win_rate * 100).toFixed(0)}|${s.total_uses}`;
+    const proven = analytics.filter(s => s.total_uses >= 3 && s.weight >= 1.1).slice(0, 4);
+    const weak   = analytics.filter(s => s.total_uses >= 3 && s.weight <= 0.9).slice(-4);
+
+    const rows = analytics.map(s => {
+      const trend = s.weight >= 1.1 ? "📈" : s.weight <= 0.9 ? "📉" : "➖";
+      return `| ${trend} ${s.signal} | ${s.weight.toFixed(2)} | ${(s.win_rate * 100).toFixed(0)}% | ${s.total_uses} |`;
+    }).join("\n");
+
+    const srcRows = Object.entries(shadow.by_source || {})
+      .sort((a, b) => (b[1].rugged + (b[1].mooned || 0)) - (a[1].rugged + (a[1].mooned || 0)))
+      .slice(0, 8)
+      .map(([src, s]) => `| ${src} | ${s.total ?? "?"} | ${s.rugged ?? 0} | ${s.mooned ?? 0} |`)
+      .join("\n");
+
+    const body =
+      `---\ntype: bot-snapshot\nupdated: ${now}\nsignals_tracked: ${analytics.length}\n` +
+      `proven_signals: "${proven.map(enc).join(", ")}"\nweak_signals: "${weak.map(enc).join(", ")}"\n` +
+      `shadow_watching: ${shadow.watching || 0}\nshadow_rugged: ${shadow.rugged || 0}\n` +
+      `shadow_mooned: ${shadow.mooned || 0}\nshadow_survived: ${shadow.survived || 0}\n---\n\n` +
+      `# Darwin Learning — Signal Fitness\n\n` +
+      `_Auto-generated. Weights learned from trade closes + shadow outcomes (rugs avoided / winners missed)._\n` +
+      `_Weight > 1 = component proved itself; < 1 = component votes for losers. Applied to aggregateSignal each screening._\n\n` +
+      (rows
+        ? `| signal | weight | win rate | samples |\n|--------|--------|----------|---------|\n${rows}\n\n`
+        : "_No learned signals yet — weights accumulate from trade closes and shadow outcomes._\n\n") +
+      `## Shadow Watchlist (learning without buying)\n\n` +
+      `Watching ${shadow.watching || 0} | rugs avoided ${shadow.rugged || 0} | winners missed ${shadow.mooned || 0} | survived ${shadow.survived || 0}\n\n` +
+      (srcRows ? `| source | watched | rugged | mooned |\n|--------|---------|--------|--------|\n${srcRows}\n` : "");
+
+    atomicWriteText(path.join(dir, "_darwin.md"), body);
+  } catch { /* best-effort */ }
+}
+
 /**
  * Create template operator files on first vault intelligence activation.
  * Called once; templates guide the operator on how to write lessons.
@@ -603,5 +652,6 @@ export async function refreshVaultSnapshots() {
     writeActiveRugPatterns(),
     writeChainStatus(),
     writeStrategyInsights(),
+    writeDarwinLearning(),
   ]);
 }

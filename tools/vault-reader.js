@@ -365,6 +365,25 @@ export function getVaultIntelligenceContext() {
       if (riskParts.length > 0) sections.push(`Risk: ${riskParts.join(" | ")}`);
     } catch { /* skip */ }
 
+    // ── 4b. Darwin learning (what the bot has learned so far) ─────────────────
+    try {
+      const dwFm = _readFileFrontmatter(path.join(vaultDir, "60-Learning", "_darwin.md"));
+      const parts = [];
+      // "name:weight|wr%|uses, ..." → "↑name(w1.45,62%wr)"
+      const fmtSig = (raw, arrow) => String(raw || "")
+        .split(",").map(s => s.trim()).filter(Boolean)
+        .map(s => {
+          const m = s.match(/^([\w:-]+):([\d.]+)\|(\d+)\|(\d+)$/);
+          return m ? `${arrow}${m[1]}(w${m[2]},${m[3]}%wr,n=${m[4]})` : null;
+        }).filter(Boolean);
+      parts.push(...fmtSig(dwFm.proven_signals, "↑"), ...fmtSig(dwFm.weak_signals, "↓"));
+      const rugN = Number(dwFm.shadow_rugged) || 0;
+      const moonN = Number(dwFm.shadow_mooned) || 0;
+      if (rugN > 0 || moonN > 0)
+        parts.push(`shadow: ${rugN} rugs avoided, ${moonN} winners missed`);
+      if (parts.length > 0) sections.push(`Learning: ${parts.join(" | ")}`);
+    } catch { /* skip */ }
+
     // ── 5. Operator config ────────────────────────────────────────────────────
     try {
       const fm = parseFrontmatter(fs.readFileSync(notesFile, "utf8"));
