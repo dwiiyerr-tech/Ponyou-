@@ -14,12 +14,15 @@ const GCSS = `
   @keyframes blink    { 0%,100%{opacity:1} 50%{opacity:.18} }
   @keyframes fadeIn   { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:none} }
   @keyframes bloodflow { to { stroke-dashoffset: -24; } }
-  .cosmos-thread { stroke:#FFFFFF; stroke-opacity:.10; stroke-width:1; transition: stroke-opacity .4s; }
+  .cosmos-thread { stroke:#FFFFFF; stroke-opacity:.09; stroke-width:1; transition: stroke-opacity .4s; }
   .cosmos-thread.flow {
-    stroke:#E54D5A; stroke-opacity:.95; stroke-width:1.6;
+    stroke:#E54D5A; stroke-opacity:.95; stroke-width:1.7;
     stroke-dasharray:5 7; animation: bloodflow .55s linear infinite;
-    filter: drop-shadow(0 0 3px rgba(229,77,90,.8));
+    filter: drop-shadow(0 0 4px rgba(229,77,90,.9));
   }
+  @keyframes sunBreathe { 0%,100%{transform:scale(1);opacity:.85} 50%{transform:scale(1.06);opacity:1} }
+  @keyframes coronaSpin { to { transform: rotate(360deg); } }
+  @keyframes twinkle { 0%,100%{opacity:.9} 50%{opacity:.25} }
   * { box-sizing:border-box; margin:0; padding:0; }
   ::-webkit-scrollbar { width:4px; height:4px; }
   ::-webkit-scrollbar-thumb { background:#20202A; border-radius:2px; }
@@ -188,31 +191,45 @@ function cosmosEntitiesOf(rawType, text) {
   return out;
 }
 
+// hue = sphere base; planets get a 3D radial-gradient body, a faint
+// atmosphere glow, and depth scaling along the ellipse. ring: saturn-style.
 const PLANETS = [
-  { id: "management",      label: "MGMT",      col: C.orange,  orbit: 72,  size: 9, phase: 0.05, speed: 0.00016 },
-  { id: "screening",       label: "SCREEN",    col: C.purple,  orbit: 72,  size: 8, phase: 0.38, speed: 0.00016 },
-  { id: "hunters",         label: "HUNTERS",   col: C.amber,   orbit: 72,  size: 8, phase: 0.71, speed: 0.00016 },
-  { id: "trash-layer",     label: "TRASH",     col: C.purpleL, orbit: 112, size: 7, phase: 0.10, speed: 0.00011 },
-  { id: "learning",        label: "LEARN",     col: C.green,   orbit: 112, size: 7, phase: 0.35, speed: 0.00011 },
-  { id: "portfolio",       label: "PORTFOLIO", col: C.orangeL, orbit: 112, size: 7, phase: 0.60, speed: 0.00011 },
-  { id: "social-hunter",   label: "SOCIAL",    col: C.amber,   orbit: 112, size: 7, phase: 0.85, speed: 0.00011 },
-  { id: "orchestrator",    label: "ORCH",      col: C.ink2,    orbit: 150, size: 6, phase: 0.12, speed: 0.00007 },
-  { id: "pro-orchestrator",label: "PRO-ORCH",  col: C.ink2,    orbit: 150, size: 6, phase: 0.37, speed: 0.00007 },
-  { id: "general",         label: "GENERAL",   col: C.ink2,    orbit: 150, size: 6, phase: 0.62, speed: 0.00007 },
-  { id: "watchdog",        label: "WATCHDOG",  col: C.green,   orbit: 150, size: 6, phase: 0.87, speed: 0.00007 },
+  { id: "management",      label: "MGMT",      col: "#E88D6A", hi: "#F7C9B2", lo: "#5A2E1F", orbit: 105, size: 13, phase: 0.05, speed: 0.000150 },
+  { id: "screening",       label: "SCREEN",    col: "#9B7EC8", hi: "#D6C6EE", lo: "#3A2D55", orbit: 105, size: 11, phase: 0.38, speed: 0.000150 },
+  { id: "hunters",         label: "HUNTERS",   col: "#D4A35B", hi: "#F2DCB4", lo: "#5C4322", orbit: 105, size: 11, phase: 0.71, speed: 0.000150 },
+  { id: "trash-layer",     label: "TRASH",     col: "#8E8EA8", hi: "#D4D4E4", lo: "#33334A", orbit: 168, size: 9,  phase: 0.10, speed: 0.000095 },
+  { id: "learning",        label: "LEARN",     col: "#6BA879", hi: "#BFE3C8", lo: "#27412E", orbit: 168, size: 10, phase: 0.35, speed: 0.000095 },
+  { id: "portfolio",       label: "PORTFOLIO", col: "#C9876B", hi: "#F0CBB8", lo: "#4E2F22", orbit: 168, size: 11, phase: 0.60, speed: 0.000095, ring: true },
+  { id: "social-hunter",   label: "SOCIAL",    col: "#B8865B", hi: "#E8CCAC", lo: "#473324", orbit: 168, size: 8,  phase: 0.85, speed: 0.000095 },
+  { id: "orchestrator",    label: "ORCH",      col: "#7E9BC8", hi: "#C6D6EE", lo: "#2D3A55", orbit: 228, size: 8,  phase: 0.12, speed: 0.000062 },
+  { id: "pro-orchestrator",label: "PRO-ORCH",  col: "#A87E9B", hi: "#E3C6D6", lo: "#412D3A", orbit: 228, size: 8,  phase: 0.37, speed: 0.000062 },
+  { id: "general",         label: "GENERAL",   col: "#9898B0", hi: "#D8D8E8", lo: "#383850", orbit: 228, size: 7,  phase: 0.62, speed: 0.000062 },
+  { id: "watchdog",        label: "WATCHDOG",  col: "#6BA8A0", hi: "#BFE3DD", lo: "#27413D", orbit: 228, size: 8,  phase: 0.87, speed: 0.000062 },
 ];
 const STARS = [
-  { id: "gmgn",        label: "GMGN",        x: 70,  y: 64 },
-  { id: "helius",      label: "HELIUS",      x: 240, y: 34 },
-  { id: "dexscreener", label: "DEXSCREENER", x: 430, y: 26 },
-  { id: "shyft",       label: "SHYFT",       x: 620, y: 34 },
-  { id: "gecko",       label: "GECKO",       x: 790, y: 64 },
-  { id: "jupiter",     label: "JUPITER",     x: 70,  y: 400 },
-  { id: "pumpfun",     label: "PUMP.FUN",    x: 300, y: 432 },
-  { id: "telegram",    label: "TELEGRAM",    x: 560, y: 432 },
-  { id: "llm",         label: "LLM (NIM)",   x: 790, y: 400 },
+  { id: "gmgn",        label: "GMGN",        x: 80,  y: 70 },
+  { id: "helius",      label: "HELIUS",      x: 280, y: 38 },
+  { id: "dexscreener", label: "DEXSCREENER", x: 500, y: 28 },
+  { id: "shyft",       label: "SHYFT",       x: 720, y: 38 },
+  { id: "gecko",       label: "GECKO",       x: 920, y: 70 },
+  { id: "jupiter",     label: "JUPITER",     x: 80,  y: 470 },
+  { id: "pumpfun",     label: "PUMP.FUN",    x: 350, y: 508 },
+  { id: "telegram",    label: "TELEGRAM",    x: 650, y: 508 },
+  { id: "llm",         label: "LLM (NIM)",   x: 920, y: 470 },
 ];
-const SUN = { x: 430, y: 230 };
+const SUN = { x: 500, y: 268 };
+// Deterministic decorative starfield (hash-seeded, stable across renders —
+// pure backdrop, carries no data).
+const BG_STARS = Array.from({ length: 160 }, (_, i) => {
+  const h = (i * 2654435761 + 0x9e3779b9) >>> 0;
+  return {
+    x: h % 1000,
+    y: (h >>> 10) % 540,
+    r: 0.4 + ((h >>> 20) % 9) / 11,
+    o: 0.12 + ((h >>> 24) % 50) / 100,
+    tw: (h >>> 29) % 7 === 0,
+  };
+});
 
 function AgentCosmos({ bus, watchdog }) {
   const planetRefs = useRef({});   // id → <g>
@@ -251,13 +268,17 @@ function AgentCosmos({ bus, watchdog }) {
 
       for (const p of PLANETS) {
         const a = (p.phase + now * p.speed % 1) * Math.PI * 2;
-        const x = SUN.x + Math.cos(a) * p.orbit * 1.55;
-        const y = SUN.y + Math.sin(a) * p.orbit * 0.78; // elliptical for depth
+        const x = SUN.x + Math.cos(a) * p.orbit * 1.9;
+        const y = SUN.y + Math.sin(a) * p.orbit * 0.46; // elliptical orbit
+        // pseudo-3D: lower half of the ellipse is "near" — bigger + brighter
+        const depth = (Math.sin(a) + 1) / 2;
+        const scale = 0.78 + depth * 0.5;
         const g = planetRefs.current[p.id];
         const th = planetThreads.current[p.id];
         if (g) {
-          g.setAttribute("transform", `translate(${x},${y})`);
-          g.style.filter = isActive(p.id) ? "drop-shadow(0 0 6px rgba(229,77,90,.9))" : "none";
+          g.setAttribute("transform", `translate(${x},${y}) scale(${scale})`);
+          g.style.opacity = 0.62 + depth * 0.38;
+          g.style.filter = isActive(p.id) ? "drop-shadow(0 0 7px rgba(229,77,90,.95))" : "none";
         }
         if (th) {
           th.setAttribute("x2", x); th.setAttribute("y2", y);
@@ -284,56 +305,118 @@ function AgentCosmos({ bus, watchdog }) {
     <Panel
       title="AGENT COSMOS · LIVE WORKFLOW"
       right={<Lbl col={C.dim}>white = idle · <span style={{ color: C.red }}>red flow = real event ≤10s</span></Lbl>}
-      style={{ minHeight: 500 }}
+      style={{ minHeight: 560 }}
     >
-      <svg viewBox="0 0 860 460" style={{ width: "100%", height: "auto", display: "block" }}>
-        {/* orbit rings */}
-        {[72, 112, 150].map(r => (
-          <ellipse key={r} cx={SUN.x} cy={SUN.y} rx={r * 1.55} ry={r * 0.78}
-            fill="none" stroke={C.border} strokeWidth="1" strokeDasharray="2 5" />
+      <svg viewBox="0 0 1000 540" style={{ width: "100%", height: "auto", display: "block", borderRadius: 4 }}>
+        <defs>
+          {/* deep space */}
+          <radialGradient id="space" cx="50%" cy="48%" r="75%">
+            <stop offset="0%" stopColor="#0C0A18" />
+            <stop offset="55%" stopColor="#070710" />
+            <stop offset="100%" stopColor="#030306" />
+          </radialGradient>
+          <radialGradient id="nebulaP" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#9B7EC8" stopOpacity=".14" /><stop offset="100%" stopColor="#9B7EC8" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id="nebulaO" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#E88D6A" stopOpacity=".10" /><stop offset="100%" stopColor="#E88D6A" stopOpacity="0" />
+          </radialGradient>
+          {/* sun layers */}
+          <radialGradient id="sunCorona" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#F2B088" stopOpacity=".55" />
+            <stop offset="35%" stopColor="#E88D6A" stopOpacity=".22" />
+            <stop offset="70%" stopColor="#C45B3A" stopOpacity=".07" />
+            <stop offset="100%" stopColor="#C45B3A" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id="sunCore" cx="42%" cy="38%" r="68%">
+            <stop offset="0%" stopColor="#FFF6E8" />
+            <stop offset="28%" stopColor="#F7C9A0" />
+            <stop offset="62%" stopColor="#E88D6A" />
+            <stop offset="100%" stopColor="#B34A2E" />
+          </radialGradient>
+          {/* one 3D sphere gradient per planet (lit from upper-left) */}
+          {PLANETS.map(p => (
+            <radialGradient key={`g-${p.id}`} id={`pl-${p.id}`} cx="33%" cy="28%" r="78%">
+              <stop offset="0%" stopColor={p.hi} />
+              <stop offset="45%" stopColor={p.col} />
+              <stop offset="100%" stopColor={p.lo} />
+            </radialGradient>
+          ))}
+          <radialGradient id="starGlow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity=".9" /><stop offset="40%" stopColor="#D0D0E8" stopOpacity=".25" /><stop offset="100%" stopColor="#D0D0E8" stopOpacity="0" />
+          </radialGradient>
+        </defs>
+
+        {/* backdrop */}
+        <rect x="0" y="0" width="1000" height="540" fill="url(#space)" />
+        <ellipse cx="240" cy="420" rx="300" ry="160" fill="url(#nebulaP)" />
+        <ellipse cx="800" cy="120" rx="280" ry="150" fill="url(#nebulaO)" />
+        {BG_STARS.map((s, i) => (
+          <circle key={i} cx={s.x} cy={s.y} r={s.r} fill="#E8E8F4" opacity={s.o}
+            style={s.tw ? { animation: `twinkle ${2 + (i % 5)}s ease-in-out infinite` } : undefined} />
         ))}
-        {/* star threads (source → core) */}
+
+        {/* orbit rings */}
+        {[105, 168, 228].map(r => (
+          <ellipse key={r} cx={SUN.x} cy={SUN.y} rx={r * 1.9} ry={r * 0.46}
+            fill="none" stroke="#FFFFFF" strokeOpacity=".06" strokeWidth="1" />
+        ))}
+
+        {/* threads — the data layer */}
         {STARS.map(s => (
           <line key={`t-${s.id}`} ref={el => (starThreads.current[s.id] = el)}
             x1={s.x} y1={s.y} x2={SUN.x} y2={SUN.y} className="cosmos-thread" />
         ))}
-        {/* planet threads (core → agent) */}
         {PLANETS.map(p => (
           <line key={`t-${p.id}`} ref={el => (planetThreads.current[p.id] = el)}
             x1={SUN.x} y1={SUN.y} x2={SUN.x} y2={SUN.y} className="cosmos-thread" />
         ))}
+
         {/* sun — the Ponyou core */}
-        <g style={{ animation: "orbGlow 2.6s ease-in-out infinite" }}>
-          <defs>
-            <radialGradient id="sun1" cx="38%" cy="32%" r="65%">
-              <stop offset="0%" stopColor="#F2B088" /><stop offset="50%" stopColor={C.orange} /><stop offset="100%" stopColor={C.purple} />
-            </radialGradient>
-          </defs>
-          <circle cx={SUN.x} cy={SUN.y} r="30" fill="url(#sun1)" opacity=".95" />
-          <circle cx={SUN.x} cy={SUN.y} r="19" fill="#101016" />
-          <path d={`M ${SUN.x} ${SUN.y - 19} A 19 19 0 0 1 ${SUN.x + 19} ${SUN.y}`} stroke="white" strokeWidth="2.6" fill="none" strokeLinecap="round" opacity=".9" />
-          <path d={`M ${SUN.x} ${SUN.y + 19} A 19 19 0 0 1 ${SUN.x - 19} ${SUN.y}`} stroke="white" strokeWidth="2.6" fill="none" strokeLinecap="round" opacity=".9" />
-          <circle cx={SUN.x} cy={SUN.y} r="3" fill="#F2B088" />
-          <text x={SUN.x} y={SUN.y + 48} textAnchor="middle" fill={C.orange} fontSize="13" fontFamily={PX}>PONYOU CORE</text>
+        <circle cx={SUN.x} cy={SUN.y} r="118" fill="url(#sunCorona)"
+          style={{ animation: "sunBreathe 4s ease-in-out infinite", transformOrigin: `${SUN.x}px ${SUN.y}px` }} />
+        <g style={{ animation: "coronaSpin 90s linear infinite", transformOrigin: `${SUN.x}px ${SUN.y}px` }}>
+          {Array.from({ length: 12 }, (_, i) => {
+            const a = (i / 12) * Math.PI * 2;
+            return <line key={i}
+              x1={SUN.x + Math.cos(a) * 40} y1={SUN.y + Math.sin(a) * 40}
+              x2={SUN.x + Math.cos(a) * (54 + (i % 3) * 8)} y2={SUN.y + Math.sin(a) * (54 + (i % 3) * 8)}
+              stroke="#F2B088" strokeOpacity=".30" strokeWidth="1.6" strokeLinecap="round" />;
+          })}
         </g>
+        <circle cx={SUN.x} cy={SUN.y} r="38" fill="url(#sunCore)" />
+        <circle cx={SUN.x} cy={SUN.y} r="38" fill="none" stroke="#FFE9D0" strokeOpacity=".5" strokeWidth="1" />
+        <text x={SUN.x} y={SUN.y + 64} textAnchor="middle" fill="#F2B088" fontSize="15" fontFamily={PX} letterSpacing="2">PONYOU CORE</text>
+
         {/* stars — information sources */}
         {STARS.map(s => (
           <g key={s.id} ref={el => (starRefs.current[s.id] = el)}>
-            <path
-              d={`M ${s.x} ${s.y - 7} L ${s.x + 2.2} ${s.y - 2.2} L ${s.x + 7} ${s.y} L ${s.x + 2.2} ${s.y + 2.2} L ${s.x} ${s.y + 7} L ${s.x - 2.2} ${s.y + 2.2} L ${s.x - 7} ${s.y} L ${s.x - 2.2} ${s.y - 2.2} Z`}
-              fill={C.ink2} opacity=".85"
-            />
-            <text x={s.x} y={s.y + (s.y > SUN.y ? -12 : 18)} textAnchor="middle" fill={C.dim} fontSize="9" fontFamily={MN}>{s.label}</text>
+            <circle cx={s.x} cy={s.y} r="13" fill="url(#starGlow)" />
+            <path d={`M ${s.x} ${s.y - 8} Q ${s.x + 1.6} ${s.y - 1.6} ${s.x + 8} ${s.y} Q ${s.x + 1.6} ${s.y + 1.6} ${s.x} ${s.y + 8} Q ${s.x - 1.6} ${s.y + 1.6} ${s.x - 8} ${s.y} Q ${s.x - 1.6} ${s.y - 1.6} ${s.x} ${s.y - 8} Z`}
+              fill="#F4F4FF" opacity=".95" />
+            <text x={s.x} y={s.y + (s.y > SUN.y ? -16 : 22)} textAnchor="middle" fill={C.dim} fontSize="10" fontFamily={MN} letterSpacing=".5">{s.label}</text>
           </g>
         ))}
-        {/* planets — sub-agents */}
+
+        {/* planets — sub-agents (rendered at origin; tick() translates+scales) */}
         {PLANETS.map(p => {
           const dead = deadAgents.has(p.id);
           return (
             <g key={p.id} ref={el => (planetRefs.current[p.id] = el)}>
-              <circle r={p.size} fill={dead ? "#3a3a44" : p.col} opacity=".95"
+              {/* atmosphere */}
+              <circle r={p.size + 3.5} fill={dead ? "#3a3a44" : p.col} opacity=".16" />
+              {p.ring && (
+                <ellipse rx={p.size + 9} ry={(p.size + 9) * 0.32} fill="none"
+                  stroke={dead ? "#3a3a44" : p.hi} strokeOpacity=".55" strokeWidth="2"
+                  transform="rotate(-18)" />
+              )}
+              {/* body */}
+              <circle r={p.size} fill={dead ? "#2E2E38" : `url(#pl-${p.id})`}
                 stroke={dead ? C.red : "none"} strokeWidth={dead ? 2 : 0} />
-              <text y={p.size + 11} textAnchor="middle" fill={dead ? C.red : C.dim} fontSize="9" fontFamily={MN}>
+              {/* specular highlight */}
+              {!dead && <ellipse cx={-p.size * 0.32} cy={-p.size * 0.38} rx={p.size * 0.28} ry={p.size * 0.18}
+                fill="#FFFFFF" opacity=".35" transform="rotate(-25)" />}
+              <text y={p.size + 14} textAnchor="middle" fill={dead ? C.red : C.ink2} fontSize="10" fontFamily={MN} letterSpacing=".5">
                 {p.label}{dead ? " ✕" : ""}
               </text>
             </g>
@@ -841,7 +924,7 @@ export default function App() {
     return () => { stop = true; clearInterval(iv); };
   }, []);
 
-  const cols = mobile ? "1fr" : "0.85fr 2fr 0.85fr";
+  const cols = mobile ? "1fr" : "0.75fr 2.5fr 0.75fr";
 
   return (
     <div style={{ background: C.bg, minHeight: "100vh", padding: 12, color: C.ink }}>
@@ -861,7 +944,6 @@ export default function App() {
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <LivenessPanel watchdog={internals?.watchdog} />
             <GmgnPanel gmgn={gmgn} exp={internals?.experiment_gmgn_row} />
-            <FeaturesPanel features={botState?.features} />
           </div>
           {/* col 2 (wide) — the living system + trading */}
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -870,7 +952,10 @@ export default function App() {
               <PositionsPanel positions={botState?.positions} />
               <TimelinePanel events={botState?.recent_events} />
             </div>
-            <PortfolioPanel portfolio={portfolio} skillLoop={skillLoop} />
+            <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 12, alignItems: "start" }}>
+              <PortfolioPanel portfolio={portfolio} skillLoop={skillLoop} />
+              <FeaturesPanel features={botState?.features} />
+            </div>
           </div>
           {/* col 3 — learning */}
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
