@@ -317,6 +317,71 @@ describe("getCapitalGuardStatus", () => {
   });
 });
 
+// ─── daily rollover ───────────────────────────────────────────────────────────
+
+describe("daily rollover", () => {
+  it("layer 4 permanent halt survives UTC midnight", () => {
+    const day1 = new Date("2026-06-10T20:00:00Z").getTime();
+    initCapitalGuard(1000, day1);
+    reportCapital(700, CFG, day1); // -30% → layer 4
+    const day2 = new Date("2026-06-11T01:00:00Z").getTime();
+    const check = checkCapitalGuard(day2);
+    expect(check.blocked).toBe(true);
+    expect(check.level).toBe(4);
+    // and it must not re-trip the kill switch on the next report
+    expect(reportCapital(600, CFG, day2).tripped).toBe(false);
+  });
+
+  it("layer 1/2 clear at midnight but layer 3 survives", () => {
+    const day1 = new Date("2026-06-10T20:00:00Z").getTime();
+    initCapitalGuard(1000, day1);
+    reportCapital(2000, CFG, day1);
+    reportCapital(1400, CFG, day1); // peak dd -30% → layer 3 (24 h)
+    const day2 = new Date("2026-06-11T01:00:00Z").getTime();
+    const check = checkCapitalGuard(day2);
+    expect(check.blocked).toBe(true);
+    expect(check.level).toBe(3);
+  });
+});
+
+// ─── reset rebases baselines ──────────────────────────────────────────────────
+
+describe("resetCapitalGuardLayer — baseline rebase", () => {
+  it("layer 1 reset rebases daily start so it does not re-trip immediately", () => {
+    const now = Date.now();
+    initCapitalGuard(1000, now);
+    reportCapital(940, CFG, now); // -6% → layer 1
+    expect(resetCapitalGuardLayer(1, now)).toBe(true);
+    // Still down -6.2% vs the ORIGINAL start — but baseline is now 940,
+    // so this report is only -0.2% and must not re-trip.
+    expect(reportCapital(938, CFG, now).tripped).toBe(false);
+    expect(checkCapitalGuard(now).blocked).toBe(false);
+  });
+
+  it("layer 3 reset rebases peak so it does not re-trip immediately", () => {
+    const now = Date.now();
+    initCapitalGuard(1000, now);
+    reportCapital(2000, CFG, now); // peak 2000
+    reportCapital(1400, CFG, now); // -30% from peak → layer 3
+    expect(resetCapitalGuardLayer(3, now)).toBe(true);
+    // Peak rebased to 1400 → 1390 is only -0.7% drawdown.
+    expect(reportCapital(1390, CFG, now).tripped).toBe(false);
+    expect(checkCapitalGuard(now).blocked).toBe(false);
+  });
+});
+
+// ─── status fallback to last reported capital ─────────────────────────────────
+
+describe("getCapitalGuardStatus — lastCapitalUsd fallback", () => {
+  it("computes percentages from the last reported balance when currentUsd omitted", () => {
+    initCapitalGuard(1000);
+    reportCapital(980, CFG); // -2%, no trip
+    const s = getCapitalGuardStatus();
+    expect(s.current_usd).toBe(980);
+    expect(s.daily_pnl_pct).toBeCloseTo(-2, 1);
+  });
+});
+
 // ─── layer priority ordering ──────────────────────────────────────────────────
 
 describe("layer priority — higher layer wins in checkCapitalGuard", () => {

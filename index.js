@@ -1570,21 +1570,66 @@ async function handleStrategyTelegramCommand(text) {
 
   if (cmd === "/web") {
     const sub = (parts[1] || "").toLowerCase();
-    if (sub === "on") {
-      import("child_process").then(({ exec }) => {
-        exec("pm2 start ponyou-dashboard");
-      });
-      await sendHTML("🌐 <b>Website Dashboard diaktifkan.</b>\nAkses di <code>http://[IP-VPS]:3000</code>");
-      return true;
-    }
-    if (sub === "off") {
-      import("child_process").then(({ exec }) => {
-        exec("pm2 stop ponyou-dashboard");
-      });
-      await sendHTML("🛑 <b>Website Dashboard dimatikan.</b>\nResource VPS kembali dihemat.");
+    if (sub === "on" || sub === "off") {
+      const pm2Cmd = sub === "on" ? "pm2 start ponyou-dashboard" : "pm2 stop ponyou-dashboard";
+      const { exec } = await import("child_process");
+      const err = await new Promise((resolve) => exec(pm2Cmd, (e) => resolve(e)));
+      if (err) {
+        await sendHTML(`⚠️ <b>Gagal ${sub === "on" ? "menyalakan" : "mematikan"} dashboard.</b>\n<code>${htmlEscape(err.message.slice(0, 300))}</code>`);
+        return true;
+      }
+      await sendHTML(sub === "on"
+        ? "🌐 <b>Website Dashboard diaktifkan.</b>\nAkses di <code>http://[IP-VPS]:3000</code>"
+        : "🛑 <b>Website Dashboard dimatikan.</b>\nResource VPS kembali dihemat.");
       return true;
     }
     await sendHTML("Gunakan <code>/web on</code> untuk menyalakan dashboard, dan <code>/web off</code> untuk mematikan.");
+    return true;
+  }
+
+  if (cmd === "/guard") {
+    const sub = (parts[1] || "").toLowerCase();
+    if (sub === "reset") {
+      const layerNum = parseInt(parts[2], 10);
+      if (![1, 2, 3].includes(layerNum)) {
+        await sendHTML("Gunakan <code>/guard reset 1|2|3</code>.\nLayer 4 = kill switch — reset lewat <code>/unkill</code>.");
+        return true;
+      }
+      const ok = resetCapitalGuardLayer(layerNum);
+      await sendHTML(ok
+        ? `✅ Capital guard layer ${layerNum} di-reset. Baseline di-rebase ke balance terakhir agar tidak langsung trip lagi.`
+        : `Layer ${layerNum} tidak sedang aktif.`);
+      return true;
+    }
+    const s = getCapitalGuardStatus();
+    const lines = [
+      `🛡 <b>Capital Guard</b> ${config.capitalGuard?.enabled ? "(aktif)" : "(NONAKTIF — set capitalGuard.enabled di user-config.json)"}`,
+      s.blocked ? `⛔ BLOCKED L${s.active_level}: ${htmlEscape(s.reason || "")}` : "✅ Tidak memblokir entry",
+      s.resume_at ? `Resume: <code>${htmlEscape(s.resume_at)}</code>` : null,
+      `Daily PnL: ${s.daily_pnl_pct != null ? s.daily_pnl_pct + "%" : "?"} (start $${s.daily_start_usd ?? "?"})`,
+      `Peak DD: ${s.peak_dd_pct != null ? s.peak_dd_pct + "%" : "?"} (peak $${s.peak_capital_usd ?? "?"})`,
+      `L1 ${s.layer1 ? "🟡 tripped" : "—"} · L2 ${s.layer2 ? "🔴 tripped" : "—"} · L3 ${s.layer3 ? "⛔ tripped" : "—"} · L4 ${s.layer4_tripped ? "🛑 HALT" : "—"}`,
+      "Reset layer: <code>/guard reset 1|2|3</code>",
+    ].filter(Boolean);
+    await sendHTML(lines.join("\n"));
+    return true;
+  }
+
+  if (cmd === "/streak") {
+    const sub = (parts[1] || "").toLowerCase();
+    if (sub === "reset") {
+      resetStreak();
+      await sendHTML("✅ Streak multiplier di-reset ke 1.0.");
+      return true;
+    }
+    const s = getStreakStatus(config.streakSizer || {});
+    await sendHTML([
+      `🎲 <b>Streak Sizer</b> ${config.streakSizer?.enabled ? "(aktif)" : "(NONAKTIF — set streakSizer.enabled di user-config.json)"}`,
+      `Multiplier: <b>${s.multiplier}×</b>${s.at_floor ? " (floor)" : s.at_ceiling ? " (ceiling)" : ""}`,
+      `Streak: ${s.win_streak > 0 ? `📈 ${s.win_streak} win` : s.loss_streak > 0 ? `📉 ${s.loss_streak} loss` : "—"}`,
+      `Total: ${s.total_wins}W / ${s.total_losses}L`,
+      "Reset: <code>/streak reset</code>",
+    ].join("\n"));
     return true;
   }
 
@@ -2886,22 +2931,8 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     await syncOpenPositions(tokens.map(t => t.position_key || t.mint));
 
-    // Save live wallet topology state for dashboard monitoring
-    const { updateWalletTopology } = await import("./state.js");
-    const { getAllWallets, isMultiWalletEnabled, getActiveWallet } = await import("./tools/wallet-manager.js");
-    const activeW = getActiveWallet();
-    await updateWalletTopology({
-      multi_wallet_enabled: isMultiWalletEnabled(),
-      wallets: getAllWallets().map(w => ({
-        address: w.address,
-        label: w.label,
-        status: w.status,
-        capital_pct: w.capital_pct,
-        error_count: w.error_count,
-        cold_until: w.cold_until,
-        is_active: activeW && activeW.address === w.address
-      }))
-    });
+    // Save live wallet topology state for dashboard monitoring (deduped helper)
+    await flushWalletTopology().catch(e => log("wallet_topology", e.message));
 
     if (tokens.length === 0) {
       mgmtReport = "No open token positions.";
@@ -6225,26 +6256,34 @@ export function startCronJobs() {
 }
 
 // ─── Dashboard IPC ────────────────────────────────────────────────
+// Snapshot wallet topology into state.json for the dashboard. Called from the
+// 3-second IPC poll AND the management cycle, so it dedupes: state.json is only
+// rewritten when the topology actually changed since the last flush.
+let _lastTopologySnapshot = null;
+async function flushWalletTopology() {
+  const { updateWalletTopology } = await import("./state.js");
+  const { getAllWallets, isMultiWalletEnabled, getActiveWallet } = await import("./tools/wallet-manager.js");
+  const activeW = getActiveWallet();
+  const topology = {
+    multi_wallet_enabled: isMultiWalletEnabled(),
+    wallets: getAllWallets().map(w => ({
+      address: w.address,
+      label: w.label,
+      status: w.status,
+      capital_pct: w.capital_pct,
+      error_count: w.error_count,
+      cold_until: w.cold_until,
+      is_active: activeW && activeW.address === w.address
+    }))
+  };
+  const snapshot = JSON.stringify(topology);
+  if (snapshot === _lastTopologySnapshot) return;
+  _lastTopologySnapshot = snapshot;
+  await updateWalletTopology(topology);
+}
+
 export async function checkDashboardCommands() {
-  try {
-    const { updateWalletTopology } = await import("./state.js");
-    const { getAllWallets, isMultiWalletEnabled, getActiveWallet } = await import("./tools/wallet-manager.js");
-    const activeW = getActiveWallet();
-    await updateWalletTopology({
-      multi_wallet_enabled: isMultiWalletEnabled(),
-      wallets: getAllWallets().map(w => ({
-        address: w.address,
-        label: w.label,
-        status: w.status,
-        capital_pct: w.capital_pct,
-        error_count: w.error_count,
-        cold_until: w.cold_until,
-        is_active: activeW && activeW.address === w.address
-      }))
-    });
-  } catch (e) {
-    log("dashboard_ipc", "Topology flush failed: " + e.stack);
-  }
+  await flushWalletTopology().catch(e => log("dashboard_ipc", "Topology flush failed: " + e.message));
 
   const { default: fs } = await import("fs");
   const { default: path } = await import("path");

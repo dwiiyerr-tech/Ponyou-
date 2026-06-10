@@ -51,6 +51,7 @@ function defaultState(nowMs = Date.now()) {
     dailyDate: utcDateKey(nowMs),
     dailyStartUsd: null,
     peakCapitalUsd: null,
+    lastCapitalUsd: null, // most recent reported balance — used by status + operator reset
     layer1: null,        // null = not tripped; { trippedAt, resumeAt }
     layer2: null,
     layer3: null,
@@ -69,8 +70,13 @@ function loadState(nowMs = Date.now()) {
       return {
         ...defaultState(nowMs),
         peakCapitalUsd: parsed.peakCapitalUsd || null,
+        lastCapitalUsd: parsed.lastCapitalUsd || null,
         // layer3 (peak drawdown) survives day boundary if still active
         layer3: parsed.layer3 || null,
+        // layer4 is a permanent halt — it must NOT silently clear at midnight.
+        // The kill switch holds independently, but status reporting and the
+        // re-trip guard in reportCapital() rely on this flag surviving.
+        layer4Tripped: parsed.layer4Tripped === true,
       };
     }
     return { ...defaultState(nowMs), ...parsed };
@@ -113,6 +119,10 @@ export function initCapitalGuard(currentUsd, nowMs = Date.now()) {
     state.peakCapitalUsd = currentUsd;
     changed = true;
   }
+  if (state.lastCapitalUsd !== currentUsd) {
+    state.lastCapitalUsd = currentUsd;
+    changed = true;
+  }
   if (changed) {
     _state = persistState(state, nowMs);
   }
@@ -142,6 +152,10 @@ export function reportCapital(currentUsd, cfg = {}, nowMs = Date.now()) {
   }
   if (!state.dailyStartUsd || state.dailyStartUsd <= 0) {
     state.dailyStartUsd = currentUsd;
+    changed = true;
+  }
+  if (state.lastCapitalUsd !== currentUsd) {
+    state.lastCapitalUsd = currentUsd;
     changed = true;
   }
   if (changed) {
@@ -274,6 +288,15 @@ export function checkCapitalGuard(nowMs = Date.now()) {
 /**
  * Operator reset for layers 1–3.
  * Layer 4 trips the kill switch; reset it via kill-switch.js reset().
+ *
+ * Resetting also REBASES the layer's baseline to the last reported capital —
+ * without this the very next reportCapital() would re-trip the same layer,
+ * because the underlying daily-loss / peak-drawdown condition still holds:
+ *   layer 1/2 → dailyStartUsd := lastCapitalUsd (daily PnL restarts at 0%)
+ *   layer 3   → peakCapitalUsd := lastCapitalUsd (drawdown restarts at 0%)
+ * This is an explicit operator override; the trade-off is that the rest of
+ * today's loss (or the prior peak) is forgiven for guard purposes.
+ *
  * Returns true if the layer existed and was cleared, false otherwise.
  */
 export function resetCapitalGuardLayer(layerNum, nowMs = Date.now()) {
@@ -282,8 +305,17 @@ export function resetCapitalGuardLayer(layerNum, nowMs = Date.now()) {
   if (![1, 2, 3].includes(layerNum) || !(key in state)) return false;
   if (!state[key]) return false;
   state[key] = null;
+  const rebase = Number.isFinite(state.lastCapitalUsd) && state.lastCapitalUsd > 0
+    ? state.lastCapitalUsd
+    : null;
+  if (rebase) {
+    if (layerNum === 3) state.peakCapitalUsd = rebase;
+    else state.dailyStartUsd = rebase;
+  }
   _state = persistState(state, nowMs);
-  log("capital_guard", `Layer ${layerNum} reset by operator`);
+  log("capital_guard",
+    `Layer ${layerNum} reset by operator` +
+    (rebase ? ` — ${layerNum === 3 ? "peak" : "daily baseline"} rebased to $${rebase.toFixed(2)}` : ""));
   return true;
 }
 
@@ -293,6 +325,14 @@ export function resetCapitalGuardLayer(layerNum, nowMs = Date.now()) {
 export function getCapitalGuardStatus(currentUsd = null, nowMs = Date.now()) {
   const state = getState(nowMs);
   const check = checkCapitalGuard(nowMs);
+
+  // Fall back to the last reported balance so status callers (Telegram,
+  // dashboard) get live percentages without having to fetch the wallet.
+  if (!Number.isFinite(currentUsd) || currentUsd <= 0) {
+    currentUsd = Number.isFinite(state.lastCapitalUsd) && state.lastCapitalUsd > 0
+      ? state.lastCapitalUsd
+      : null;
+  }
 
   const dailyPct = state.dailyStartUsd > 0 && Number.isFinite(currentUsd) && currentUsd > 0
     ? Number(((currentUsd - state.dailyStartUsd) / state.dailyStartUsd * 100).toFixed(2))
