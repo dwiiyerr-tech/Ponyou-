@@ -78,6 +78,21 @@ export default function setup() {
       const src = path.join(backupDir, backupName(rel));
       const dst = path.join(ROOT, rel);
       if (existed.has(rel)) {
+        try {
+          // The MCP collab server (or another agent) may legitimately write a
+          // guarded file WHILE tests run; a blind restore would destroy that
+          // write (this lost experiment #8 + task #5 on 2026-06-10). We can't
+          // tell a test write from an external one, so before restoring we
+          // park the about-to-be-clobbered version where it can be recovered.
+          const cur = fs.readFileSync(dst);
+          if (!cur.equals(fs.readFileSync(src))) {
+            const raceDir = path.join(os.tmpdir(), "ponyou-test-race");
+            fs.mkdirSync(raceDir, { recursive: true });
+            const parked = path.join(raceDir, `${backupName(rel)}.${Date.now()}`);
+            fs.copyFileSync(dst, parked);
+            console.warn(`[tests/_globals] ${rel} changed during the test run; restoring pre-test version. The overwritten version is parked at ${parked} — merge manually if the change came from outside the tests.`);
+          }
+        } catch { /* dst missing or unreadable — plain restore below */ }
         try { fs.copyFileSync(src, dst); } catch { /* best-effort */ }
       } else if (fs.existsSync(dst)) {
         // File didn't exist before tests; remove the test-created leftover

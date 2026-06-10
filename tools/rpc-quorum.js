@@ -72,9 +72,14 @@ export function createRpcQuorum({ endpoints, timeoutMs = 2000, connectionFactory
         c.call(method, ...args)
           .then(result => {
             const elapsed = Date.now() - start;
+            // The health map can be rebuilt (endpoint list reconfigured) while
+            // a call is in flight — a late callback must not crash the process,
+            // but the resolve/reject flow below must still run.
             const h = health.get(c.url);
-            h.successCount += 1;
-            h.lastLatencyMs = elapsed;
+            if (h) {
+              h.successCount += 1;
+              h.lastLatencyMs = elapsed;
+            }
             if (!resolved) {
               resolved = true;
               clearTimeout(timeout);
@@ -83,11 +88,13 @@ export function createRpcQuorum({ endpoints, timeoutMs = 2000, connectionFactory
           })
           .catch(err => {
             const h = health.get(c.url);
-            h.failCount += 1;
-            h.lastError = err.message;
-            const total = h.successCount + h.failCount;
-            if (total >= 10 && h.successCount / total < 0.5) {
-              h.cooldownUntil = Date.now() + 60_000;
+            if (h) {
+              h.failCount += 1;
+              h.lastError = err.message;
+              const total = h.successCount + h.failCount;
+              if (total >= 10 && h.successCount / total < 0.5) {
+                h.cooldownUntil = Date.now() + 60_000;
+              }
             }
             errors.push({ url: c.url, error: err.message });
             pending -= 1;
