@@ -64,6 +64,30 @@ describe("readBotState", () => {
     expect((await readBotState()).bot_running).toBe(false);
   });
 
+  it("treats a fresh watchdog-state.json as proof of life during learning-mode pause", async () => {
+    // Learning mode gates the trading cycles, so metrics.json goes quiet —
+    // but the watchdog keeps writing every 15 minutes. The bot is PAUSED,
+    // not STOPPED.
+    fs.writeFileSync(path.join(tmpDir, "watchdog-state.json"), JSON.stringify({ ts: new Date().toISOString(), checks: [] }));
+    fs.writeFileSync(
+      path.join(tmpDir, "learning-state.json"),
+      JSON.stringify({ active: true, endAt: new Date(Date.now() + 9 * 60_000).toISOString() })
+    );
+    const s = await readBotState();
+    expect(s.bot_running).toBe(true);
+    expect(s.learning_paused).toBe(true);
+    expect(s.features.learning_mode_active).toBe(true);
+  });
+
+  it("expired learning mode does not report paused", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "learning-state.json"),
+      JSON.stringify({ active: true, endAt: new Date(Date.now() - 60_000).toISOString() })
+    );
+    const s = await readBotState();
+    expect(s.learning_paused).toBe(false);
+  });
+
   it("falls back to metrics gauges for balance and SOL price", async () => {
     fs.writeFileSync(
       path.join(tmpDir, "metrics.json"),

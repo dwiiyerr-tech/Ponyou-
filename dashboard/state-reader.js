@@ -218,11 +218,22 @@ export async function readBotState() {
   const lastUpdatedMs = Date.parse(state.lastUpdated || "");
   const stateFresh = Number.isFinite(lastUpdatedMs) && Date.now() - lastUpdatedMs <= 30_000;
   // SR-2: state.json freshness alone made the dashboard report STOPPED
-  // whenever the book was quiet for >30s. A fresh metrics.json mtime is the
-  // real cross-process heartbeat: the management cron (10 min) always records
-  // activity, so 20 min of silence genuinely means the process is gone.
+  // whenever the book was quiet for >30s. Cross-process heartbeats, any of:
+  // - metrics.json mtime — written whenever a cycle records activity, BUT goes
+  //   quiet during learning-mode pause (trading cycles are gated);
+  // - watchdog-state.json mtime — written every 15-min watchdog cycle even
+  //   while trading is paused, so it is the strongest proof the process lives.
   const metricsMtime = fileMtimeMs("metrics.json");
   const metricsFresh = metricsMtime != null && Date.now() - metricsMtime <= 20 * 60_000;
+  const watchdogMtime = fileMtimeMs("watchdog-state.json");
+  const watchdogFresh = watchdogMtime != null && Date.now() - watchdogMtime <= 20 * 60_000;
+
+  // Learning-mode pause (adaptive risk throttle): the bot is alive but
+  // deliberately not trading. Surfaced so the UI can say PAUSED instead of
+  // the misleading RUNNING/STOPPED binary.
+  const learning = readJson("learning-state.json");
+  const learningEndAt = Date.parse(learning.endAt || "");
+  const learningPaused = Boolean(learning.active) && Number.isFinite(learningEndAt) && learningEndAt > Date.now();
 
   // state.json never carried pnl_today_usd / balance_sol — they rendered as
   // permanent zeros. Derive session PnL from the bot's last observed wallet
@@ -234,7 +245,9 @@ export async function readBotState() {
     : 0;
 
   return {
-    bot_running: Boolean(state.cron_started ?? (stateFresh || metricsFresh)),
+    bot_running: Boolean(state.cron_started ?? (stateFresh || metricsFresh || watchdogFresh)),
+    learning_paused: learningPaused,
+    learning_resume_at: learningPaused ? learning.endAt : null,
     balance_sol: Number(state.balance_sol ?? gauges.balance_sol) || 0,
     sol_price: solPrice,
     pnl_today_usd: state.pnl_today_usd ?? pnlSessionUsd,
@@ -245,7 +258,7 @@ export async function readBotState() {
       daily_guard_enabled: Boolean(
         cfg.dailyTradeGuard?.enabled ?? cfg.dailyTradeGuardEnabled ?? false
       ),
-      learning_mode_active: Boolean(state.learning_mode_active ?? false),
+      learning_mode_active: learningPaused,
       confirm_mode: Boolean(cfg.confirmMode ?? false),
       auto_enabled: Boolean(cfg.automationEnabled ?? true),
       trash_filter_enabled: Boolean(cfg.trashFilterEnabled ?? true),

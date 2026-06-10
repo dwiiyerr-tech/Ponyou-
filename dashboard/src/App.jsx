@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, startTransition } from "react";
+import { useState, useEffect, useMemo, useRef, startTransition } from "react";
 
 /* ════════════════════════════════════════════════════════════════
    PONYOU // MISSION CONTROL
@@ -13,6 +13,13 @@ const GCSS = `
   @keyframes orbGlow  { 0%,100%{filter:drop-shadow(0 0 6px rgba(232,141,106,.5))} 50%{filter:drop-shadow(0 0 14px rgba(232,141,106,.8))} }
   @keyframes blink    { 0%,100%{opacity:1} 50%{opacity:.18} }
   @keyframes fadeIn   { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:none} }
+  @keyframes bloodflow { to { stroke-dashoffset: -24; } }
+  .cosmos-thread { stroke:#FFFFFF; stroke-opacity:.10; stroke-width:1; transition: stroke-opacity .4s; }
+  .cosmos-thread.flow {
+    stroke:#E54D5A; stroke-opacity:.95; stroke-width:1.6;
+    stroke-dasharray:5 7; animation: bloodflow .55s linear infinite;
+    filter: drop-shadow(0 0 3px rgba(229,77,90,.8));
+  }
   * { box-sizing:border-box; margin:0; padding:0; }
   ::-webkit-scrollbar { width:4px; height:4px; }
   ::-webkit-scrollbar-thumb { background:#20202A; border-radius:2px; }
@@ -135,6 +142,214 @@ const LiveClock = () => {
   return <span style={{ fontFamily: PX, fontSize: 22, color: C.ink2 }}>{v}</span>;
 };
 
+/* ─── Agent Cosmos — the living solar system ───────────────────────
+   Sun = Ponyou core. Planets = sub-agents (alive/dead from the real
+   watchdog checks). Stars = external information sources. Threads are
+   white when idle and run red — blood flow — only when a REAL log line
+   from that subsystem arrived in the last ACTIVE_MS. Orbital motion is
+   decoration; thread color is data.                                  */
+
+const ACTIVE_MS = 10_000;
+
+// raw log [TYPE] → agent planet id (must match agent-registry names).
+// Built from observed live log prefixes — extend when a new [TYPE] appears.
+const AGENT_LOG = {
+  HUNTER: "hunters", HUNTERS: "hunters", MARKET: "hunters", ONCHAIN: "hunters",
+  ONCHAIN_LISTENER: "hunters", SMART_MONEY: "hunters", CAST_NET: "hunters", GEYSER: "hunters",
+  SOCIAL_HUNTER: "social-hunter", SOCIAL_GATE: "social-hunter", SOCIAL_GATE_SUMMARY: "social-hunter",
+  SCREENING: "screening", RUG: "screening", RUG_MONITOR: "screening",
+  ORACLE: "screening", EXPERIMENT_GMGN_ROW: "screening", HOLDER_CLUSTER: "screening",
+  TRASH_FILTER: "trash-layer", TRASH_LAYER: "trash-layer",
+  CRON: "management", MANAGER: "management", TRADE: "management", SWAP: "management",
+  EXECUTION: "management", EXIT: "management", RISK: "management", LIQUIDITY: "management",
+  KILL_SWITCH: "management", CAPITAL_GUARD: "management",
+  LEARNING: "learning", SHADOW: "learning", DARWIN: "learning",
+  PORTFOLIO: "portfolio", STRATEGY: "portfolio", SKILL_LOOP: "portfolio",
+  ORCHESTRATOR: "orchestrator",
+  PRO_ORCHESTRATOR: "pro-orchestrator", AUTOMATION_RULES: "pro-orchestrator",
+  GENERAL: "general", PLAN: "general", PLAN_WARN: "general", VAULT: "general",
+  AGENT_REGISTRY: "general", DASHBOARD_IPC: "general",
+  WATCHDOG: "watchdog", WATCHDOG_ERROR: "watchdog",
+};
+// substring of [TYPE] or message → information-source star id
+const SOURCE_MATCH = [
+  ["gmgn", "gmgn"], ["helius", "helius"], ["dexscreener", "dexscreener"],
+  ["shyft", "shyft"], ["gecko", "gecko"], ["jupiter", "jupiter"], ["jito", "jupiter"],
+  ["telegram", "telegram"], ["llm", "llm"], ["nvidia", "llm"], ["nim", "llm"],
+  ["pump.fun", "pumpfun"], ["pumpfun", "pumpfun"],
+];
+function cosmosEntitiesOf(rawType, text) {
+  const out = [];
+  if (AGENT_LOG[rawType]) out.push(AGENT_LOG[rawType]);
+  const hay = `${rawType} ${text}`.toLowerCase();
+  for (const [needle, id] of SOURCE_MATCH) {
+    if (hay.includes(needle)) { out.push(id); break; }
+  }
+  return out;
+}
+
+const PLANETS = [
+  { id: "management",      label: "MGMT",      col: C.orange,  orbit: 72,  size: 9, phase: 0.05, speed: 0.00016 },
+  { id: "screening",       label: "SCREEN",    col: C.purple,  orbit: 72,  size: 8, phase: 0.38, speed: 0.00016 },
+  { id: "hunters",         label: "HUNTERS",   col: C.amber,   orbit: 72,  size: 8, phase: 0.71, speed: 0.00016 },
+  { id: "trash-layer",     label: "TRASH",     col: C.purpleL, orbit: 112, size: 7, phase: 0.10, speed: 0.00011 },
+  { id: "learning",        label: "LEARN",     col: C.green,   orbit: 112, size: 7, phase: 0.35, speed: 0.00011 },
+  { id: "portfolio",       label: "PORTFOLIO", col: C.orangeL, orbit: 112, size: 7, phase: 0.60, speed: 0.00011 },
+  { id: "social-hunter",   label: "SOCIAL",    col: C.amber,   orbit: 112, size: 7, phase: 0.85, speed: 0.00011 },
+  { id: "orchestrator",    label: "ORCH",      col: C.ink2,    orbit: 150, size: 6, phase: 0.12, speed: 0.00007 },
+  { id: "pro-orchestrator",label: "PRO-ORCH",  col: C.ink2,    orbit: 150, size: 6, phase: 0.37, speed: 0.00007 },
+  { id: "general",         label: "GENERAL",   col: C.ink2,    orbit: 150, size: 6, phase: 0.62, speed: 0.00007 },
+  { id: "watchdog",        label: "WATCHDOG",  col: C.green,   orbit: 150, size: 6, phase: 0.87, speed: 0.00007 },
+];
+const STARS = [
+  { id: "gmgn",        label: "GMGN",        x: 70,  y: 64 },
+  { id: "helius",      label: "HELIUS",      x: 240, y: 34 },
+  { id: "dexscreener", label: "DEXSCREENER", x: 430, y: 26 },
+  { id: "shyft",       label: "SHYFT",       x: 620, y: 34 },
+  { id: "gecko",       label: "GECKO",       x: 790, y: 64 },
+  { id: "jupiter",     label: "JUPITER",     x: 70,  y: 400 },
+  { id: "pumpfun",     label: "PUMP.FUN",    x: 300, y: 432 },
+  { id: "telegram",    label: "TELEGRAM",    x: 560, y: 432 },
+  { id: "llm",         label: "LLM (NIM)",   x: 790, y: 400 },
+];
+const SUN = { x: 430, y: 230 };
+
+function AgentCosmos({ bus, watchdog }) {
+  const planetRefs = useRef({});   // id → <g>
+  const planetThreads = useRef({}); // id → <line>
+  const starRefs = useRef({});     // id → <g>
+  const starThreads = useRef({});  // id → <line>
+  const activity = useRef(new Map());
+  const [activeNow, setActiveNow] = useState([]);
+
+  // Agent liveness from the real watchdog checks (agent:<name>).
+  const deadAgents = useMemo(() => {
+    const dead = new Set();
+    for (const c of watchdog?.checks || []) {
+      if (c.id.startsWith("agent:") && !c.ok) dead.add(c.id.slice(6));
+    }
+    return dead;
+  }, [watchdog]);
+
+  useEffect(() => {
+    if (!bus) return;
+    const onAct = (e) => activity.current.set(e.detail, Date.now());
+    bus.addEventListener("activity", onAct);
+    // Debug hook (console only): window.__cosmosPing("hunters") exercises the
+    // full bus→activity→thread path without waiting for a real log line.
+    window.__cosmosPing = (id) => bus.dispatchEvent(new CustomEvent("activity", { detail: id }));
+    return () => { bus.removeEventListener("activity", onAct); delete window.__cosmosPing; };
+  }, [bus]);
+
+  useEffect(() => {
+    let raf;
+    const labels = Object.fromEntries([...PLANETS, ...STARS].map(o => [o.id, o.label]));
+    let lastList = "";
+    const tick = () => {
+      const now = Date.now();
+      const isActive = (id) => now - (activity.current.get(id) || 0) < ACTIVE_MS;
+
+      for (const p of PLANETS) {
+        const a = (p.phase + now * p.speed % 1) * Math.PI * 2;
+        const x = SUN.x + Math.cos(a) * p.orbit * 1.55;
+        const y = SUN.y + Math.sin(a) * p.orbit * 0.78; // elliptical for depth
+        const g = planetRefs.current[p.id];
+        const th = planetThreads.current[p.id];
+        if (g) {
+          g.setAttribute("transform", `translate(${x},${y})`);
+          g.style.filter = isActive(p.id) ? "drop-shadow(0 0 6px rgba(229,77,90,.9))" : "none";
+        }
+        if (th) {
+          th.setAttribute("x2", x); th.setAttribute("y2", y);
+          th.setAttribute("class", isActive(p.id) ? "cosmos-thread flow" : "cosmos-thread");
+        }
+      }
+      for (const s of STARS) {
+        const g = starRefs.current[s.id];
+        const th = starThreads.current[s.id];
+        const on = isActive(s.id);
+        if (g) g.style.filter = on ? "drop-shadow(0 0 7px rgba(229,77,90,.9))" : "none";
+        if (th) th.setAttribute("class", on ? "cosmos-thread flow" : "cosmos-thread");
+      }
+      // Honest textual readout of what is pulsing right now (throttled).
+      const list = [...PLANETS, ...STARS].filter(o => isActive(o.id)).map(o => labels[o.id]).join(" · ");
+      if (list !== lastList) { lastList = list; setActiveNow(list ? list.split(" · ") : []); }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  return (
+    <Panel
+      title="AGENT COSMOS · LIVE WORKFLOW"
+      right={<Lbl col={C.dim}>white = idle · <span style={{ color: C.red }}>red flow = real event ≤10s</span></Lbl>}
+      style={{ minHeight: 500 }}
+    >
+      <svg viewBox="0 0 860 460" style={{ width: "100%", height: "auto", display: "block" }}>
+        {/* orbit rings */}
+        {[72, 112, 150].map(r => (
+          <ellipse key={r} cx={SUN.x} cy={SUN.y} rx={r * 1.55} ry={r * 0.78}
+            fill="none" stroke={C.border} strokeWidth="1" strokeDasharray="2 5" />
+        ))}
+        {/* star threads (source → core) */}
+        {STARS.map(s => (
+          <line key={`t-${s.id}`} ref={el => (starThreads.current[s.id] = el)}
+            x1={s.x} y1={s.y} x2={SUN.x} y2={SUN.y} className="cosmos-thread" />
+        ))}
+        {/* planet threads (core → agent) */}
+        {PLANETS.map(p => (
+          <line key={`t-${p.id}`} ref={el => (planetThreads.current[p.id] = el)}
+            x1={SUN.x} y1={SUN.y} x2={SUN.x} y2={SUN.y} className="cosmos-thread" />
+        ))}
+        {/* sun — the Ponyou core */}
+        <g style={{ animation: "orbGlow 2.6s ease-in-out infinite" }}>
+          <defs>
+            <radialGradient id="sun1" cx="38%" cy="32%" r="65%">
+              <stop offset="0%" stopColor="#F2B088" /><stop offset="50%" stopColor={C.orange} /><stop offset="100%" stopColor={C.purple} />
+            </radialGradient>
+          </defs>
+          <circle cx={SUN.x} cy={SUN.y} r="30" fill="url(#sun1)" opacity=".95" />
+          <circle cx={SUN.x} cy={SUN.y} r="19" fill="#101016" />
+          <path d={`M ${SUN.x} ${SUN.y - 19} A 19 19 0 0 1 ${SUN.x + 19} ${SUN.y}`} stroke="white" strokeWidth="2.6" fill="none" strokeLinecap="round" opacity=".9" />
+          <path d={`M ${SUN.x} ${SUN.y + 19} A 19 19 0 0 1 ${SUN.x - 19} ${SUN.y}`} stroke="white" strokeWidth="2.6" fill="none" strokeLinecap="round" opacity=".9" />
+          <circle cx={SUN.x} cy={SUN.y} r="3" fill="#F2B088" />
+          <text x={SUN.x} y={SUN.y + 48} textAnchor="middle" fill={C.orange} fontSize="13" fontFamily={PX}>PONYOU CORE</text>
+        </g>
+        {/* stars — information sources */}
+        {STARS.map(s => (
+          <g key={s.id} ref={el => (starRefs.current[s.id] = el)}>
+            <path
+              d={`M ${s.x} ${s.y - 7} L ${s.x + 2.2} ${s.y - 2.2} L ${s.x + 7} ${s.y} L ${s.x + 2.2} ${s.y + 2.2} L ${s.x} ${s.y + 7} L ${s.x - 2.2} ${s.y + 2.2} L ${s.x - 7} ${s.y} L ${s.x - 2.2} ${s.y - 2.2} Z`}
+              fill={C.ink2} opacity=".85"
+            />
+            <text x={s.x} y={s.y + (s.y > SUN.y ? -12 : 18)} textAnchor="middle" fill={C.dim} fontSize="9" fontFamily={MN}>{s.label}</text>
+          </g>
+        ))}
+        {/* planets — sub-agents */}
+        {PLANETS.map(p => {
+          const dead = deadAgents.has(p.id);
+          return (
+            <g key={p.id} ref={el => (planetRefs.current[p.id] = el)}>
+              <circle r={p.size} fill={dead ? "#3a3a44" : p.col} opacity=".95"
+                stroke={dead ? C.red : "none"} strokeWidth={dead ? 2 : 0} />
+              <text y={p.size + 11} textAnchor="middle" fill={dead ? C.red : C.dim} fontSize="9" fontFamily={MN}>
+                {p.label}{dead ? " ✕" : ""}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      <div style={{ borderTop: `1px dashed ${C.border}`, paddingTop: 6, marginTop: 4, minHeight: 22 }}>
+        <Lbl col={C.dim2}>PULSING NOW: </Lbl>
+        {activeNow.length
+          ? activeNow.map(n => <Bdg key={n} col={C.red}>{n}</Bdg>).reduce((acc, el, i) => acc === null ? [el] : [...acc, <span key={`s${i}`}> </span>, el], null)
+          : <Lbl col={C.dim2}>silence — no subsystem produced a log line in the last 10s</Lbl>}
+      </div>
+    </Panel>
+  );
+}
+
 /* ─── Header ───────────────────────────────────────────────────── */
 function Header({ s, internals }) {
   const running = Boolean(s?.bot_running);
@@ -155,8 +370,13 @@ function Header({ s, internals }) {
         <Lbl col={C.dim}>MISSION CONTROL</Lbl>
       </div>
       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-        <Bdg col={running ? C.green : C.red} filled>
-          <Dot ok={running} blink={running} /> {running ? "RUNNING" : "STOPPED"}
+        {/* Three honest states: process dead, alive-but-pausing (adaptive
+            risk learning mode), or alive and trading. */}
+        <Bdg col={!running ? C.red : s?.learning_paused ? C.amber : C.green} filled>
+          <Dot ok={running} blink={running} />{" "}
+          {!running ? "STOPPED" : s?.learning_paused
+            ? `PAUSED · LEARNING${s?.learning_resume_at ? ` (resume ${fmtClock(s.learning_resume_at)})` : ""}`
+            : "RUNNING"}
         </Bdg>
         <Bdg col={paper ? C.amber : C.red}>{paper ? "PAPER / DEMO" : "LIVE FUNDS"}</Bdg>
         {Number.isFinite(started) && <Bdg col={C.purple}>UP {fmtAge(Date.now() - started)}</Bdg>}
@@ -555,6 +775,9 @@ export default function App() {
   const [logFilter, setLogFilter] = useState("ALL");
   const [wsUp, setWsUp] = useState(false);
   const [mobile, setMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 900);
+  // Out-of-band channel feeding real log activity to the cosmos without
+  // forcing a React re-render per log line.
+  const cosmosBus = useMemo(() => new EventTarget(), []);
 
   useEffect(() => {
     const check = () => setMobile(window.innerWidth < 900);
@@ -584,6 +807,9 @@ export default function App() {
               group: groupOf(rawType),
               text: m ? m[3] : text,
             };
+            for (const ent of cosmosEntitiesOf(rawType, entry.text)) {
+              cosmosBus.dispatchEvent(new CustomEvent("activity", { detail: ent }));
+            }
             startTransition(() => setLogs(p => [entry, ...p].slice(0, 300)));
           }
         } catch { /* malformed frame — drop */ }
@@ -615,7 +841,7 @@ export default function App() {
     return () => { stop = true; clearInterval(iv); };
   }, []);
 
-  const cols = mobile ? "1fr" : "1.1fr 1fr 1fr";
+  const cols = mobile ? "1fr" : "0.85fr 2fr 0.85fr";
 
   return (
     <div style={{ background: C.bg, minHeight: "100vh", padding: 12, color: C.ink }}>
@@ -637,10 +863,13 @@ export default function App() {
             <GmgnPanel gmgn={gmgn} exp={internals?.experiment_gmgn_row} />
             <FeaturesPanel features={botState?.features} />
           </div>
-          {/* col 2 — trading */}
+          {/* col 2 (wide) — the living system + trading */}
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <PositionsPanel positions={botState?.positions} />
-            <TimelinePanel events={botState?.recent_events} />
+            <AgentCosmos bus={cosmosBus} watchdog={internals?.watchdog} />
+            <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 12, alignItems: "start" }}>
+              <PositionsPanel positions={botState?.positions} />
+              <TimelinePanel events={botState?.recent_events} />
+            </div>
             <PortfolioPanel portfolio={portfolio} skillLoop={skillLoop} />
           </div>
           {/* col 3 — learning */}
