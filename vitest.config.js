@@ -83,6 +83,7 @@ export default defineConfig({
       // dashboard, and the Telegram error forwarder all read (79% of the
       // live file was test residue on 2026-06-11)
       PONYOU_ERROR_LOG: path.join(STATE_TMP, "error-log.jsonl"),
+      PONYOU_SMART_WALLETS_FILE: path.join(STATE_TMP, "smart-wallets.json"),
     },
   },
 });

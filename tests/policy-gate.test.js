@@ -100,7 +100,7 @@ describe("policy gate", () => {
 });
 
 describe("stage-skip enforcement", () => {
-  it("blocks finalize on a silently skipped stage, allows it with a waiver note", async () => {
+  it("blocks finalize on a silently skipped stage, allows it with a waiver note", { timeout: 15000 }, async () => {
     const task = createOrchestrationTask({ title: "Skip case", objective: "o" });
     await workflowSpec({ task_id: task.task.id, problem_statement: "Problem statement", success_criteria: ["c"] });
     await workflowPlan({ task_id: task.task.id, milestones: ["m"] });

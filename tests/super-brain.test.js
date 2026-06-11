@@ -134,19 +134,39 @@ describe("prompt-evolution: learned rules", () => {
   });
 
   it("AVOID rule emitted when win_rate <= 25% with enough samples", () => {
-    // 6 trades, 1 win = 17% win rate → should emit AVOID
+    // 6 losing dog trades + 3 winning ai trades: dog factors discriminate
+    // (6/9 = 67% coverage) so the AVOID rule may fire. A single-token corpus
+    // would be suppressed by the coverage guard — that is the bug case where
+    // "AVOID sol" got mined from factors describing the whole book.
     for (let i = 0; i < 6; i++) {
       attributeOutcome({ token: TOKEN_DOG_MID, pnl_pct: i === 0 ? 20 : -25, is_rug: i >= 4 });
+    }
+    for (let i = 0; i < 3; i++) {
+      attributeOutcome({ token: TOKEN_AI_MICRO, pnl_pct: 30 });
     }
     const rules = recomputeLearnedRules();
     expect(rules.length).toBeGreaterThan(0);
     expect(rules.some(r => r.includes("AVOID"))).toBe(true);
+    // The chain factor covers 100% of trades → must never become a rule.
+    expect(rules.some(r => r.includes("AVOID sol:"))).toBe(false);
+  });
+
+  it("suppresses rules from factors that cover the whole book (no discrimination)", () => {
+    // Single-token corpus: every factor covers 100% of trades. Mining rules
+    // from these produced the live "AVOID sol" garbage rule on 2026-06-11.
+    for (let i = 0; i < 6; i++) {
+      attributeOutcome({ token: TOKEN_DOG_MID, pnl_pct: -25 });
+    }
+    expect(recomputeLearnedRules()).toHaveLength(0);
   });
 
   it("FAVOR rule emitted when win_rate >= 70%", () => {
-    // 7 trades, 6 wins = 86% win rate → should emit FAVOR
+    // 7 winning ai trades + 3 losing dog trades so ai factors discriminate.
     for (let i = 0; i < 7; i++) {
       attributeOutcome({ token: TOKEN_AI_MICRO, pnl_pct: i < 6 ? 40 : -5 });
+    }
+    for (let i = 0; i < 3; i++) {
+      attributeOutcome({ token: TOKEN_DOG_MID, pnl_pct: -20 });
     }
     const rules = recomputeLearnedRules();
     expect(rules.some(r => r.includes("FAVOR"))).toBe(true);
@@ -155,6 +175,9 @@ describe("prompt-evolution: learned rules", () => {
   it("getLearnedRulesBlock formats correctly after attribution", () => {
     for (let i = 0; i < 6; i++) {
       attributeOutcome({ token: TOKEN_DOG_MID, pnl_pct: -20, is_rug: false });
+    }
+    for (let i = 0; i < 3; i++) {
+      attributeOutcome({ token: TOKEN_AI_MICRO, pnl_pct: 30 });
     }
     recomputeLearnedRules();
     const block = getLearnedRulesBlock();

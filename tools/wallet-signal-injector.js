@@ -32,7 +32,19 @@ let _injectorStats = {
   smSignalsInjected: 0,
   rugDevsBlocked: 0,
   lastInjection: null,
+  inertReason: null,
 };
+
+// Log an inert-source diagnosis once per process (and surface it in stats),
+// re-logging only if the reason changes.
+let _lastInertReason = null;
+function _noteInertSource(reason) {
+  _injectorStats.inertReason = reason;
+  if (reason !== _lastInertReason) {
+    _lastInertReason = reason;
+    log("wallet_signal", `smart-money source inert: ${reason}`);
+  }
+}
 
 // ─── Smart Money Signal Detection ───────────────────────
 
@@ -61,6 +73,13 @@ export function detectSmartMoneySignals({ minWinRate = 0.60 } = {}) {
   // For now, signals come from the copy-trade signal log
   // In production, this would query on-chain data for real-time wallet activity
   const signals = [];
+  // Visibility: every live wallet has sat in "shadow" mode since 2026-05-24,
+  // so this source produced zero signals while looking healthy. Say so once
+  // instead of silently returning [] forever.
+  const actionable = priorityWallets.filter(w => ["active", "probe"].includes(w.follow_mode || "shadow"));
+  if (priorityWallets.length > 0 && actionable.length === 0) {
+    _noteInertSource(`${priorityWallets.length} qualifying wallets, all follow_mode=shadow — no smart-money signals will be generated (promote to active/probe to enable)`);
+  }
   for (const wallet of priorityWallets) {
     const wr = wallet.stats?.winrate ?? wallet.selection?.win_rate ?? 0;
     const mode = wallet.follow_mode || "shadow";
@@ -230,6 +249,8 @@ export function getSmartMoneyCandidates({ minWinRate = 0.60 } = {}) {
   _injectorStats.lastInjection = new Date().toISOString();
 
   if (signals.length > 0) {
+    _injectorStats.inertReason = null;
+    _lastInertReason = null;
     const strongCount = signals.filter(s => s.signalStrength === "STRONG").length;
     log("wallet_signal", [
       `Smart Money signals: ${signals.length} wallets`,

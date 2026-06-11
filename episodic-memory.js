@@ -56,7 +56,12 @@ function _narrative(token) {
   const tags = Array.isArray(token.narrative_tags) ? token.narrative_tags : [];
   const first = typeof tags[0] === "string" ? tags[0] : (typeof tags[0] === "object" ? tags[0]?.narrative : null);
   if (first) return String(first).toLowerCase().slice(0, 20);
-  return typeof token.narrative === "string" ? token.narrative.toLowerCase().slice(0, 20) : "other";
+  if (typeof token.narrative === "string") return token.narrative.toLowerCase().slice(0, 20);
+  // Entry snapshots carry narratives inside conviction — exit-time market data
+  // rarely still has narrative_tags, which collapsed every episode to "other".
+  const conv = token.conviction?.narratives;
+  if (Array.isArray(conv) && typeof conv[0] === "string") return conv[0].toLowerCase().slice(0, 20);
+  return "other";
 }
 
 /**
@@ -64,11 +69,14 @@ function _narrative(token) {
  * Pure, synchronous, no I/O.
  */
 export function fingerprint(token = {}) {
-  const mcap  = Number(token.mcap || token.market_cap || 0);
-  const liq   = Number(token.liquidity || token.liq || 0);
+  // entry_* fallbacks: live market data is often gone by exit time, so the
+  // buy-time snapshot keeps the fingerprint discriminative instead of letting
+  // every episode collapse into the all-defaults bucket.
+  const mcap  = Number(token.mcap || token.market_cap || token.entry_mcap || 0);
+  const liq   = Number(token.liquidity || token.liq || token.entry_liquidity || 0);
   const rug   = Number(token.rug_score || 0);
   const chain = String(token.chain || "sol").toLowerCase();
-  const tier  = String(token.tier || token.tier_execution?.tier || "UNKNOWN").toUpperCase().slice(0, 6);
+  const tier  = String(token.tier || token.tier_execution?.tier || "UNKNOWN").toUpperCase().slice(0, 8);
   const narr  = _narrative(token);
   return [
     chain,

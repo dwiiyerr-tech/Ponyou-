@@ -5,7 +5,8 @@ import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 import { applyScoreDecay } from "./wallet-score-decay.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const WALLETS_FILE = path.join(__dirname, "smart-wallets.json");
+const WALLETS_FILE = process.env.PONYOU_SMART_WALLETS_FILE
+  || path.join(__dirname, "smart-wallets.json");
 
 function load() {
   if (!fs.existsSync(WALLETS_FILE)) return {};
@@ -61,6 +62,24 @@ export async function removeSmartWallet({ address } = {}) {
       save(wallets);
     }
     return { removed: existed, address };
+  });
+}
+
+/**
+ * Persist updated fields (notably last_active) for a tracked wallet.
+ * The geyser smart-buy handler has called `_updateWallet?.()` since it landed,
+ * but the function never existed — the optional chain silently no-op'd, so
+ * last_active stayed null forever and the freshness/decay signal was dead.
+ */
+export async function _updateWallet(wallet = {}) {
+  const address = wallet.address;
+  if (!address) return { error: "address required" };
+  return withFileLock(WALLETS_FILE, async () => {
+    const wallets = load();
+    if (!wallets[address]) return { updated: false, address };
+    wallets[address] = normalizeWalletRecord({ ...wallets[address], ...wallet }, address);
+    save(wallets);
+    return { updated: true, address };
   });
 }
 

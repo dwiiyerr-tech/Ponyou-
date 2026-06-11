@@ -3308,7 +3308,22 @@ export async function runManagementCycle({ silent = false } = {}) {
         // Record trade outcome for pattern retrieval and learned rules.
         // Fire-and-forget — never block the exit loop.
         setImmediate(async () => {
-          const tokenCtx = { ...tokenData, rug_score: exit.rug_score ?? tokenData?.rug_score };
+          // Merge the entry snapshot under the live market data: by exit time
+          // tokenData is often missing (token dropped from the management
+          // list) or stripped of mcap/liq/narrative, which collapsed every
+          // episodic bucket and let prompt-evolution mine garbage rules
+          // ("AVOID sol") from the all-defaults fingerprint.
+          const _snap = tracked?.signal_snapshot || {};
+          const tokenCtx = {
+            ...tokenData,
+            rug_score: exit.rug_score ?? tokenData?.rug_score ?? _snap.rug_score,
+            mcap: tokenData?.mcap ?? tokenData?.market_cap ?? _snap.entry_mcap,
+            liquidity: tokenData?.liquidity ?? tokenData?.liq ?? _snap.entry_liquidity,
+            tier: tokenData?.tier ?? tokenData?.tier_execution?.tier ?? _snap.tier,
+            narrative_tags: tokenData?.narrative_tags ?? _snap.narrative_tags ?? _snap.conviction?.narratives ?? null,
+            conviction: tokenData?.conviction ?? _snap.conviction ?? null,
+            chain: tokenData?.chain ?? tracked?.chain ?? "sol",
+          };
           if (config.episodicMemory?.enabled) {
             await recordEpisode({
               mint: exit.mint, symbol: exit.symbol, token: tokenCtx,
@@ -5126,6 +5141,19 @@ export async function runScreeningCycle({ silent = false } = {}) {
       passingCandidates = guardedCandidates;
     }
 
+    // Surface the screening decision on the bus — management-agent has
+    // subscribed to "screening:decision" since it shipped, but nothing ever
+    // emitted it (zombie wire found in the 2026-06-11 architecture audit),
+    // so its health view never saw a pending buy.
+    if (passingCandidates.length > 0) {
+      agentBus.emit("screening:decision", {
+        mint: passingCandidates[0].mint,
+        symbol: passingCandidates[0].symbol,
+        candidates: passingCandidates.length,
+        timestamp: Date.now(),
+      });
+    }
+
     // ─── Fast-track lane (skip LLM for unambiguous BUYs) ────────
     // Off by default. When enabled, candidates passing the strict
     // deterministic gate get deployed immediately and removed from the
@@ -5220,6 +5248,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
                 regime: best.regime || null,
                 workflow: best.workflow || null,
                 kelly: best.kelly || null,
+                // Fingerprint inputs for episodic memory / prompt evolution —
+                // live market data is usually gone by exit time; without these
+                // every closed trade collapsed into one all-defaults bucket.
+                entry_mcap: Number(best.mcap || best.market_cap || 0),
+                entry_liquidity: Number(best.liquidity || best.liquidity_usd || best.liq || 0),
+                tier: best.tier_execution?.tier || best.tier?.label || best.tier || null,
+                narrative_tags: best.narrative_tags || null,
                 staged_entry: stagedTracking,
                 portfolio_skill_votes: best.portfolio_skill_votes || [],
                 _hunt_source: best._hunt_source || null,
@@ -5404,6 +5439,12 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                     regime: token.regime || null,
                     workflow: token.workflow || null,
                     kelly: token.kelly || null,
+                    // Fingerprint inputs for episodic memory / prompt evolution
+                    // (see rule-based site) — entry values survive to exit.
+                    entry_mcap: Number(token.mcap || token.market_cap || 0),
+                    entry_liquidity: Number(token.liquidity || token.liquidity_usd || token.liq || 0),
+                    tier: token.tier_execution?.tier || token.tier?.label || token.tier || null,
+                    narrative_tags: token.narrative_tags || null,
                     staged_entry: stagedTracking,
                     entry_fee_breakdown: entryFeeBreakdown,
                     entry_dex: token.dex || token.launchpad || "unknown",

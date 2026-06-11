@@ -30,10 +30,10 @@ function _load() {
   try {
     if (fs.existsSync(EVOLUTION_FILE)) {
       const d = JSON.parse(fs.readFileSync(EVOLUTION_FILE, "utf8"));
-      return { version: 1, factors: {}, rules: [], rules_ts: null, ...d };
+      return { version: 1, factors: {}, rules: [], rules_ts: null, total_n: 0, ...d };
     }
   } catch { /* corrupt → fresh */ }
-  return { version: 1, factors: {}, rules: [], rules_ts: null };
+  return { version: 1, factors: {}, rules: [], rules_ts: null, total_n: 0 };
 }
 
 function _save(data) {
@@ -75,6 +75,7 @@ export function attributeOutcome({ token = {}, pnl_pct = 0, exit_reason = "", is
     const data    = _load();
     const factors = _extractFactors(token, verdict);
     const isWin   = pnl_pct > 0 && !is_rug;
+    data.total_n  = (data.total_n || 0) + 1;
     for (const f of factors) {
       if (!data.factors[f]) data.factors[f] = { n: 0, wins: 0, rugs: 0, pnl_sum: 0 };
       data.factors[f].n++;
@@ -88,10 +89,20 @@ export function attributeOutcome({ token = {}, pnl_pct = 0, exit_reason = "", is
 
 // ─── Rule computation ─────────────────────────────────────────────────────────
 
+// A factor only carries signal if it discriminates between trades. When the
+// exit-side token context lacked mcap/liq/tier/narrative, every trade fell
+// into the same default buckets, and those factors (covering ~100% of the
+// book) produced binding garbage rules — including "AVOID sol", which told
+// the LLM to avoid the entire chain it trades on (observed live 2026-06-11).
+const MAX_FACTOR_COVERAGE = 0.9;
+
 function _recompute(data) {
   const rules = [];
+  const totalN = Number(data.total_n || 0)
+    || Math.max(0, ...Object.values(data.factors).map((s) => s.n || 0));
   for (const [factor, s] of Object.entries(data.factors)) {
     if (s.n < MIN_SAMPLES) continue;
+    if (totalN >= MIN_SAMPLES && s.n >= totalN * MAX_FACTOR_COVERAGE) continue;
     const wr       = s.wins / s.n;
     const rugRate  = s.rugs / s.n;
     const avgPnl   = s.pnl_sum / s.n;
