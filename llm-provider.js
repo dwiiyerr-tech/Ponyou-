@@ -384,8 +384,11 @@ export function handleProviderError(error, provider = "openrouter") {
     return { type: "model_not_found", shouldRetry: false };
   }
 
-  // Network error
-  if (/ECONNREFUSED|ETIMEDOUT|network|fetch failed/i.test(message)) {
+  // Network error. "Connection error." is the OpenAI SDK's message for any
+  // failed fetch (NIM blips surface this way) — before it was matched here it
+  // fell through to unknown_error/no-retry, so 3 transient blips in a row
+  // tripped the router's 30-min circuit breaker on the main LLM.
+  if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EAI_AGAIN|network|fetch failed|connection error|socket hang up/i.test(message)) {
     return { type: "connection_error", shouldRetry: true, delay: 5000 };
   }
 

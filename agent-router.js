@@ -104,10 +104,15 @@ class AgentRouter {
     let reason = cls.reason;
     let confidence = cls.confidence;
 
-    // Circuit breaker: if agent has tripped, skip it
+    // Circuit breaker: if agent has tripped, skip it. The fallback for
+    // gemini/codex is claude (the main LLM); for claude itself it used to be
+    // "claude" again — a no-op that kept routing every call to the dead LLM
+    // for the whole 30-min block. Fall back to gemini instead, unless gemini
+    // is also tripped (then claude stays: nothing better is available).
     if (this.#isTripped(agent)) {
+      const fallback = agent === "claude" && !this.#isTripped("gemini") ? "gemini" : "claude";
       reason = `breaker_tripped:${agent}`;
-      agent = "claude";
+      agent = fallback;
       confidence = 0.90;
     }
 
@@ -225,6 +230,7 @@ class AgentRouter {
       let result = "";
       let lastError = null;
       let terminalError = false;
+      let servedBy = agent; // which agent actually produced the result
       for (let attempt = 0; attempt < 2 && !terminalError; attempt++) {
         try {
           if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
@@ -247,6 +253,7 @@ class AgentRouter {
         const primaryErr = lastError;
         try {
           result = await this.#callClaude(prompt, systemPrompt);
+          servedBy = "claude";
           const errMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
           warn(`[Router] Fallback to ${displayName("claude")} after ${displayName(agent)} failed: ${errMsg.slice(0, 120)}`);
           lastError = null;
@@ -266,13 +273,42 @@ class AgentRouter {
         }
       } else if (lastError && agent !== "claude" && !this.#callLLM) {
         warn(`[Router] Fallback to ${displayName("claude")} skipped: callLLM not injected`);
+      } else if (lastError && agent === "claude") {
+        // Symmetric last resort: when the main LLM route itself fails both
+        // attempts (e.g. NIM down), try gemini before giving up. Skipped if
+        // gemini's own breaker is open — it would just burn the timeout.
+        const primaryErr = lastError;
+        if (!this.#isTripped("gemini")) {
+          try {
+            result = await this.#callGemini(prompt, timeoutMs);
+            servedBy = "gemini";
+            const errMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+            warn(`[Router] Fallback to gemini after ${displayName("claude")} failed: ${errMsg.slice(0, 120)}`);
+            lastError = null;
+          } catch (fallbackErr) {
+            const primaryMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+            const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+            const composed = new Error(
+              `Both ${displayName("claude")} and gemini failed. ${displayName("claude")}: ${primaryMsg.slice(0, 120)} | gemini: ${fallbackMsg.slice(0, 120)}`,
+            );
+            composed.primaryAgent = agent;
+            composed.primaryError = primaryErr;
+            composed.fallbackError = fallbackErr;
+            lastError = composed;
+          }
+        }
       }
       if (lastError) {
         this.#recordFailure(agent);
         throw lastError;
       }
 
-      this.#recordSuccess(agent);
+      // Breaker accounting follows who actually answered: a fallback success
+      // used to call recordSuccess(primary), wiping the failing primary's
+      // counter so its breaker never tripped — every call kept paying two
+      // failed attempts against the dead agent before falling back.
+      if (servedBy !== agent) this.#recordFailure(agent);
+      this.#recordSuccess(servedBy);
       const durationMs = Date.now() - t0;
       this.#updateStats(agent, durationMs, false);
       console.log(`[Router] → ${displayName(agent)} (${reason}: ${confidence}) [${durationMs}ms]`);

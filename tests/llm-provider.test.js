@@ -200,3 +200,14 @@ describe("PROVIDER_CONFIGS sanity", () => {
     }
   });
 });
+
+describe("handleProviderError connection variants", () => {
+  it("classifies the OpenAI SDK's generic 'Connection error.' as retryable", async () => {
+    const { handleProviderError } = await import("../llm-provider.js");
+    for (const msg of ["Connection error.", "read ECONNRESET", "getaddrinfo EAI_AGAIN nim.api", "socket hang up"]) {
+      const info = handleProviderError(new Error(msg), "nvidia");
+      expect(info.type).toBe("connection_error");
+      expect(info.shouldRetry).toBe(true);
+    }
+  });
+});
