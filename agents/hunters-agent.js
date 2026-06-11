@@ -31,6 +31,9 @@ const HUNTER_SCHEDULE = {
 };
 
 let _currentSchedule = null;
+// Remembered so a gate recovery can rebuild the schedule for the regime that
+// was current when the block landed (market:update may not fire again soon).
+let _lastMarketCondition = "NORMAL";
 let _initialized = false;
 // T3-12: unsubscribe refs for safe re-init cleanup.
 let _unsubscribers = [];
@@ -54,6 +57,55 @@ export function getSourceMinScore(source, baseMinScore) {
   return Math.max(baseMinScore - THRESHOLD_LOWER_CAP, Math.min(baseMinScore + THRESHOLD_RAISE_CAP, proposed));
 }
 
+// Build a fresh schedule for a market condition — single source of truth for
+// the market:update handler and gate recovery.
+function scheduleForCondition(condition) {
+  const c = HUNTER_SCHEDULE[condition] ? condition : "NORMAL";
+  const s = HUNTER_SCHEDULE[c];
+  return {
+    active: s.active,
+    sources: s.sources,
+    minScore: s.minScore,
+    maxTokens: s.maxTokens,
+    marketCondition: c,
+    reason: s.reason,
+  };
+}
+
+// HA-2: `hunters:gate_blocked` froze `_currentSchedule` at {active:false} but
+// NOTHING ever un-froze it — `market:update` fires once at startup and the
+// screening agent only commands hunters when the market condition CHANGES, so
+// one temporary gate (learning mode, rug breaker, kill switch) silently killed
+// the intake pipeline until the next process restart. Recovery is two-layered:
+// the hunters cron emits `hunters:gate_cleared` whenever the gate is open
+// (forced restore), and runHuntersExpedition() self-heals any gate block older
+// than GATE_BLOCK_STALE_MS in case the cleared event itself never arrives.
+const GATE_BLOCK_STALE_MS = 15 * 60_000;
+export function recoverHuntingIfGateBlocked({ force = false, now = Date.now() } = {}) {
+  if (!_currentSchedule?.gateBlock) return false;
+  if (!force && now - (_currentSchedule.blockedAt || 0) < GATE_BLOCK_STALE_MS) return false;
+  _currentSchedule = scheduleForCondition(_lastMarketCondition);
+  log("hunters", `Gate cleared — schedule restored (${_currentSchedule.marketCondition}: ${_currentSchedule.active ? `hunting (${_currentSchedule.sources.join(",")})` : `paused — ${_currentSchedule.reason}`})`);
+  updateAgentHealth(AGENT_NAME, { gateRecoveredAt: new Date().toISOString() });
+  return true;
+}
+
+// Bus-event handlers, exported so tests can drive them directly.
+export function onHuntersGateBlocked(payload) {
+  log("hunters", `Gate blocked — pausing: ${payload?.reason}`);
+  _currentSchedule = {
+    active: false,
+    sources: [],
+    reason: payload?.reason || "gate_blocked",
+    gateBlock: true,
+    blockedAt: payload?.timestamp || Date.now(),
+  };
+  updateAgentHealth(AGENT_NAME, { lastGateBlock: payload?.reason, gateBlockedAt: new Date().toISOString() });
+}
+export function onHuntersGateCleared() {
+  recoverHuntingIfGateBlocked({ force: true });
+}
+
 export function initHuntersAgent() {
   // Guard first so re-init never wipes already-registered listeners without
   // re-registering them (which would leave the agent permanently deaf).
@@ -65,6 +117,7 @@ export function initHuntersAgent() {
   // Listen for Screening Agent commands
   _unsubscribers.push(agentBus.subscribe("hunters:command", (cmd) => {
     log("hunters", `Command received: active=${cmd.active} sources=${cmd.sources} market=${cmd.marketCondition}`);
+    if (cmd?.marketCondition) _lastMarketCondition = cmd.marketCondition;
     _currentSchedule = cmd;
     updateAgentHealth(AGENT_NAME, {
       lastCommand: cmd,
@@ -75,24 +128,15 @@ export function initHuntersAgent() {
   // Listen for market updates to adjust hunting
   _unsubscribers.push(agentBus.subscribe("market:update", (update) => {
     const condition = update?.condition || "NORMAL";
-    const schedule = HUNTER_SCHEDULE[condition] || HUNTER_SCHEDULE.NORMAL;
-    _currentSchedule = {
-      active: schedule.active,
-      sources: schedule.sources,
-      minScore: schedule.minScore,
-      maxTokens: schedule.maxTokens,
-      marketCondition: condition,
-      reason: schedule.reason,
-    };
-    log("hunters", `Market ${condition}: ${schedule.active ? `hunting (${schedule.sources.join(",")})` : `paused — ${schedule.reason}`}`);
+    _lastMarketCondition = condition;
+    _currentSchedule = scheduleForCondition(condition);
+    log("hunters", `Market ${condition}: ${_currentSchedule.active ? `hunting (${_currentSchedule.sources.join(",")})` : `paused — ${_currentSchedule.reason}`}`);
   }));
 
   // Listen for gate blocks — stop hunting immediately if kill switch or rug breaker trips
-  _unsubscribers.push(agentBus.subscribe("hunters:gate_blocked", (payload) => {
-    log("hunters", `Gate blocked — pausing: ${payload?.reason}`);
-    _currentSchedule = { active: false, sources: [], reason: payload?.reason || "gate_blocked" };
-    updateAgentHealth(AGENT_NAME, { lastGateBlock: payload?.reason, gateBlockedAt: new Date().toISOString() });
-  }));
+  _unsubscribers.push(agentBus.subscribe("hunters:gate_blocked", onHuntersGateBlocked));
+  // HA-2: and resume when the gate is open again (emitted by the hunters cron)
+  _unsubscribers.push(agentBus.subscribe("hunters:gate_cleared", onHuntersGateCleared));
 
   // ── Learning feedback loop — adjust per-source minScore based on rug rates ──
   // High rug-rate source → raise threshold (harder to pass)
@@ -150,6 +194,9 @@ export function initHuntersAgent() {
 
 export async function runHuntersExpedition({ strategy = null } = {}) {
   if (!_initialized) initHuntersAgent();
+
+  // HA-2 self-heal: a stale gate block must never outlive the gate itself.
+  if (_currentSchedule?.gateBlock) recoverHuntingIfGateBlocked();
 
   // If screening agent explicitly deactivated hunting, skip
   if (_currentSchedule && _currentSchedule.active === false) {

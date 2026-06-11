@@ -121,3 +121,54 @@ describe("hunters-agent: source threshold offsets", () => {
     expect(dash).toHaveProperty("schedule");
   });
 });
+
+// ─── HA-2: gate-block recovery ──────────────────────────────────────
+// A gate block (learning mode / rug breaker / kill switch) freezes the
+// hunting schedule via `hunters:gate_blocked`. Before HA-2 nothing ever
+// un-froze it (market:update fires once at startup; screening only
+// commands on regime CHANGE), so one temporary pause killed the intake
+// pipeline until process restart.
+import {
+  onHuntersGateBlocked,
+  onHuntersGateCleared,
+  recoverHuntingIfGateBlocked,
+} from "../agents/hunters-agent.js";
+
+describe("hunters-agent: gate-block recovery (HA-2)", () => {
+  it("gate_blocked freezes the schedule with a gateBlock marker", () => {
+    onHuntersGateBlocked({ reason: "LEARNING_MODE: resume in 2min", timestamp: Date.now() });
+    const s = getHuntersDashboard().agent.schedule;
+    expect(s.active).toBe(false);
+    expect(s.gateBlock).toBe(true);
+    expect(s.reason).toContain("LEARNING_MODE");
+  });
+
+  it("gate_cleared restores hunting immediately", () => {
+    onHuntersGateBlocked({ reason: "LEARNING_MODE: resume in 2min", timestamp: Date.now() });
+    onHuntersGateCleared();
+    const s = getHuntersDashboard().agent.schedule;
+    expect(s.active).toBe(true);
+    expect(s.gateBlock).toBeUndefined();
+  });
+
+  it("does NOT auto-recover before the stale window without force", () => {
+    const now = Date.now();
+    onHuntersGateBlocked({ reason: "RUG_CIRCUIT_BREAKER: wave", timestamp: now });
+    expect(recoverHuntingIfGateBlocked({ now: now + 5 * 60_000 })).toBe(false);
+    expect(getHuntersDashboard().agent.schedule.active).toBe(false);
+  });
+
+  it("self-heals a gate block older than 15 minutes", () => {
+    const now = Date.now();
+    onHuntersGateBlocked({ reason: "RUG_CIRCUIT_BREAKER: wave", timestamp: now });
+    expect(recoverHuntingIfGateBlocked({ now: now + 16 * 60_000 })).toBe(true);
+    const s = getHuntersDashboard().agent.schedule;
+    expect(s.active).toBe(true);
+    expect(s.gateBlock).toBeUndefined();
+  });
+
+  it("recovery is a no-op when nothing is gate-blocked", () => {
+    onHuntersGateCleared(); // ensure unfrozen
+    expect(recoverHuntingIfGateBlocked({ force: true })).toBe(false);
+  });
+});

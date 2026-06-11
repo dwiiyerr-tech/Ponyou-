@@ -6113,6 +6113,10 @@ export function startCronJobs() {
         agentBus.emit("hunters:gate_blocked", { reason: gate.reason, timestamp: Date.now() });
         return;
       }
+      // HA-2: gate is open — release any schedule still frozen by a past
+      // block (gate_blocked had no counterpart, so a temporary pause used to
+      // kill hunting permanently until restart).
+      agentBus.emit("hunters:gate_cleared", { timestamp: Date.now() });
       const strategy = getStrategy(null, { regime: getMarketIntelligence().condition });
       await runHuntersExpedition({ strategy });
     } catch (e) { log("hunters_cron_error", e.message); }
