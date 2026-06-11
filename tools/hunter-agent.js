@@ -25,6 +25,7 @@ import { config } from "../config.js";
 import { getTrendingTokens, getTrenches, getTokenSignals, isGmgnEnabled, extractGmgnRowRisk } from "./gmgn.js";
 import { recordChainSnapshot, getChainAllocationWeights } from "../market-chain-intel.js";
 import { getChainOverrides } from "./vault-reader.js";
+import { NARRATIVES, classifyNarrative, getNarrativeHeat, getCrossBatchVelocity } from "./narratives.js";
 
 // ─── Hunting Sources ────────────────────────────────────────────
 
@@ -58,6 +59,55 @@ const HUNT_QUERIES = [
   "moon", "sigma", "alpha", "quantum", "cyber", "digital",
   "cosmic", "eternal", "infinity", "zen",
 ];
+
+// ─── Narrative-Heat-Driven Hunting ──────────────────────────────
+// The rotation above is deliberate wide-net exploration. On top of it, each
+// expedition gets up to HOT_QUERY_EXTRA additional queries aimed at narratives
+// that are currently hot — sourced from cross-batch velocity (live momentum)
+// and narrative heat (realized P&L). Additive only: the rotation window is
+// never reduced, so full-list coverage is preserved.
+
+const HOT_QUERY_EXTRA = 2;        // extra heat-driven queries per expedition
+const MAX_HOT_NARRATIVES = 3;     // cap how many narratives steer hunting at once
+const HOT_NARRATIVE_TTL_MS = 5 * 60_000;
+let _hotNarrativeCache = { at: 0, narratives: [], queries: [] };
+
+/**
+ * Hot narratives in priority order: velocity sustained (multi-cycle momentum)
+ * > heat hot (avg PnL > +10%) > velocity emerging. Heat-cold narratives
+ * (avg PnL < -10%) are excluded — never steer the net toward proven losers.
+ * Returns { narratives: [names], queries: [search keywords] }.
+ */
+export function getHotNarratives({ now = Date.now() } = {}) {
+  if (now - _hotNarrativeCache.at < HOT_NARRATIVE_TTL_MS) return _hotNarrativeCache;
+
+  const names = [];
+  const push = (n) => {
+    if (typeof n === "string" && NARRATIVES[n] && !names.includes(n)) names.push(n);
+  };
+  try {
+    const velocity = getCrossBatchVelocity();
+    const heat = getNarrativeHeat();
+    for (const n of velocity.sustained || []) push(n);
+    for (const n of heat.hot || []) push(n);
+    for (const n of velocity.emerging || []) push(n);
+
+    const cold = new Set(heat.cold || []);
+    const narratives = names.filter(n => !cold.has(n)).slice(0, MAX_HOT_NARRATIVES);
+
+    const queries = [];
+    for (const n of narratives) {
+      for (const kw of (NARRATIVES[n]?.keywords || []).slice(0, 2)) {
+        if (!queries.includes(kw)) queries.push(kw);
+      }
+    }
+    _hotNarrativeCache = { at: now, narratives, queries };
+  } catch (e) {
+    log("hunter", `Hot narrative lookup failed (non-fatal): ${e.message}`);
+    _hotNarrativeCache = { at: now, narratives: [], queries: [] };
+  }
+  return _hotNarrativeCache;
+}
 
 // pump.fun DEX identifiers on DexScreener
 export const PUMPFUN_DEXES = ["pumpswap", "pump.fun", "pumpfun", "pump", "pump swap"];
@@ -191,12 +241,30 @@ function computeHunterScore(token, strategy) {
     reasons.push("pumpfun_ecosystem");
   }
 
-  // Strategy narrative match bonus (max 5)
+  // Strategy narrative match bonus (max 5).
+  // Entries that are taxonomy names ("AI", "DOGS", ...) match via
+  // classifyNarrative word-boundary keywords — plain substring would
+  // over-match (e.g. "ai" inside "chain"). Non-taxonomy entries keep the
+  // legacy lowercase-substring behavior for custom strategy keywords.
   const strategyNarratives = strategy?.narratives || [];
-  const narrativeMatch = strategyNarratives.some(n =>
-    (token.name || "").toLowerCase().includes(n) ||
-    (token.symbol || "").toLowerCase().includes(n)
-  );
+  let narrativeMatch = false;
+  if (strategyNarratives.length > 0) {
+    const taxonomyTargets = strategyNarratives
+      .map(n => String(n).toUpperCase())
+      .filter(n => NARRATIVES[n]);
+    if (taxonomyTargets.length > 0) {
+      const tags = classifyNarrative(token);
+      narrativeMatch = tags.some(t => taxonomyTargets.includes(t.narrative));
+    }
+    if (!narrativeMatch) {
+      narrativeMatch = strategyNarratives.some(n =>
+        typeof n === "string" && !NARRATIVES[n.toUpperCase()] && (
+          (token.name || "").toLowerCase().includes(n.toLowerCase()) ||
+          (token.symbol || "").toLowerCase().includes(n.toLowerCase())
+        )
+      );
+    }
+  }
   if (narrativeMatch) { score += 5; reasons.push("narrative_match"); }
 
   return {
@@ -223,6 +291,18 @@ async function huntDexScreenerSearch(strategy) {
     queries.push(HUNT_QUERIES[(_queryIdx + i) % HUNT_QUERIES.length]);
   }
   _queryIdx += SEARCH_WINDOW;
+
+  // Heat-driven extras ON TOP of the rotation window — exploration coverage
+  // stays intact while hot narratives get extra eyes this expedition.
+  const hot = getHotNarratives();
+  let hotAdded = 0;
+  for (const q of hot.queries) {
+    if (hotAdded >= HOT_QUERY_EXTRA) break;
+    if (!queries.includes(q)) { queries.push(q); hotAdded++; }
+  }
+  if (hotAdded > 0) {
+    log("hunter", `Heat queries +${hotAdded} [${queries.slice(SEARCH_WINDOW).join(",")}] from hot narratives: ${hot.narratives.join(",")}`);
+  }
 
   try {
     const results = await Promise.allSettled(
@@ -1018,9 +1098,21 @@ export async function runHunterExpedition({ strategy = null } = {}) {
   const startTime = Date.now();
 
   try {
-    const strategyParams = strategy || {
+    // Clone so the caller's strategy object is never mutated.
+    const strategyParams = { ...(strategy || {
       narratives: config.screening?.narrativeFilter || [],
-    };
+    }) };
+
+    // Auto-fill narratives from current hot narratives when the strategy
+    // doesn't specify any — this is what makes the narrative_match scoring
+    // bonus actually fire (no preset defines narratives).
+    if (!Array.isArray(strategyParams.narratives) || strategyParams.narratives.length === 0) {
+      const hot = getHotNarratives();
+      if (hot.narratives.length > 0) {
+        strategyParams.narratives = hot.narratives;
+        log("hunter", `Strategy narratives auto-filled from heat: ${hot.narratives.join(",")}`);
+      }
+    }
 
     // Hunt across ALL sources in parallel — 9 pairs of eyes
     const [
