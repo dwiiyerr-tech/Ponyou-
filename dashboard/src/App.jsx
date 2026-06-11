@@ -280,28 +280,19 @@ function AgentCosmos({ bus, watchdog }) {
       ctx.drawImage(glow(col), x - rad, y - rad, rad * 2, rad * 2);
       ctx.globalAlpha = 1;
     };
-    // 4-point star sprite — sub-agent bodies
+    // round moon-like sphere sprite (lit from upper-left) — sub-agent bodies
     const starCache = new Map();
     const starSprite = (col) => {
       let cv = starCache.get(col);
       if (!cv) {
         cv = document.createElement("canvas"); cv.width = cv.height = 64;
         const g = cv.getContext("2d");
-        g.translate(32, 32);
-        const spike = (len, wid) => {
-          g.beginPath();
-          g.moveTo(0, -len); g.quadraticCurveTo(wid, 0, 0, len);
-          g.quadraticCurveTo(-wid, 0, 0, -len); g.fill();
-        };
-        g.fillStyle = col;
-        g.globalAlpha = 0.9; spike(28, 3.4); g.rotate(Math.PI / 2); spike(28, 3.4);
-        g.rotate(Math.PI / 4); g.globalAlpha = 0.45; spike(17, 2.2);
-        g.rotate(Math.PI / 2); spike(17, 2.2);
-        g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1;
-        const gr = g.createRadialGradient(32, 32, 0, 32, 32, 7);
-        gr.addColorStop(0, "#FFFFFF"); gr.addColorStop(1, col);
+        const gr = g.createRadialGradient(24, 20, 2, 32, 32, 30);
+        gr.addColorStop(0, "#FFFFFF");
+        gr.addColorStop(0.30, col);
+        gr.addColorStop(1, "#0A0A12");
         g.fillStyle = gr;
-        g.beginPath(); g.arc(32, 32, 7, 0, Math.PI * 2); g.fill();
+        g.beginPath(); g.arc(32, 32, 30, 0, Math.PI * 2); g.fill();
         starCache.set(col, cv);
       }
       return cv;
@@ -426,7 +417,7 @@ function AgentCosmos({ bus, watchdog }) {
         const sc = 0.72 + near * 0.42;
         const dead = deadRef.current.has(a.id);
         if (dead) {
-          dStar("#3A3A44", x, y, 9 * sc);
+          dStar("#3A3A44", x, y, 6 * sc);
           ctx.font = `10px ${MN}`;
           ctx.textAlign = "center";
           ctx.fillStyle = C.red;
@@ -435,9 +426,9 @@ function AgentCosmos({ bus, watchdog }) {
         }
         const e = env(a.id);
         ctx.globalCompositeOperation = "lighter";
-        dGlow(e > 0 ? "#E88D6A" : "#FFFFFF", x, y, (12 + 9 * e) * sc, (0.22 + 0.55 * e));
+        dGlow(e > 0 ? "#E88D6A" : "#FFFFFF", x, y, (15 + 9 * e) * sc, (0.30 + 0.55 * e));
         ctx.globalCompositeOperation = "source-over";
-        dStar(e > 0 ? "#E88D6A" : "#F4F4FF", x, y, (10 + 3 * e) * sc);
+        dStar(e > 0 ? "#E88D6A" : "#F4F4FF", x, y, (7 + 2.5 * e) * sc);
         ctx.font = `10px ${MN}`;
         ctx.textAlign = "center";
         ctx.fillStyle = e > 0 ? "#F0B9A5" : C.dim;
