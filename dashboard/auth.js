@@ -45,6 +45,14 @@ function safeEqual(a, b) {
   return timingSafeEqual(ab, bb);
 }
 
+/**
+ * Timing-safe check of a raw presented token (login form / ?token= query)
+ * against the current dashboard token.
+ */
+export function checkToken(raw) {
+  return safeEqual(String(raw || "").trim(), getToken());
+}
+
 export function validateToken(req) {
   const auth = req.headers["authorization"] || "";
   const cookie = req.cookies?.dashtoken || "";
@@ -88,14 +96,9 @@ export function validateTokenWs(req) {
   const cookieToken = cookieMatch ? cookieMatch[1] : "";
   const token = getToken();
 
-  if (safeEqual(qsToken, token) || safeEqual(cookieToken, token)) return true;
-
-  // IP binding check for WS
-  const ip = clientIp(req);
-  const binding = _tokenBindings.get(token);
-  if (binding && binding.ip === ip) return true;
-
-  return false;
+  // No IP-binding fallback here: a bound IP alone must not open the socket
+  // (NAT/shared hosts would let any local process stream state untokened).
+  return safeEqual(qsToken, token) || safeEqual(cookieToken, token);
 }
 
 export function authMiddleware(req, res, next) {

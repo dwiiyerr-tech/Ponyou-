@@ -10,7 +10,7 @@ import { readBotState } from "./state-reader.js";
 import { globalLogBuffer } from "./log-buffer.js";
 import { createApiRouter } from "./routes/api.js";
 import { createWizardRouter } from "./routes/wizard.js";
-import { generateToken, authMiddleware, validateTokenWs } from "./auth.js";
+import { getToken, checkToken, validateToken, validateTokenWs } from "./auth.js";
 import { stripSensitive } from "./sensitive.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,31 +22,61 @@ function log(tag, msg) {
 export function createDashboardServer({ port = 3000 } = {}) {
   const app = express();
   app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
   app.use(cookieParser());
-  app.use(express.static(path.join(__dirname, "dist")));
 
-  const dashToken = generateToken();
+  // getToken (not generateToken): keep the token stable across pm2 restarts so
+  // operator sessions survive a bot restart; it still rotates after 24h.
+  const dashToken = getToken();
   log("dashboard", `Auth token: ${dashToken.slice(0, 8)}... (see dashboard-token.txt)`);
 
-  // First-time setup detection: wizard endpoints are unauth ONLY when
-  // user-config.json has no walletAddress yet. Once configured, the same
-  // endpoints require auth like everything else.
-  function isFirstTimeSetup() {
-    try {
-      const cfgPath = path.join(__dirname, "..", "user-config.json");
-      if (!fs.existsSync(cfgPath)) return true;
-      const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
-      return !cfg.walletAddress;
-    } catch { return true; }
-  }
+  const COOKIE_OPTS = { httpOnly: true, sameSite: "strict", maxAge: 24 * 60 * 60 * 1000, path: "/" };
+  const LOGIN_HTML = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ponyou — Login</title>
+<style>body{background:#0b0e14;color:#d7dce5;font-family:ui-monospace,monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+form{background:#11151f;border:1px solid #1f2533;border-radius:10px;padding:28px;width:320px}h1{font-size:15px;margin:0 0 6px}p{font-size:12px;color:#8a93a5;margin:0 0 16px}
+input{width:100%;box-sizing:border-box;background:#0b0e14;color:#d7dce5;border:1px solid #2a3245;border-radius:6px;padding:9px;font:inherit;margin-bottom:12px}
+button{width:100%;background:#2563eb;color:#fff;border:0;border-radius:6px;padding:9px;font:inherit;cursor:pointer}.err{color:#f87171;font-size:12px;margin:0 0 10px}</style></head>
+<body><form method="POST" action="/login"><h1>Ponyou Mission Control</h1><p>Paste the token from <code>dashboard-token.txt</code> on the host.</p>__ERR__<input type="password" name="token" placeholder="dashboard token" autofocus autocomplete="off"><button type="submit">Sign in</button></form></body></html>`;
 
-  // Auth middleware — exempt only public HTML pages. All API routes (including
-  // wizard routes) require the dashboard token even during first-time setup.
+  // Login: GET /login?token=… (one-click from the host) or the form POST.
+  app.get("/login", (req, res) => {
+    const qs = req.query?.token;
+    if (qs && checkToken(qs)) {
+      res.cookie("dashtoken", getToken(), COOKIE_OPTS);
+      return res.redirect("/");
+    }
+    res.type("html").send(LOGIN_HTML.replace("__ERR__", qs ? '<p class="err">Invalid token.</p>' : ""));
+  });
+  app.post("/login", (req, res) => {
+    if (checkToken(req.body?.token)) {
+      res.cookie("dashtoken", getToken(), COOKIE_OPTS);
+      return res.redirect("/");
+    }
+    res.status(401).type("html").send(LOGIN_HTML.replace("__ERR__", '<p class="err">Invalid token.</p>'));
+  });
+  app.post("/logout", (req, res) => {
+    res.clearCookie("dashtoken", { path: "/" });
+    res.redirect("/login");
+  });
+
+  // Auth gate — registered BEFORE express.static so "/" can't be served as
+  // dist/index.html without a session. All API routes (including wizard
+  // routes) require the dashboard token even during first-time setup.
   // P1-3: previously wizard write endpoints were unauth during setup window —
   // any local process could overwrite config before the operator completed setup.
+  // Static assets (JS/CSS bundles) stay public: they contain no data — every
+  // sensitive byte flows through /api or the WebSocket, both gated.
   app.use((req, res, next) => {
-    return next(); // Temporarily bypass auth for all routes
+    if (validateToken(req)) return next();
+    if (req.path.startsWith("/api") || req.path.startsWith("/wizard")) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    if (req.path === "/" || req.path === "/index.html") {
+      return res.redirect("/login");
+    }
+    return next();
   });
+  app.use(express.static(path.join(__dirname, "dist")));
 
   // First-time redirect: only when user-config.json does not exist at all.
   // Keying on walletAddress hid the monitor forever on deployments that keep
@@ -88,12 +118,11 @@ export function createDashboardServer({ port = 3000 } = {}) {
   });
 
   wss.on("connection", (ws, req) => {
-    // Authenticate WebSocket connections
-    // if (!validateTokenWs(req)) {
-    //   ws.send(JSON.stringify({ type: "error", data: "Unauthorized — provide ?token= or dashtoken cookie" }));
-    //   ws.close(4001, "Unauthorized");
-    //   return;
-    // }
+    if (!validateTokenWs(req)) {
+      ws.send(JSON.stringify({ type: "error", data: "Unauthorized — provide ?token= or dashtoken cookie" }));
+      ws.close(4001, "Unauthorized");
+      return;
+    }
 
     const lines = globalLogBuffer.lines();
     for (const line of lines) {
