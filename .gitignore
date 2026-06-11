@@ -169,3 +169,6 @@ prompt-evolution.json
 data/memory.db
 test-database-provider.rvf
 error-log.jsonl
+
+# Archived/poisoned data snapshots kept for forensics, never source-controlled.
+data/archive/

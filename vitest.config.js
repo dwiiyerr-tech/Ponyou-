@@ -77,6 +77,12 @@ export default defineConfig({
       PONYOU_EXEC_QUALITY_FILE: path.join(STATE_TMP, "execution-quality.json"),
       PONYOU_LESSONS_FILE: path.join(STATE_TMP, "lessons.json"),
       PONYOU_DARWIN_FILE: path.join(STATE_TMP, "darwin-weights.json"),
+      // structured error log — logger/state/shadow-watchlist tests log
+      // fabricated errors ("not json {{{", "disk fail"); without this
+      // override they land in the live error-log.jsonl that Doctor, the
+      // dashboard, and the Telegram error forwarder all read (79% of the
+      // live file was test residue on 2026-06-11)
+      PONYOU_ERROR_LOG: path.join(STATE_TMP, "error-log.jsonl"),
     },
   },
 });
