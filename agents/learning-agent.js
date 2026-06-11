@@ -35,11 +35,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Env override exists for test isolation — tests must never write the live file.
+// Env overrides exist for test isolation — tests must never write the live
+// files (vitest.config.js injects tmp paths; a missing override here put a
+// fake pumpfun win into the live stats during a suite run on 2026-06-11).
 const PERFORMANCE_FILE   = process.env.PONYOU_HUNTER_PERF_FILE || path.join(__dirname, "../hunter-performance.json");
-const STRATEGY_PERF_FILE = path.join(__dirname, "../strategy-performance.json");
+const STRATEGY_PERF_FILE = process.env.PONYOU_STRATEGY_PERF_FILE || path.join(__dirname, "../strategy-performance.json");
 // T3-1: persist _openTrades so source attribution survives process restart.
-const OPEN_TRADES_FILE   = path.join(__dirname, "../open-trades-learning.json");
+const OPEN_TRADES_FILE   = process.env.PONYOU_OPEN_TRADES_FILE || path.join(__dirname, "../open-trades-learning.json");
 const AGENT_NAME = "learning";
 
 // Recompile name patterns after this many new rugs accumulated

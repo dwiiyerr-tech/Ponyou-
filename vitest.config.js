@@ -34,6 +34,13 @@ export default defineConfig({
       PONYOU_DAILY_GUARD_STATE: path.join(STATE_TMP, "daily-trade-guard-state.json"),
       PONYOU_CAPITAL_GUARD_STATE: path.join(STATE_TMP, "capital-guard-state.json"),
       PONYOU_STREAK_SIZER_STATE: path.join(STATE_TMP, "streak-sizer-state.json"),
+      // learning agent — per-source stats, strategy perf, open-trade
+      // attribution (all written on bus events that tests emit freely; a
+      // missing override here let a suite run write a fake pumpfun win into
+      // the live hunter-performance.json on 2026-06-11)
+      PONYOU_HUNTER_PERF_FILE: path.join(STATE_TMP, "hunter-performance.json"),
+      PONYOU_STRATEGY_PERF_FILE: path.join(STATE_TMP, "strategy-performance.json"),
+      PONYOU_OPEN_TRADES_FILE: path.join(STATE_TMP, "open-trades-learning.json"),
       // analytics / memory written by BOTH the live bot and tests
       PONYOU_METRICS_FILE: path.join(STATE_TMP, "metrics.json"),
       PONYOU_TRADE_ATTRIBUTION_FILE: path.join(STATE_TMP, "trade-attribution.json"),

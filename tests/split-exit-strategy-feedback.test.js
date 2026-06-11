@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
 import path from "path";
+import os from "os";
 
 // ─── Split exit integration (via planExit) ────────────────────────────────
 
@@ -88,7 +89,14 @@ describe("EX1: planExit split logic", () => {
 
 // ─── Strategy performance feedback (learning-agent) ────────────────────────
 
-const STRATEGY_PERF_FILE = path.join(process.cwd(), "strategy-performance.json");
+// This file's outcomes must not land in the suite-wide shared tmp path:
+// skill-codifier tests read getStrategyPerformance() from the same worker
+// pool and would see the sniper/scalping fixtures emitted below. The env is
+// read at learning-agent import time, and imports here are dynamic + behind
+// vi.resetModules(), so setting it before the describe block is sufficient.
+process.env.PONYOU_STRATEGY_PERF_FILE =
+  path.join(os.tmpdir(), `strategy-perf-split-exit-${process.pid}.json`);
+const STRATEGY_PERF_FILE = process.env.PONYOU_STRATEGY_PERF_FILE;
 
 function cleanStratFile() {
   if (fs.existsSync(STRATEGY_PERF_FILE)) fs.unlinkSync(STRATEGY_PERF_FILE);
