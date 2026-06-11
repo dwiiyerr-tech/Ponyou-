@@ -135,41 +135,49 @@ const LiveClock = () => {
   return <span style={{ fontFamily: PX, fontSize: 22, color: C.ink2 }}>{v}</span>;
 };
 
-/* ─── Sub-Agent Solar System (simple) ───────────────────────────────
-   Just a sun and planets. Each sub-agent is a small glowing orb on its
-   own Kepler orbit around the Ponyou core. The only signals, both real:
-   an orb turns accent-orange while its agent logged a real line in the
-   last ACTIVE_MS, and a dead agent (watchdog check) shows a dark orb
-   with red ✕. No other effects.                                      */
+/* ─── Sub-Agent Star System (v11) ───────────────────────────────────
+   18 stars, one per real sub-system, on Kepler orbits around the
+   Ponyou core. Stars are linked by curved "blood vessels" that follow
+   the actual workflow loop (hunt → filter → screen → decide → execute
+   → learn → adapt → back to hunt). The only signals, all real: a
+   vessel pumps flowing pulses while its source agent logged a real
+   line in the last ACTIVE_MS, the star turns accent-orange for the
+   same window, and a dead agent (watchdog check) shows a dark star
+   with red ✕. Idle vessels stay as faint static lines.              */
 
 const ACTIVE_MS = 10_000;
 
-// raw log [TYPE] → agent planet id (must match agent-registry names).
-// Built from observed live log prefixes — extend when a new [TYPE] appears.
+// raw log [TYPE] → star id. Built from observed live log prefixes —
+// extend when a new [TYPE] appears.
 const AGENT_LOG = {
-  HUNTER: "hunters", HUNTERS: "hunters", MARKET: "hunters", ONCHAIN: "hunters",
-  ONCHAIN_LISTENER: "hunters", SMART_MONEY: "hunters", CAST_NET: "hunters", GEYSER: "hunters",
+  HUNTER: "hunters", HUNTERS: "hunters", MARKET: "hunters", CAST_NET: "hunters",
+  SMART_MONEY: "hunters",
+  ONCHAIN: "onchain", ONCHAIN_LISTENER: "onchain", GEYSER: "onchain",
   SOCIAL_HUNTER: "social-hunter", SOCIAL_GATE: "social-hunter", SOCIAL_GATE_SUMMARY: "social-hunter",
-  SCREENING: "screening", RUG: "screening", RUG_MONITOR: "screening",
-  ORACLE: "screening", EXPERIMENT_GMGN_ROW: "screening", HOLDER_CLUSTER: "screening",
+  SCREENING: "screening", ORACLE: "screening", EXPERIMENT_GMGN_ROW: "screening",
+  HOLDER_CLUSTER: "screening",
+  RUG: "rug-monitor", RUG_MONITOR: "rug-monitor",
   TRASH_FILTER: "trash-layer", TRASH_LAYER: "trash-layer",
   CRON: "management", MANAGER: "management", TRADE: "management", SWAP: "management",
-  EXECUTION: "management", EXIT: "management", RISK: "management", LIQUIDITY: "management",
-  KILL_SWITCH: "management", CAPITAL_GUARD: "management",
-  LEARNING: "learning", SHADOW: "learning", DARWIN: "learning",
-  PORTFOLIO: "portfolio", STRATEGY: "portfolio", SKILL_LOOP: "portfolio",
+  EXECUTION: "execution", EXIT: "execution", LIQUIDITY: "execution",
+  RISK: "risk", KILL_SWITCH: "risk", CAPITAL_GUARD: "risk",
+  LEARNING: "learning", SHADOW: "learning",
+  DARWIN: "darwin",
+  PORTFOLIO: "portfolio",
+  STRATEGY: "strategy", SKILL_LOOP: "strategy",
   ORCHESTRATOR: "orchestrator",
   PRO_ORCHESTRATOR: "pro-orchestrator", AUTOMATION_RULES: "pro-orchestrator",
-  GENERAL: "general", PLAN: "general", PLAN_WARN: "general", VAULT: "general",
+  GENERAL: "general", PLAN: "general", PLAN_WARN: "general",
   AGENT_REGISTRY: "general", DASHBOARD_IPC: "general",
+  VAULT: "vault",
   WATCHDOG: "watchdog", WATCHDOG_ERROR: "watchdog",
 };
-// substring of [TYPE] or message → information-source star id
+// substring of [TYPE] or message → the star that consumes that source
 const SOURCE_MATCH = [
-  ["gmgn", "gmgn"], ["helius", "helius"], ["dexscreener", "dexscreener"],
-  ["shyft", "shyft"], ["gecko", "gecko"], ["jupiter", "jupiter"], ["jito", "jupiter"],
-  ["telegram", "telegram"], ["llm", "llm"], ["nvidia", "llm"], ["nim", "llm"],
-  ["pump.fun", "pumpfun"], ["pumpfun", "pumpfun"],
+  ["gmgn", "screening"], ["helius", "onchain"], ["dexscreener", "hunters"],
+  ["shyft", "onchain"], ["gecko", "hunters"], ["jupiter", "execution"], ["jito", "execution"],
+  ["telegram", "general"], ["llm", "general"], ["nvidia", "general"], ["nim", "general"],
+  ["pump.fun", "hunters"], ["pumpfun", "hunters"],
 ];
 function cosmosEntitiesOf(rawType, text) {
   const out = [];
@@ -181,25 +189,34 @@ function cosmosEntitiesOf(rawType, text) {
   return out;
 }
 
-// ── Simple solar system ──
-// Just a sun and planets. Each sub-agent is a small glowing orb on its
-// own Kepler orbit (inner = faster). The only signals: an orb turns
-// accent-orange while its agent logged a real line ≤ACTIVE_MS, and a
-// dead agent (real watchdog check) shows a dark orb with red ✕.
+// ── 18 stars, 3 per orbit ring (inner = execution heart, outer = watchers) ──
+const RINGS = [0.26, 0.40, 0.54, 0.68, 0.82, 0.96];
 const AGENTS = [
-  // ordered inner → outer (pipeline first, supervision outermost)
-  { id: "management",       label: "MGMT",      k: 0.220, phase: 0.10 },
-  { id: "screening",        label: "SCREEN",    k: 0.293, phase: 0.45 },
-  { id: "hunters",          label: "HUNTERS",   k: 0.366, phase: 0.80 },
-  { id: "trash-layer",      label: "TRASH",     k: 0.439, phase: 0.25 },
-  { id: "learning",         label: "LEARN",     k: 0.512, phase: 0.60 },
-  { id: "portfolio",        label: "PORTFOLIO", k: 0.585, phase: 0.95 },
-  { id: "social-hunter",    label: "SOCIAL",    k: 0.658, phase: 0.33 },
-  { id: "orchestrator",     label: "ORCH",      k: 0.731, phase: 0.70 },
-  { id: "pro-orchestrator", label: "PRO-ORCH",  k: 0.804, phase: 0.05 },
-  { id: "general",          label: "GENERAL",   k: 0.877, phase: 0.50 },
-  { id: "watchdog",         label: "WATCHDOG",  k: 0.950, phase: 0.85 },
-].map(a => ({ ...a, w: (Math.PI * 2) / (60_000 * Math.pow(a.k / 0.22, 1.5)) }));
+  ["management", "MGMT"], ["execution", "EXEC"], ["risk", "RISK"],
+  ["orchestrator", "ORCH"], ["pro-orchestrator", "PRO-ORCH"], ["strategy", "STRATEGY"],
+  ["screening", "SCREEN"], ["rug-monitor", "RUG"], ["trash-layer", "TRASH"],
+  ["hunters", "HUNTERS"], ["onchain", "ONCHAIN"], ["social-hunter", "SOCIAL"],
+  ["learning", "LEARN"], ["darwin", "DARWIN"], ["portfolio", "PORTFOLIO"],
+  ["general", "GENERAL"], ["vault", "VAULT"], ["watchdog", "WATCHDOG"],
+].map(([id, label], i) => {
+  const k = RINGS[Math.floor(i / 3)];
+  return {
+    id, label, k,
+    phase: (i % 3) / 3 + Math.floor(i / 3) * 0.13,
+    w: (Math.PI * 2) / (60_000 * Math.pow(k / 0.26, 1.5)),
+  };
+});
+
+// blood vessels: src → dst, the real workflow loop. portfolio → hunters
+// closes the cycle (allocation guides the next hunt).
+const FLOW = [
+  ["onchain", "hunters"], ["social-hunter", "trash-layer"], ["hunters", "trash-layer"],
+  ["trash-layer", "screening"], ["rug-monitor", "screening"], ["screening", "orchestrator"],
+  ["orchestrator", "management"], ["pro-orchestrator", "management"], ["risk", "management"],
+  ["management", "execution"], ["execution", "learning"], ["learning", "darwin"],
+  ["darwin", "strategy"], ["strategy", "portfolio"], ["portfolio", "hunters"],
+  ["vault", "general"], ["general", "orchestrator"], ["watchdog", "general"],
+];
 
 // deterministic PRNG so the backdrop is identical every load
 const mulberry32 = (seed) => {
@@ -263,24 +280,33 @@ function AgentCosmos({ bus, watchdog }) {
       ctx.drawImage(glow(col), x - rad, y - rad, rad * 2, rad * 2);
       ctx.globalAlpha = 1;
     };
-    // solid 3D orb sprite (lit from upper-left) — planet bodies
-    const orbCache = new Map();
-    const orb = (col) => {
-      let cv = orbCache.get(col);
+    // 4-point star sprite — sub-agent bodies
+    const starCache = new Map();
+    const starSprite = (col) => {
+      let cv = starCache.get(col);
       if (!cv) {
         cv = document.createElement("canvas"); cv.width = cv.height = 64;
         const g = cv.getContext("2d");
-        const gr = g.createRadialGradient(24, 20, 2, 32, 32, 30);
-        gr.addColorStop(0, "#FFFFFF");
-        gr.addColorStop(0.30, col);
-        gr.addColorStop(1, "#0A0A12");
+        g.translate(32, 32);
+        const spike = (len, wid) => {
+          g.beginPath();
+          g.moveTo(0, -len); g.quadraticCurveTo(wid, 0, 0, len);
+          g.quadraticCurveTo(-wid, 0, 0, -len); g.fill();
+        };
+        g.fillStyle = col;
+        g.globalAlpha = 0.9; spike(28, 3.4); g.rotate(Math.PI / 2); spike(28, 3.4);
+        g.rotate(Math.PI / 4); g.globalAlpha = 0.45; spike(17, 2.2);
+        g.rotate(Math.PI / 2); spike(17, 2.2);
+        g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1;
+        const gr = g.createRadialGradient(32, 32, 0, 32, 32, 7);
+        gr.addColorStop(0, "#FFFFFF"); gr.addColorStop(1, col);
         g.fillStyle = gr;
-        g.beginPath(); g.arc(32, 32, 30, 0, Math.PI * 2); g.fill();
-        orbCache.set(col, cv);
+        g.beginPath(); g.arc(32, 32, 7, 0, Math.PI * 2); g.fill();
+        starCache.set(col, cv);
       }
       return cv;
     };
-    const dOrb = (col, x, y, r) => ctx.drawImage(orb(col), x - r, y - r, r * 2, r * 2);
+    const dStar = (col, x, y, r) => ctx.drawImage(starSprite(col), x - r, y - r, r * 2, r * 2);
     const sunOrb = (() => {
       const cv = document.createElement("canvas"); cv.width = cv.height = 256;
       const g = cv.getContext("2d");
@@ -344,11 +370,11 @@ function AgentCosmos({ bus, watchdog }) {
       // orbit rings
       ctx.strokeStyle = "rgba(255,255,255,0.05)";
       ctx.lineWidth = 1;
-      for (const a of AGENTS) {
-        ctx.beginPath(); ctx.ellipse(cx, cy, Rx * a.k, Ry * a.k, 0, 0, Math.PI * 2); ctx.stroke();
+      for (const k of RINGS) {
+        ctx.beginPath(); ctx.ellipse(cx, cy, Rx * k, Ry * k, 0, 0, Math.PI * 2); ctx.stroke();
       }
 
-      // planet positions, depth-sorted (far ones pass behind the sun)
+      // star positions, depth-sorted (far ones pass behind the sun)
       const orbs = AGENTS.map(a => {
         const ang = (a.phase * Math.PI * 2 + now * a.w) % (Math.PI * 2);
         return {
@@ -358,13 +384,49 @@ function AgentCosmos({ bus, watchdog }) {
           depth: Math.sin(ang),
         };
       }).sort((p, q) => p.depth - q.depth);
+      const pos = new Map(orbs.map(o => [o.a.id, o]));
 
-      const drawPlanet = ({ a, x, y, depth }) => {
+      // blood vessels — curved toward the core like arteries toward a
+      // heart. A vessel pumps (brighter line + travelling pulses) only
+      // while its source agent has real activity ≤ACTIVE_MS.
+      const bez = (x1, y1, qx, qy, x2, y2, t) => {
+        const u = 1 - t;
+        return [
+          u * u * x1 + 2 * u * t * qx + t * t * x2,
+          u * u * y1 + 2 * u * t * qy + t * t * y2,
+        ];
+      };
+      FLOW.forEach(([srcId, dstId], ei) => {
+        const s = pos.get(srcId), d = pos.get(dstId);
+        if (!s || !d) return;
+        const act = Math.max(env(srcId), 0.5 * env(dstId));
+        const mx = (s.x + d.x) / 2, my = (s.y + d.y) / 2;
+        const qx = mx + (cx - mx) * 0.22, qy = my + (cy - my) * 0.22;
+        ctx.strokeStyle = act > 0
+          ? `rgba(232,141,106,${0.10 + 0.30 * act})`
+          : "rgba(255,255,255,0.045)";
+        ctx.lineWidth = act > 0 ? 1.2 : 1;
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        ctx.quadraticCurveTo(qx, qy, d.x, d.y);
+        ctx.stroke();
+        if (act > 0) {
+          ctx.globalCompositeOperation = "lighter";
+          for (let p = 0; p < 3; p++) {
+            const t = ((tms / 1800) + p / 3 + ei * 0.21) % 1;
+            const [px, py] = bez(s.x, s.y, qx, qy, d.x, d.y, t);
+            dGlow("#E8765A", px, py, 3.5 + 2.5 * act, 0.30 + 0.55 * act);
+          }
+          ctx.globalCompositeOperation = "source-over";
+        }
+      });
+
+      const drawStar = ({ a, x, y, depth }) => {
         const near = (depth + 1) / 2;
         const sc = 0.72 + near * 0.42;
         const dead = deadRef.current.has(a.id);
         if (dead) {
-          dOrb("#3A3A44", x, y, 6 * sc);
+          dStar("#3A3A44", x, y, 9 * sc);
           ctx.font = `10px ${MN}`;
           ctx.textAlign = "center";
           ctx.fillStyle = C.red;
@@ -373,16 +435,16 @@ function AgentCosmos({ bus, watchdog }) {
         }
         const e = env(a.id);
         ctx.globalCompositeOperation = "lighter";
-        dGlow(e > 0 ? "#E88D6A" : "#FFFFFF", x, y, (13 + 9 * e) * sc, (0.25 + 0.55 * e));
+        dGlow(e > 0 ? "#E88D6A" : "#FFFFFF", x, y, (12 + 9 * e) * sc, (0.22 + 0.55 * e));
         ctx.globalCompositeOperation = "source-over";
-        dOrb(e > 0 ? "#E88D6A" : "#F4F4FF", x, y, (7 + 2 * e) * sc);
+        dStar(e > 0 ? "#E88D6A" : "#F4F4FF", x, y, (10 + 3 * e) * sc);
         ctx.font = `10px ${MN}`;
         ctx.textAlign = "center";
         ctx.fillStyle = e > 0 ? "#F0B9A5" : C.dim;
         ctx.fillText(a.label, x, y + 22 * sc);
       };
 
-      for (const o of orbs) if (o.depth < 0) drawPlanet(o);
+      for (const o of orbs) if (o.depth < 0) drawStar(o);
 
       // the sun
       const pul = 1 + 0.04 * Math.sin(tms / 1100);
@@ -397,7 +459,7 @@ function AgentCosmos({ bus, watchdog }) {
       ctx.fillStyle = "#F2B088";
       ctx.fillText("PONYOU CORE", cx, cy + SR + 26);
 
-      for (const o of orbs) if (o.depth >= 0) drawPlanet(o);
+      for (const o of orbs) if (o.depth >= 0) drawStar(o);
 
       raf = requestAnimationFrame(tick);
     };
@@ -418,7 +480,7 @@ function AgentCosmos({ bus, watchdog }) {
         display: "flex", justifyContent: "space-between", alignItems: "center",
         padding: "7px 12px", borderBottom: `1px solid ${C.border}`, flexShrink: 0,
       }}>
-        <span style={{ color: C.ink2, fontSize: 11, fontFamily: MN, letterSpacing: 1.5 }}>SUB-AGENT WORKFLOW</span>
+        <span style={{ color: C.ink2, fontSize: 11, fontFamily: MN, letterSpacing: 1.5 }}>SUB-AGENT WORKFLOW · 18 STARS</span>
         <Dot ok blink />
       </header>
       <div style={{ flex: "1 1 0", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
