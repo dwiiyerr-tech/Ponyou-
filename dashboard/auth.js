@@ -9,10 +9,16 @@ const TOKEN_FILE = path.join(__dirname, "..", "dashboard-token.txt");
 
 let _token = null;
 let _tokenCreatedAt = 0;
-const TOKEN_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h rotation
+// Must be ≥ the login cookie maxAge (30d in server.js) or rotation silently
+// invalidates every browser session long before the cookie expires.
+const TOKEN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30d rotation
 
-// Track token → IP binding (max 5 recent tokens retained)
-const _tokenBindings = new Map(); // token → { ip, createdAt }
+// Track token → allowed client IPs (small set; limits blind token replay
+// without locking out the owner's other devices).
+const MAX_IPS_PER_TOKEN = 5;
+const _tokenBindings = new Map(); // token → { ips: Set<string>, createdAt }
+
+const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
 function clientIp(req) {
   return (req.headers["x-forwarded-for"] || "").split(",")[0]?.trim()
@@ -62,28 +68,31 @@ export function validateToken(req) {
   const cookieMatch = safeEqual(cookie, token);
   if (!headerMatch && !cookieMatch) return false;
 
-  // IP binding: first successful auth from a new IP binds that IP to the token.
-  // Subsequent requests from different IPs with the same token are rejected
-  // unless the binding is older than 30 min (allows roaming but limits replay).
+  // IP binding: a token accepts up to MAX_IPS_PER_TOKEN distinct client IPs
+  // (owner's devices); beyond that, new IPs are rejected for 30 min after
+  // the last accepted one (limits blind replay without daily lockouts).
+  // Loopback never binds or counts — local curl/health checks must not
+  // claim a slot and lock out real devices.
   const ip = clientIp(req);
-  const binding = _tokenBindings.get(token);
+  if (LOOPBACK.has(ip)) return true;
+  let binding = _tokenBindings.get(token);
   if (!binding) {
-    _tokenBindings.set(token, { ip, createdAt: Date.now() });
-    // Prune old bindings (keep last 5)
+    binding = { ips: new Set(), createdAt: Date.now() };
+    _tokenBindings.set(token, binding);
+    // Prune old bindings (keep last 5 tokens)
     if (_tokenBindings.size > 5) {
       const oldest = [..._tokenBindings.entries()]
         .sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
       if (oldest) _tokenBindings.delete(oldest[0]);
     }
-    return true;
   }
-
-  if (binding.ip !== ip) {
-    // Allow IP change after 30 min (roaming/network change)
+  if (binding.ips.has(ip)) return true;
+  if (binding.ips.size >= MAX_IPS_PER_TOKEN) {
     if (Date.now() - binding.createdAt < 30 * 60 * 1000) return false;
-    binding.ip = ip;
+    binding.ips.clear();
   }
-
+  binding.ips.add(ip);
+  binding.createdAt = Date.now();
   return true;
 }
 

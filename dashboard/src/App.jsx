@@ -203,7 +203,7 @@ const AGENTS = [
   return {
     id, label, k,
     phase: (i % 3) / 3 + Math.floor(i / 3) * 0.13,
-    w: (Math.PI * 2) / (60_000 * Math.pow(k / 0.26, 1.5)),
+    w: (Math.PI * 2) / (30_000 * Math.pow(k / 0.26, 1.5)),
   };
 });
 
