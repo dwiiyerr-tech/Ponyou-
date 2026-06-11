@@ -221,7 +221,7 @@ export function recordTradeOutcome({
     const derivedPnl = ((exit_usd - entry_usd) / entry_usd) * 100;
     const drift = Math.abs(reconciled_pnl_pct - derivedPnl);
     if (drift > 5) {
-      console.warn(`[pnl_reconciliation] DRIFT ${drift.toFixed(1)}%: recorded=${reconciled_pnl_pct.toFixed(1)}% derived=${derivedPnl.toFixed(1)}% for ${symbol || mint?.slice(0, 8)}`);
+      console.warn(`[${new Date().toISOString()}] [pnl_reconciliation] DRIFT ${drift.toFixed(1)}%: recorded=${reconciled_pnl_pct.toFixed(1)}% derived=${derivedPnl.toFixed(1)}% for ${symbol || mint?.slice(0, 8)}`);
       // Persist reconciliation warnings for diagnostics
       if (!perf._reconciliation_warnings) perf._reconciliation_warnings = [];
       perf._reconciliation_warnings.push({
@@ -761,7 +761,7 @@ export function updateDarwinWeights(signalsTriggered = [], tradePnl = 0, config 
       data.signals[signal] = { weight: 1.0, success_count: 0, failure_count: 0 };
       if (!_unknownDarwinSignalsSeen.has(signal)) {
         _unknownDarwinSignalsSeen.add(signal);
-        console.warn(`[darwin] new signal registered: "${signal}" at weight 1.0`);
+        console.warn(`[${new Date().toISOString()}] [darwin] new signal registered: "${signal}" at weight 1.0`);
       }
     }
 

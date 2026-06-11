@@ -5,6 +5,11 @@ import { promisify } from "util";
 
 const execFile = promisify(execFileCb);
 
+// Router diagnostics go to stderr (pm2 error log), which has no timestamps of
+// its own — prefix ISO time so incidents can be dated after the fact.
+const warn = (msg) => console.warn(`[${new Date().toISOString()}] ${msg}`);
+const errlog = (msg) => console.error(`[${new Date().toISOString()}] ${msg}`);
+
 const GEMINI_BIN = "/home/ubuntu/.npm-global/bin/gemini";
 const RUFLO_BIN = "./node_modules/.bin/ruflo";
 const VALID_AGENTS = new Set(["claude", "gemini", "codex"]);
@@ -131,7 +136,7 @@ class AgentRouter {
     b.failures++;
     if (b.failures >= MAX_CONSECUTIVE_FAILURES) {
       b.trippedAt = Date.now();
-      console.warn(`[Router] Circuit breaker TRIPPED for ${agent} after ${MAX_CONSECUTIVE_FAILURES} consecutive failures. Blocking ${agent} for ${BREAKER_RESET_MS / 60000}min.`);
+      warn(`[Router] Circuit breaker TRIPPED for ${agent} after ${MAX_CONSECUTIVE_FAILURES} consecutive failures. Blocking ${agent} for ${BREAKER_RESET_MS / 60000}min.`);
     }
     this.#breaker.set(agent, b);
   }
@@ -162,7 +167,7 @@ class AgentRouter {
       const lower = stderrTrimmed.toLowerCase();
       const isNoise = lower.includes("quota") || lower.includes("429");
       if (!isNoise) {
-        console.warn(`[Router] Gemini stderr: ${stderrTrimmed}`);
+        warn(`[Router] Gemini stderr: ${stderrTrimmed}`);
       }
     }
     const result = String(stdout || "").trim();
@@ -235,7 +240,7 @@ class AgentRouter {
         try {
           result = await this.#callClaude(prompt, systemPrompt);
           const errMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
-          console.warn(`[Router] Fallback to claude after ${agent} failed: ${errMsg.slice(0, 120)}`);
+          warn(`[Router] Fallback to claude after ${agent} failed: ${errMsg.slice(0, 120)}`);
           lastError = null;
         } catch (fallbackErr) {
           // AR-10: preserve the primary agent's error too — without this,
@@ -252,7 +257,7 @@ class AgentRouter {
           lastError = composed;
         }
       } else if (lastError && agent !== "claude" && !this.#callLLM) {
-        console.warn("[Router] Fallback to claude skipped: callLLM not injected");
+        warn("[Router] Fallback to claude skipped: callLLM not injected");
       }
       if (lastError) {
         this.#recordFailure(agent);
@@ -269,7 +274,7 @@ class AgentRouter {
       const message = err instanceof Error ? err.message : String(err);
       this.#updateStats(agent, durationMs, true);
       // Truncate error message to avoid log spam
-      console.error(`[Router] → ${agent} ERROR: ${message.slice(0, 200)}`);
+      errlog(`[Router] → ${agent} ERROR: ${message.slice(0, 200)}`);
       return { result: "", agent, durationMs, error: message };
     }
   }
