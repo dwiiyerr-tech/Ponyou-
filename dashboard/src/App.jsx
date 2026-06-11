@@ -260,6 +260,11 @@ function AgentCosmos({ bus, watchdog }) {
     const ctx = canvas.getContext("2d");
 
     let W = 0, H = 0, Rx = 0, Ry = 0, bg = null, raf = 0;
+    let tw = [];               // twinkling backdrop stars (decoration)
+    const ripples = [];        // expanding rings on REAL activity events
+    const seen = new Map();    // last handled activity ts per agent
+    let shoot = null;          // current shooting star
+    let nextShoot = performance.now() + 5000 + Math.random() * 8000;
 
     // soft radial glow sprite per colour
     const glowCache = new Map();
@@ -328,6 +333,13 @@ function AgentCosmos({ bus, watchdog }) {
         b.beginPath(); b.arc(rnd() * W, rnd() * H, 0.3 + rnd() * 0.8, 0, Math.PI * 2); b.fill();
       }
       b.globalAlpha = 1;
+      // a handful of brighter stars that twinkle each frame
+      const rnd2 = mulberry32(20260612);
+      tw = Array.from({ length: 44 }, () => ({
+        x: rnd2() * W, y: rnd2() * H,
+        p: 1500 + rnd2() * 3500, ph: rnd2() * Math.PI * 2,
+        r: 0.6 + rnd2() * 1.1,
+      }));
     };
 
     const resize = () => {
@@ -358,6 +370,45 @@ function AgentCosmos({ bus, watchdog }) {
       ctx.globalAlpha = 1;
       ctx.drawImage(bg, 0, 0, W, H);
 
+      // drifting nebula haze + twinkling stars (pure decoration)
+      ctx.globalCompositeOperation = "lighter";
+      dGlow("#E88D6A",
+        cx + Math.cos(tms / 53000) * W * 0.26,
+        cy + Math.sin(tms / 67000) * H * 0.22, W * 0.30, 0.040);
+      dGlow("#7E9BC8",
+        cx + Math.cos(tms / 71000 + 2.1) * W * 0.30,
+        cy + Math.sin(tms / 47000 + 4.0) * H * 0.26, W * 0.26, 0.034);
+      ctx.fillStyle = "#E8E8F4";
+      for (const s of tw) {
+        const k2 = 0.5 + 0.5 * Math.sin(tms / s.p + s.ph);
+        ctx.globalAlpha = 0.06 + 0.40 * k2 * k2;
+        ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      // a shooting star every so often
+      if (!shoot && tms > nextShoot) {
+        const a = Math.PI * (0.15 + Math.random() * 0.25);
+        shoot = {
+          x: Math.random() * W * 0.8, y: Math.random() * H * 0.3,
+          vx: Math.cos(a) * 0.45, vy: Math.sin(a) * 0.45, t0: tms,
+        };
+      }
+      if (shoot) {
+        const dt = tms - shoot.t0;
+        if (dt > 800) { shoot = null; nextShoot = tms + 6000 + Math.random() * 9000; }
+        else {
+          const sx = shoot.x + shoot.vx * dt, sy = shoot.y + shoot.vy * dt;
+          const fade = 1 - dt / 800;
+          const grd = ctx.createLinearGradient(sx, sy, sx - shoot.vx * 160, sy - shoot.vy * 160);
+          grd.addColorStop(0, `rgba(244,244,255,${0.75 * fade})`);
+          grd.addColorStop(1, "rgba(244,244,255,0)");
+          ctx.strokeStyle = grd; ctx.lineWidth = 1.2;
+          ctx.beginPath(); ctx.moveTo(sx, sy);
+          ctx.lineTo(sx - shoot.vx * 160, sy - shoot.vy * 160); ctx.stroke();
+        }
+      }
+      ctx.globalCompositeOperation = "source-over";
+
       // orbit rings
       ctx.strokeStyle = "rgba(255,255,255,0.05)";
       ctx.lineWidth = 1;
@@ -376,6 +427,26 @@ function AgentCosmos({ bus, watchdog }) {
         };
       }).sort((p, q) => p.depth - q.depth);
       const pos = new Map(orbs.map(o => [o.a.id, o]));
+
+      // comet trails — a short fading wake along each orbit (kinematic)
+      ctx.globalCompositeOperation = "lighter";
+      for (const o of orbs) {
+        const ang = o.a.phase * Math.PI * 2 + now * o.a.w;
+        for (let i = 1; i <= 7; i++) {
+          const at = ang - i * o.a.w * 260;
+          dGlow("#FFFFFF",
+            cx + Math.cos(at) * Rx * o.a.k,
+            cy + Math.sin(at) * Ry * o.a.k,
+            3.2 * (1 - i / 9), 0.10 * (1 - i / 8));
+        }
+      }
+      ctx.globalCompositeOperation = "source-over";
+
+      // real activity events → expanding shockwave ring on that star
+      for (const [id, ts] of activity.current) {
+        if (seen.get(id) !== ts) { seen.set(id, ts); ripples.push({ id, t0: tms }); }
+      }
+      if (ripples.length > 60) ripples.splice(0, ripples.length - 60);
 
       // conductor links — the sun directs the whole orchestra: a thin
       // baton line to every star, pulsing core→star only while that
@@ -459,20 +530,38 @@ function AgentCosmos({ bus, watchdog }) {
 
       for (const o of orbs) if (o.depth < 0) drawStar(o);
 
-      // the sun — half-size conductor at the heart of the orchestra
+      // the sun — half-size conductor with a living, flickering corona
       const pul = 1 + 0.04 * Math.sin(tms / 1100);
+      const flick = 1 + 0.06 * Math.sin(tms / 233) * Math.sin(tms / 577);
       const SR = Math.min(W, H) * 0.0425;
       ctx.globalCompositeOperation = "lighter";
-      dGlow("#E88D6A", cx, cy, SR * 3.0 * pul, 0.45);
+      dGlow("#E88D6A", cx, cy, SR * 4.4 * pul, 0.22 * flick);
+      dGlow("#E88D6A", cx, cy, SR * 3.0 * pul, 0.45 * flick);
       dGlow("#F2B088", cx, cy, SR * 1.7 * pul, 0.70);
       ctx.globalCompositeOperation = "source-over";
       ctx.drawImage(sunOrb, cx - SR * pul, cy - SR * pul, SR * 2 * pul, SR * 2 * pul);
-      ctx.font = `15px ${PX}`;
+      ctx.font = `9px ${MN}`;
       ctx.textAlign = "center";
-      ctx.fillStyle = "#F2B088";
-      ctx.fillText("PONYOU CORE", cx, cy + SR + 26);
+      ctx.fillStyle = "rgba(216,220,229,0.28)";
+      ctx.fillText("PONYOU CORE", cx, cy + SR + 22);
 
       for (const o of orbs) if (o.depth >= 0) drawStar(o);
+
+      // shockwave rings — drawn last, only ever spawned by real events
+      ctx.globalCompositeOperation = "lighter";
+      for (let i = ripples.length - 1; i >= 0; i--) {
+        const r = ripples[i];
+        const p = (tms - r.t0) / 900;
+        const o = pos.get(r.id);
+        if (p >= 1 || !o) { ripples.splice(i, 1); continue; }
+        const near = (o.depth + 1) / 2;
+        ctx.strokeStyle = `rgba(232,141,106,${0.5 * (1 - p)})`;
+        ctx.lineWidth = 1.4 * (1 - p) + 0.4;
+        ctx.beginPath();
+        ctx.arc(o.x, o.y, (12 + 34 * p) * (0.72 + near * 0.42), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = "source-over";
 
       raf = requestAnimationFrame(tick);
     };
