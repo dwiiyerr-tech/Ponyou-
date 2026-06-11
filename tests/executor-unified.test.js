@@ -2,7 +2,7 @@
 // executeTrade. These are the P0-level safety invariants that every swap path
 // must satisfy — LLM-driven, fast-buy, and deterministic exits alike.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── hoisted mocks ─────────────────────────────────────────────────────────────
 // noopModule must be hoisted because vi.mock() calls are hoisted above imports.
@@ -240,10 +240,21 @@ describe("sharedSwapGuards — amount validation", () => {
 });
 
 describe("sharedSwapGuards — maxDeployAmount (SOL)", () => {
-  beforeEach(() => { vi.clearAllMocks(); h.isKilled.mockReturnValue(false); process.env.DRY_RUN = "true"; });
+  // config.js reads the operator's live user-config.json, so the cap is
+  // whatever the deployment sets (1.5 SOL in prod) — pin it for the test.
+  let savedMaxDeploy;
+  beforeEach(async () => {
+    vi.clearAllMocks(); h.isKilled.mockReturnValue(false); process.env.DRY_RUN = "true";
+    const { config } = await import("../config.js");
+    savedMaxDeploy = config.risk.maxDeployAmount;
+    config.risk.maxDeployAmount = 35;
+  });
+  afterEach(async () => {
+    const { config } = await import("../config.js");
+    config.risk.maxDeployAmount = savedMaxDeploy;
+  });
 
   it("blocks SOL buy exceeding maxDeployAmount", async () => {
-    // Default maxDeployAmount = 35 SOL
     const r = await executeTrade({ token_in: "SOL", token_out: "MINT1", amount: 100 });
     expect(r.success).toBe(false);
     expect(r.blocked).toBe(true);
