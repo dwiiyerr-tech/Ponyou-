@@ -52,7 +52,7 @@ import { analyzeHolderStructure } from "./holder-memory.js";
 import { summarizeSmartWalletHistory } from "./smart-wallet-history.js";
 import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinWeights, getDarwinAnalytics } from "./lessons.js";
 import { executeTool, executeTrade, registerCronRestarter, registerPonyouControls, selectFilledExecutions } from "./tools/executor.js";
-import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape, handleCallMessage, registerBotCommands } from "./telegram.js";
+import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape, llmToTelegramHtml, handleCallMessage, registerBotCommands } from "./telegram.js";
 import { startUserClient, stopUserClient, isUserClientEnabled, getUserClientStatus } from "./telegram-user-client.js";
 import { startHunter, stopHunter, getSocialScore } from "./social-hunter.js";
 import { startDiscordListener, stopDiscordListener } from "./discord-listener.js";
@@ -3685,9 +3685,11 @@ TUGAS:
     _managementBusy = false;
     recordLatency("management_cycle", elapsedMs(_cycleStart));
     if (!silent && telegramEnabled() && mgmtReport) {
-      const body = stripThink(mgmtReport);
+      // Cycle reports are LLM text — convert markdown to HTML or the chat
+      // shows literal **/###/- characters.
+      const body = llmToTelegramHtml(mgmtReport);
       if (liveMessage) await liveMessage.finalize(body);
-      else sendHTML(`🔄 <b>Mgmt</b>\n${htmlEscape(body)}`);
+      else sendHTML(`🔄 <b>Mgmt</b>\n${body}`);
     }
   }
   return mgmtReport;
@@ -5448,9 +5450,9 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
     _screeningBusy = false;
     recordLatency("screening_cycle", elapsedMs(_cycleStart));
     if (!silent && telegramEnabled() && screenReport) {
-      const body = stripThink(screenReport);
+      const body = llmToTelegramHtml(screenReport);
       if (liveMessage) await liveMessage.finalize(body);
-      else sendHTML(`🔍 <b>Screen</b>\n${htmlEscape(body)}`);
+      else sendHTML(`🔍 <b>Screen</b>\n${body}`);
     }
   }
   return screenReport;
@@ -7201,7 +7203,7 @@ export async function handleIncomingTelegramMessage(msg) {
     liveMsg = await createLiveMessage("🤖 Ponyou", "Memproses…");
 
     const response = await handleGeneralMessage(text);
-    const clean = stripThink(response) || "";
+    const clean = llmToTelegramHtml(response) || "";
 
     if (liveMsg) await liveMsg.finalize(clean);
     else await sendHTML(clean);

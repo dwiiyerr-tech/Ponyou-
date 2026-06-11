@@ -88,6 +88,41 @@ function looksLikeHtml(s) {
   return /<\/?(b|i|code|pre|a|em|strong|ins|u|strike|del|s)\b[^>]*>/i.test(s);
 }
 
+// ─── LLM output → Telegram HTML ──────────────────────────────────
+// LLM replies arrive as markdown (**bold**, ### headings, - bullets,
+// ```fences```) which parse_mode HTML renders as literal characters — cycle
+// reports and chat replies looked like raw markdown soup. Convert the common
+// subset; strings that are already crafted HTML pass through untouched.
+export function llmToTelegramHtml(text) {
+  if (!text) return "";
+  let t = String(text).replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  if (looksLikeHtml(t)) return t;
+
+  // Lift fenced code blocks out before escaping/converting so their content
+  // stays verbatim; restored as <pre> at the end.
+  const blocks = [];
+  t = t.replace(/```(?:[a-zA-Z0-9_-]*\n)?([\s\S]*?)```/g, (_, code) => {
+    blocks.push(code.replace(/\s+$/, ""));
+    return `\x00${blocks.length - 1}\x00`;
+  });
+
+  t = htmlEscape(t);
+
+  t = t
+    .replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>")                       // # heading
+    .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")                      // **bold**
+    .replace(/__([^_\n]+)__/g, "<b>$1</b>")                          // __bold__
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/gm, "$1<i>$2</i>") // *italic*
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")                      // `inline`
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>') // [t](url)
+    .replace(/^\s*[-*•]\s+/gm, "• ")                                 // bullets
+    .replace(/^\s*\d+\.\s+/gm, (m) => m.trim() + " ")                // numbered lists: trim indent
+    .replace(/\n{3,}/g, "\n\n");                                     // collapse gaps
+
+  t = t.replace(/\x00(\d+)\x00/g, (_, i) => `<pre>${htmlEscape(blocks[Number(i)])}</pre>`);
+  return t.trim();
+}
+
 // ─── Low-level send ──────────────────────────────────────────────
 
 async function postTelegram(endpoint, body, _retry = true) {
@@ -426,7 +461,9 @@ export async function createLiveMessage(title, initialText) {
     },
     async finalize(finalText) {
       if (!messageId) return;
-      const body = looksLikeHtml(finalText) ? finalText : htmlEscape(finalText || "");
+      // Crafted HTML passes through; everything else (LLM markdown, plain
+      // text) is converted so the chat never shows literal **/###/- noise.
+      const body = llmToTelegramHtml(finalText || "");
       await editMessage(messageId, `${headerHtml}\n${body}`.trim());
     },
   };
