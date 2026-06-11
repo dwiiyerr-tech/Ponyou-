@@ -30,7 +30,7 @@ export function createDashboardServer({ port = 3000 } = {}) {
   const dashToken = getToken();
   log("dashboard", `Auth token: ${dashToken.slice(0, 8)}... (see dashboard-token.txt)`);
 
-  const COOKIE_OPTS = { httpOnly: true, sameSite: "strict", maxAge: 24 * 60 * 60 * 1000, path: "/" };
+  const COOKIE_OPTS = { httpOnly: true, sameSite: "strict", maxAge: 30 * 24 * 60 * 60 * 1000, path: "/" };
   const LOGIN_HTML = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ponyou — Login</title>
 <style>body{background:#0b0e14;color:#d7dce5;font-family:ui-monospace,monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 form{background:#11151f;border:1px solid #1f2533;border-radius:10px;padding:28px;width:320px}h1{font-size:15px;margin:0 0 6px}p{font-size:12px;color:#8a93a5;margin:0 0 16px}
