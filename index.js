@@ -63,7 +63,7 @@ import {
 import { buildRiskPolicy, evaluateExitPolicy } from "./risk-policy.js";
 import {
   getStrategy, listStrategies, setActiveStrategy, setStrategyOverride,
-  getActiveStrategyId, getActiveStrategyIds, setActiveStrategies, STRATEGY_IDS,
+  getActiveStrategyId, getActiveStrategyIds, setActiveStrategies, switchPrimaryPreservingSet, STRATEGY_IDS,
 } from "./strategies.js";
 import { matchStrategyForCoin } from "./tools/strategy-matcher.js";
 import { detectInsiderPatterns } from "./tools/insider-detector.js";
@@ -368,9 +368,12 @@ const _generalControls = {
   },
   switchStrategy: (id) => {
     if (!STRATEGY_IDS.includes(id)) return { error: `Unknown strategy: ${id}. Valid: ${STRATEGY_IDS.join(", ")}` };
-    setActiveStrategy(id);
+    // exp #13: with the mcap-diversified set active, an LLM switch keeps the
+    // band-covering set intact and only moves the primary — a single tool
+    // call used to collapse the whole set to one micro-cap strategy.
+    const ids = switchPrimaryPreservingSet(id, { preserve: config.strategyPreserveMultiOnSwitch === true });
     const active = getStrategy();
-    return { switched_to: id, strategy_name: active.name, description: active.description };
+    return { switched_to: id, strategy_name: active.name, description: active.description, active_set: ids };
   },
   toggleFeature: (name, enable) => {
     if (enable) enableFeature(name);

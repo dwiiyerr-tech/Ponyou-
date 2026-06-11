@@ -336,6 +336,11 @@ export const config = {
   // perStrategy: { [strategyId]: { maxPositions, minSolToActivate, maxPerCoin } } }
   positionLimits: u.positionLimits ?? {},
 
+  // exp #13: when ON, an LLM/operator strategy switch keeps the multi-strategy
+  // set intact and only moves the primary id — without this one switch call
+  // collapsed the mcap-band-covering set to a single micro-cap strategy.
+  strategyPreserveMultiOnSwitch: u.strategyPreserveMultiOnSwitch ?? false,
+
   kelly: {
     enabled:         u.kellyEnabled ?? true,
     fraction:        u.kellyFraction ?? 0.5,

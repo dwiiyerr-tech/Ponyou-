@@ -22,8 +22,10 @@ import { log } from "./logger.js";
 import { getRuntimeSelector } from "./strategy-runtime-selector.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ACTIVE_FILE = path.join(__dirname, "active-strategy.json");
-const OVERRIDES_FILE = path.join(__dirname, "strategies-overrides.json");
+const ACTIVE_FILE = process.env.PONYOU_ACTIVE_STRATEGY_FILE
+  || path.join(__dirname, "active-strategy.json");
+const OVERRIDES_FILE = process.env.PONYOU_STRATEGY_OVERRIDES_FILE
+  || path.join(__dirname, "strategies-overrides.json");
 
 // ─── Built-in presets ─────────────────────────────────────────
 //
@@ -367,6 +369,24 @@ export function setActiveStrategies(ids) {
   writeJson(ACTIVE_FILE, { id: valid[0], ids: valid, updated_at: new Date().toISOString() });
   log("strategy", `Active strategies: [${valid.join(", ")}]`);
   return valid;
+}
+
+/**
+ * Switch the primary strategy without destroying a multi-strategy set.
+ * setActiveStrategy(id) collapses ids to [id] whenever the new id is not
+ * already in the set — one switch_strategy tool call from the LLM wiped the
+ * band-covering set back to a single micro-cap strategy (observed live
+ * 2026-06-11: ["scalping","degen"] → ["scalping"]). With preserve=true the
+ * new id becomes primary and the rest of the set stays active.
+ */
+export function switchPrimaryPreservingSet(id, { preserve = false } = {}) {
+  if (!PRESETS[id]) throw new Error(`Unknown strategy: ${id}. Valid: ${STRATEGY_IDS.join(", ")}`);
+  const current = getActiveStrategyIds();
+  if (preserve && current.length > 1) {
+    return setActiveStrategies([id, ...current.filter((x) => x !== id)]);
+  }
+  setActiveStrategy(id);
+  return [id];
 }
 
 // ─── Overrides (per-strategy user tweaks) ─────────────────────

@@ -4,8 +4,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ACTIVE_FILE = path.join(__dirname, "..", "active-strategy.json");
-const OVERRIDES_FILE = path.join(__dirname, "..", "strategies-overrides.json");
+// These tests used to clean/write the LIVE files in the repo root — the live
+// bot's active-strategy.json was deleted on every suite run and restored by
+// the _globals race guard. Use the vitest-isolated paths the module now reads.
+const ACTIVE_FILE = process.env.PONYOU_ACTIVE_STRATEGY_FILE
+  || path.join(__dirname, "..", "active-strategy.json");
+const OVERRIDES_FILE = process.env.PONYOU_STRATEGY_OVERRIDES_FILE
+  || path.join(__dirname, "..", "strategies-overrides.json");
 
 function cleanFiles() {
   try { fs.unlinkSync(ACTIVE_FILE); } catch (_) {}

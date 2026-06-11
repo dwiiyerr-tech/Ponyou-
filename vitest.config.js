@@ -85,6 +85,8 @@ export default defineConfig({
       PONYOU_ERROR_LOG: path.join(STATE_TMP, "error-log.jsonl"),
       PONYOU_SMART_WALLETS_FILE: path.join(STATE_TMP, "smart-wallets.json"),
       PONYOU_AUTOMATION_STATE_FILE: path.join(STATE_TMP, "automation-state.json"),
+      PONYOU_ACTIVE_STRATEGY_FILE: path.join(STATE_TMP, "active-strategy.json"),
+      PONYOU_STRATEGY_OVERRIDES_FILE: path.join(STATE_TMP, "strategies-overrides.json"),
     },
   },
 });
