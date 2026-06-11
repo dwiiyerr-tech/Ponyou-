@@ -377,6 +377,26 @@ function AgentCosmos({ bus, watchdog }) {
       }).sort((p, q) => p.depth - q.depth);
       const pos = new Map(orbs.map(o => [o.a.id, o]));
 
+      // conductor links — the sun directs the whole orchestra: a thin
+      // baton line to every star, pulsing core→star only while that
+      // agent has real activity ≤ACTIVE_MS.
+      for (const o of orbs) {
+        const act = env(o.a.id);
+        ctx.strokeStyle = act > 0
+          ? `rgba(242,176,136,${0.08 + 0.22 * act})`
+          : "rgba(255,255,255,0.03)";
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(o.x, o.y); ctx.stroke();
+        if (act > 0) {
+          ctx.globalCompositeOperation = "lighter";
+          for (let p = 0; p < 2; p++) {
+            const t = ((tms / 1400) + p / 2 + o.a.phase) % 1;
+            dGlow("#F2B088", cx + (o.x - cx) * t, cy + (o.y - cy) * t, 3 + 2 * act, 0.25 + 0.50 * act);
+          }
+          ctx.globalCompositeOperation = "source-over";
+        }
+      }
+
       // blood vessels — curved toward the core like arteries toward a
       // heart. A vessel pumps (brighter line + travelling pulses) only
       // while its source agent has real activity ≤ACTIVE_MS.
@@ -417,29 +437,31 @@ function AgentCosmos({ bus, watchdog }) {
         const sc = 0.72 + near * 0.42;
         const dead = deadRef.current.has(a.id);
         if (dead) {
-          dStar("#3A3A44", x, y, 6 * sc);
+          dStar("#3A3A44", x, y, 9 * sc);
           ctx.font = `10px ${MN}`;
           ctx.textAlign = "center";
           ctx.fillStyle = C.red;
-          ctx.fillText(`${a.label} ✕`, x, y + 22 * sc);
+          ctx.fillText(`${a.label} ✕`, x, y + 26 * sc);
           return;
         }
+        // body is always moon-white; activity shows as a stronger glow,
+        // a warm label, and the pumping vessels — never a colour change.
         const e = env(a.id);
         ctx.globalCompositeOperation = "lighter";
-        dGlow(e > 0 ? "#E88D6A" : "#FFFFFF", x, y, (15 + 9 * e) * sc, (0.30 + 0.55 * e));
+        dGlow("#FFFFFF", x, y, (22 + 12 * e) * sc, (0.30 + 0.50 * e));
         ctx.globalCompositeOperation = "source-over";
-        dStar(e > 0 ? "#E88D6A" : "#F4F4FF", x, y, (7 + 2.5 * e) * sc);
+        dStar("#F4F4FF", x, y, (11 + 3 * e) * sc);
         ctx.font = `10px ${MN}`;
         ctx.textAlign = "center";
         ctx.fillStyle = e > 0 ? "#F0B9A5" : C.dim;
-        ctx.fillText(a.label, x, y + 22 * sc);
+        ctx.fillText(a.label, x, y + 26 * sc);
       };
 
       for (const o of orbs) if (o.depth < 0) drawStar(o);
 
-      // the sun
+      // the sun — half-size conductor at the heart of the orchestra
       const pul = 1 + 0.04 * Math.sin(tms / 1100);
-      const SR = Math.min(W, H) * 0.085;
+      const SR = Math.min(W, H) * 0.0425;
       ctx.globalCompositeOperation = "lighter";
       dGlow("#E88D6A", cx, cy, SR * 3.0 * pul, 0.45);
       dGlow("#F2B088", cx, cy, SR * 1.7 * pul, 0.70);
