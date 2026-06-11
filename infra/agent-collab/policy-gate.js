@@ -61,6 +61,27 @@ export function validateTaskPolicy({ task_id, pending_agent = null } = {}) {
   if (!testingCheck.ok) issues.push(testingCheck.reason);
   if (!hasArtifact(artifacts, "build")) warnings.push("No build artifact found.");
 
+  // Stages must be executed (or explicitly waived) in order. An audit on
+  // 2026-06-11 found 18 owner stages still "pending" on tasks whose later
+  // stages had progressed — gemini/codex stages silently skipped while the
+  // gate passed. A pending stage behind the frontier blocks finalize unless
+  // it carries a note (a recorded, conscious waiver downgrades to a warning).
+  const stagesArr = task.task.stages || [];
+  let frontier = -1;
+  stagesArr.forEach((stage, idx) => {
+    if (stage.status === "completed" || stage.status === "active") frontier = idx;
+  });
+  for (let idx = 0; idx < frontier; idx++) {
+    const stage = stagesArr[idx];
+    if (stage.status !== "pending") continue;
+    const owner = stage.owner || "unassigned";
+    if ((stage.notes || []).length > 0) {
+      warnings.push(`Stage ${stage.stage} (owner ${owner}) skipped with a waiver note.`);
+    } else {
+      issues.push(`Stage ${stage.stage} (owner ${owner}) was skipped silently — execute it or record a waiver note on that stage.`);
+    }
+  }
+
   const decisionNotes = (task.task.stages || [])
     .filter((stage) => stage.stage === "decide" || stage.stage === "review" || stage.stage === "learn")
     .flatMap((stage) => stage.notes || [])

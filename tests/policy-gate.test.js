@@ -1,6 +1,7 @@
+import fs from "fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { _resetExperimentsForTests, createExperiment, recordExperimentRun } from "../infra/agent-collab/experiment-tracker.js";
-import { _resetOrchestrationForTests, createOrchestrationTask, getOrchestrationTask } from "../infra/agent-collab/agent-orchestrator.js";
+import { _resetOrchestrationForTests, addOrchestrationNote, createOrchestrationTask, getOrchestrationTask } from "../infra/agent-collab/agent-orchestrator.js";
 import { _resetSemanticMemoryForTests } from "../infra/agent-collab/semantic-memory.js";
 import { _resetWorkflowArtifactsForTests, workflowBuild, workflowPlan, workflowSpec, workflowTesting } from "../infra/agent-collab/workflow-bridge.js";
 import { finalizeTaskWithPolicy, validateTaskPolicy } from "../infra/agent-collab/policy-gate.js";
@@ -95,5 +96,34 @@ describe("policy gate", () => {
     expect(finalized.ok).toBe(true);
     const refreshed = getOrchestrationTask({ id: task.task.id });
     expect(refreshed.task.status).toBe("completed");
+  });
+});
+
+describe("stage-skip enforcement", () => {
+  it("blocks finalize on a silently skipped stage, allows it with a waiver note", async () => {
+    const task = createOrchestrationTask({ title: "Skip case", objective: "o" });
+    await workflowSpec({ task_id: task.task.id, problem_statement: "Problem statement", success_criteria: ["c"] });
+    await workflowPlan({ task_id: task.task.id, milestones: ["m"] });
+    await workflowBuild({ task_id: task.task.id, changes: ["x"], files: ["f.js"], verification: ["ok"] });
+    await workflowTesting({ task_id: task.task.id, test_plan: ["p"], test_results: ["r"] });
+
+    // Simulate a legacy/manual silent skip: strip the auto-waiver from evaluate.
+    const before = getOrchestrationTask({ id: task.task.id });
+    const evaluate = before.task.stages.find((s) => s.stage === "evaluate");
+    expect(evaluate.status).toBe("pending");
+    const stateFile = process.env.PONYOU_ORCH_FILE;
+    const raw = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    raw.tasks.find((t) => t.id === task.task.id).stages.find((s) => s.stage === "evaluate").notes = [];
+    fs.writeFileSync(stateFile, JSON.stringify(raw));
+
+    const blocked = validateTaskPolicy({ task_id: task.task.id, pending_agent: "claude" });
+    expect(blocked.passes).toBe(false);
+    expect(blocked.issues.join(" ")).toMatch(/skipped silently/);
+
+    // A recorded waiver downgrades the skip to a warning and unblocks the gate.
+    addOrchestrationNote({ id: task.task.id, stage: "evaluate", note: "waiver: evaluate folded into decide", agent: "claude" });
+    const allowed = validateTaskPolicy({ task_id: task.task.id, pending_agent: "claude" });
+    expect(allowed.passes).toBe(true);
+    expect(allowed.warnings.join(" ")).toMatch(/waiver/);
   });
 });

@@ -113,3 +113,34 @@ describe("agent orchestrator", () => {
     expect(evaluateTasks[0].title).toBe("Task one");
   });
 });
+
+describe("note hygiene and stage-skip visibility", () => {
+  it("advance writes its note once, to the stage being closed only", () => {
+    const { task } = createOrchestrationTask({ title: "t", objective: "o" });
+    advanceOrchestrationTask({ id: task.id, next_stage: "evaluate", note: "research done", agent: "claude" });
+    const { task: after } = getOrchestrationTask({ id: task.id });
+    const research = after.stages.find((s) => s.stage === "research");
+    const evaluate = after.stages.find((s) => s.stage === "evaluate");
+    expect(research.notes.filter((n) => n.note === "research done")).toHaveLength(1);
+    expect(evaluate.notes.filter((n) => n.note === "research done")).toHaveLength(0);
+  });
+
+  it("dedupes an identical back-to-back note (MCP retry)", () => {
+    const { task } = createOrchestrationTask({ title: "t", objective: "o" });
+    addOrchestrationNote({ id: task.id, note: "same note", agent: "claude" });
+    addOrchestrationNote({ id: task.id, note: "same note", agent: "claude" });
+    const { task: after } = getOrchestrationTask({ id: task.id });
+    const research = after.stages.find((s) => s.stage === "research");
+    expect(research.notes.filter((n) => n.note === "same note")).toHaveLength(1);
+  });
+
+  it("stamps an auto-waiver on stages jumped over by advance", () => {
+    const { task } = createOrchestrationTask({ title: "t", objective: "o" });
+    advanceOrchestrationTask({ id: task.id, next_stage: "decide", note: "jump", agent: "claude" });
+    const { task: after } = getOrchestrationTask({ id: task.id });
+    const evaluate = after.stages.find((s) => s.stage === "evaluate");
+    expect(evaluate.status).toBe("pending");
+    expect(evaluate.notes).toHaveLength(1);
+    expect(evaluate.notes[0].note).toMatch(/auto-waiver/);
+  });
+});

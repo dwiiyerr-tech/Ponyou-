@@ -101,6 +101,15 @@ export function createOrchestrationTask(args = {}) {
   return { task, context: buildMemoryContext(task) };
 }
 
+// Append a note unless the slot's last note is an identical text+agent pair —
+// MCP retries and double-submits were leaving exact duplicates ms apart
+// (16 of them in the live store on 2026-06-11).
+function pushNoteOnce(slot, note, agent) {
+  const last = slot.notes[slot.notes.length - 1];
+  if (last && last.note === String(note) && (last.agent || null) === (agent || null)) return;
+  slot.notes.push({ ts: nowIso(), note: String(note), agent: agent || null });
+}
+
 export function advanceOrchestrationTask({ id, next_stage, note = "", agent, cli, status } = {}) {
   const state = loadState();
   const task = findTask(state, id);
@@ -110,12 +119,27 @@ export function advanceOrchestrationTask({ id, next_stage, note = "", agent, cli
   if (current) {
     current.status = "completed";
     current.completed_at = nowIso();
-    if (note) current.notes.push({ ts: nowIso(), note: String(note), agent: agent || null });
+    // The note describes the stage being closed — it used to be pushed into
+    // BOTH the current and the target stage, duplicating every advance note.
+    if (note) pushNoteOnce(current, note, agent);
+  }
+  // Advancing past stages (e.g. build's research→decide jump skips evaluate)
+  // is part of the canonical flow, but it used to be invisible: the skipped
+  // stage stayed bare "pending" while the task moved on. Record an auto-waiver
+  // note so the skip is attributable and the policy gate can tell a conscious
+  // jump (warning) from a silently missing stage (blocks finalize).
+  const fromIdx = STAGES.indexOf(task.current_stage);
+  const toIdx = STAGES.indexOf(next_stage);
+  for (let idx = fromIdx + 1; idx < toIdx; idx++) {
+    const mid = task.stages[idx];
+    if (mid && mid.status === "pending" && (mid.notes || []).length === 0) {
+      pushNoteOnce(mid, `auto-waiver: stage skipped by advance ${task.current_stage}→${next_stage}`, agent);
+    }
   }
   const target = task.stages.find((stage) => stage.stage === next_stage);
   target.status = "active";
   target.started_at = target.started_at || nowIso();
-  if (note) target.notes.push({ ts: nowIso(), note: String(note), agent: agent || null });
+  if (note && !current) pushNoteOnce(target, note, agent);
   task.current_stage = next_stage;
   task.status = status || (next_stage === "learn" ? "review_pending" : "open");
   task.updated_at = nowIso();
@@ -132,7 +156,7 @@ export function addOrchestrationNote({ id, stage, note, agent, cli, status } = {
   const targetStage = stage || task.current_stage;
   const slot = task.stages.find((item) => item.stage === targetStage);
   if (!slot) return { error: `Stage ${targetStage} not found` };
-  slot.notes.push({ ts: nowIso(), note: String(note || ""), agent: agent || null });
+  pushNoteOnce(slot, String(note || ""), agent);
   if (status) {
     slot.status = status;
     task.status = status;
