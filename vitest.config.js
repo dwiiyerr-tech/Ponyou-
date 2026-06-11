@@ -84,6 +84,7 @@ export default defineConfig({
       // live file was test residue on 2026-06-11)
       PONYOU_ERROR_LOG: path.join(STATE_TMP, "error-log.jsonl"),
       PONYOU_SMART_WALLETS_FILE: path.join(STATE_TMP, "smart-wallets.json"),
+      PONYOU_AUTOMATION_STATE_FILE: path.join(STATE_TMP, "automation-state.json"),
     },
   },
 });

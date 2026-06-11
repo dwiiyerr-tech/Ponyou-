@@ -50,7 +50,7 @@ import {
 } from "./narrative-contagion.js";
 import { analyzeHolderStructure } from "./holder-memory.js";
 import { summarizeSmartWalletHistory } from "./smart-wallet-history.js";
-import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, updateDarwinWeights, getDarwinWeights, getDarwinAnalytics } from "./lessons.js";
+import { getPerformanceSummary, recordTradeOutcome, getPerformanceHistory, recordLessonOutcome, getActiveLessonIds, updateDarwinWeights, getDarwinWeights, getDarwinAnalytics } from "./lessons.js";
 import { executeTool, executeTrade, registerCronRestarter, registerPonyouControls, selectFilledExecutions } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, isEnabled as telegramEnabled, createLiveMessage, formatPnLTable, sendHTML, fmt, htmlEscape, llmToTelegramHtml, handleCallMessage, registerBotCommands } from "./telegram.js";
 import { startUserClient, stopUserClient, isUserClientEnabled, getUserClientStatus } from "./telegram-user-client.js";
@@ -3642,6 +3642,9 @@ TUGAS:
                 amount_sol: result.amount,
                 initial_value_usd: (result.amount || 0) * mgmtSolPrice,
                 wallet_address: walletAddress,
+                // Lessons in the MANAGER prompt at decision time — see the
+                // SCREENER buy site for why this attribution matters.
+                active_lessons: getActiveLessonIds({ agentType: "MANAGER" }),
                 signal_snapshot: {
                   mint: tokenOut,
                   symbol: result.symbol,
@@ -3883,7 +3886,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
     // ─── Inject Wallet Ping Candidates ───────────────
     // Smart money wallet activity → inject tokens into screening with elevated priority.
-    const walletPingCandidates = getSmartMoneyCandidates({ minWinRate: 0.60 });
+    const walletPingCandidates = await getSmartMoneyCandidates({ minWinRate: 0.60 });
     if (walletPingCandidates.length > 0) {
       const before = cappedCandidates.length;
       cappedCandidates = injectWalletPingCandidates(cappedCandidates, walletPingCandidates, 10);
@@ -5425,6 +5428,10 @@ ${planSummary?.profit_mode ? "PROFIT MODE aktif — lebih agresif." : ""}
                   amount_sol: stage1Amount,
                   initial_value_usd: entryUsd,
                   chain: token.chain || "sol",
+                  // The lessons that were in this SCREENER prompt — exit calls
+                  // recordLessonOutcome with these. No buy site ever set this,
+                  // so lesson effectiveness sat at times_applied=0 forever.
+                  active_lessons: getActiveLessonIds({ agentType: "SCREENER" }),
                   signal_snapshot: {
                     mint: token.mint,
                     symbol: token.symbol,

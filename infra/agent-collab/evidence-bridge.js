@@ -28,6 +28,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PERF_FILE = process.env.PONYOU_PERF_FILE || path.join(__dirname, "../../performance.json");
+const SKILL_ATTR_FILE = process.env.PONYOU_SKILL_ATTRIBUTION_FILE || path.join(__dirname, "../../skill-attribution.json");
 
 const LIVE_STATUSES = new Set(["running", "active", "shadow"]);
 
@@ -35,6 +36,27 @@ function loadClosedTrades() {
   try {
     const parsed = JSON.parse(fs.readFileSync(PERF_FILE, "utf8"));
     return Array.isArray(parsed?.trades) ? parsed.trades : [];
+  } catch {
+    return [];
+  }
+}
+
+// Per-skill P&L attribution rows written by the portfolio manager. Shaped
+// into the same {ts, win, pnl} contract as closed trades so the window logic
+// is shared; skillIds ride along for the per-skill breakdown in run notes.
+function loadSkillAttributionEntries() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(SKILL_ATTR_FILE, "utf8"));
+    const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
+    return entries.map((e) => ({
+      ts: e.ts,
+      win: !!e.win,
+      pnl_pct: Number(e.pnl_pct) || 0,
+      sol_pnl_pct: Number(e.pnl_pct) || 0,
+      hold_minutes: 0,
+      rug_detected: false,
+      skillIds: Array.isArray(e.skillIds) ? e.skillIds : [],
+    }));
   } catch {
     return [];
   }
@@ -58,14 +80,21 @@ function maxDrawdown(trades) {
   return worst;
 }
 
+const SOURCE_KINDS = new Set(["closed_trades", "skill_attribution"]);
+
 export function runEvidenceBridge() {
   const experiments = listExperiments({ limit: 100 }).filter(
-    (exp) => LIVE_STATUSES.has(exp.status) && exp.evidence_source?.kind === "closed_trades"
+    (exp) => LIVE_STATUSES.has(exp.status) && SOURCE_KINDS.has(exp.evidence_source?.kind)
   );
-  const trades = loadClosedTrades();
+  const tradesByKind = {
+    closed_trades: loadClosedTrades(),
+    skill_attribution: loadSkillAttributionEntries(),
+  };
   const results = [];
 
   for (const exp of experiments) {
+    const kind = exp.evidence_source.kind;
+    const trades = tradesByKind[kind];
     const { runs } = getExperimentSummary({ id: exp.id });
     const bridgeRuns = runs.filter((run) => run.context?.evidence_bridge);
     const cursor = bridgeRuns.length
@@ -97,10 +126,11 @@ export function runEvidenceBridge() {
       max_drawdown_pct: maxDrawdown(windowTrades),
       avg_hold_minutes: avgHold,
       notes:
-        `auto evidence-bridge window ${cursor} → ${windowUntil}: ${windowTrades.length} closed trades ` +
-        `(whole live book; candidate rule live with NO concurrent baseline arm — ` +
-        `evidence for manual review, not an A/B promote signal). rugs_detected=${rugs}`,
-      context: { evidence_bridge: true, window_from: cursor, window_until: windowUntil, rugs_detected: rugs },
+        `auto evidence-bridge window ${cursor} → ${windowUntil}: ${windowTrades.length} ${kind === "skill_attribution" ? "skill-attributed trades" : "closed trades (whole live book)"} ` +
+        `(candidate rule live with NO concurrent baseline arm — ` +
+        `evidence for manual review, not an A/B promote signal). rugs_detected=${rugs}` +
+        (kind === "skill_attribution" ? ` per-skill: ${_skillBreakdown(windowTrades)}` : ""),
+      context: { evidence_bridge: true, source_kind: kind, window_from: cursor, window_until: windowUntil, rugs_detected: rugs },
     }) || {};
 
     results.push({
@@ -118,9 +148,25 @@ export function runEvidenceBridge() {
   return { perf_file: PERF_FILE, experiments_checked: experiments.length, results };
 }
 
-export function enableEvidence(ids) {
+// "skill=wr%/n" summary per skill in a window, for run notes.
+function _skillBreakdown(windowTrades) {
+  const bySkill = {};
+  for (const t of windowTrades) {
+    for (const id of t.skillIds || []) {
+      if (!bySkill[id]) bySkill[id] = { n: 0, wins: 0 };
+      bySkill[id].n++;
+      if (t.win) bySkill[id].wins++;
+    }
+  }
+  return Object.entries(bySkill)
+    .map(([id, s]) => `${id}=${((s.wins / s.n) * 100).toFixed(0)}%/${s.n}`)
+    .join(" ") || "none";
+}
+
+export function enableEvidence(ids, kind = "closed_trades") {
+  if (!SOURCE_KINDS.has(kind)) return [{ error: `unknown kind: ${kind}` }];
   return ids.map((id) => {
-    const r = setExperimentEvidenceSource({ id, source: { kind: "closed_trades" } });
+    const r = setExperimentEvidenceSource({ id, source: { kind } });
     return r.error ? { id, error: r.error } : { id: r.id, name: r.name, evidence_source: r.evidence_source };
   });
 }
@@ -133,7 +179,9 @@ if (isMain) {
       .split(",")
       .map((s) => Number(s.trim()))
       .filter(Number.isFinite);
-    console.log(JSON.stringify(enableEvidence(ids), null, 2));
+    const kindFlag = process.argv.indexOf("--kind");
+    const kind = kindFlag !== -1 ? String(process.argv[kindFlag + 1] || "closed_trades") : "closed_trades";
+    console.log(JSON.stringify(enableEvidence(ids, kind), null, 2));
   } else {
     console.log(JSON.stringify(runEvidenceBridge(), null, 2));
   }

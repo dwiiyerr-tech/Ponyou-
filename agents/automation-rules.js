@@ -63,7 +63,8 @@ const REQUIREMENTS = {
 
 // ─── State ────────────────────────────────────────────────────
 
-const AUTOMATION_STATE_FILE = path.join(PROJECT_ROOT, "automation-state.json");
+const AUTOMATION_STATE_FILE = process.env.PONYOU_AUTOMATION_STATE_FILE
+  || path.join(PROJECT_ROOT, "automation-state.json");
 
 let _automationState = {
   qualified: false,

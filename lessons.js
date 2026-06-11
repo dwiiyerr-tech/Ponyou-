@@ -125,6 +125,22 @@ export function getLessonsForPrompt({ agentType, maxItems = 12 } = {}) {
   return merged.join("\n");
 }
 
+/**
+ * IDs of the lessons that getLessonsForPrompt would inject for this agent —
+ * same selection, ids instead of text. Buy sites store these on the position
+ * (active_lessons) so recordLessonOutcome can attribute the trade result at
+ * exit. Before this existed no buy site ever populated active_lessons, so
+ * every lesson sat at times_applied=0 with no evidence it helped or hurt.
+ */
+export function getActiveLessonIds({ agentType, maxItems = 12 } = {}) {
+  const data = loadLessons();
+  const list = data.lessons;
+  const pinned = list.filter(l => l.pinned);
+  const roleSpecific = list.filter(l => !l.pinned && l.role === agentType);
+  const general = list.filter(l => !l.pinned && (!l.role || l.role === "all"));
+  return [...pinned, ...roleSpecific, ...general].slice(0, maxItems).map(l => l.id);
+}
+
 // ─── Lesson Effectiveness Tracking ────────────────────────────
 
 /**

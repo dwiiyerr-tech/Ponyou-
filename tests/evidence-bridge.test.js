@@ -100,3 +100,40 @@ describe("evidence bridge", () => {
     expect(out[1].error).toMatch(/not found/);
   });
 });
+
+describe("evidence bridge: skill_attribution kind", () => {
+  const SKILL_FILE = process.env.PONYOU_SKILL_ATTRIBUTION_FILE;
+
+  function makeSkillExperiment() {
+    const exp = createExperiment({
+      name: "skill bridge test", hypothesis: "h", baseline_rule: "b", candidate_rule: "c",
+      status: "active", minimum_sample_size: 3,
+    });
+    setExperimentEvidenceSource({ id: exp.id, source: { kind: "skill_attribution" } });
+    return exp;
+  }
+
+  it("records a run from skill-attribution entries with per-skill breakdown", () => {
+    const exp = makeSkillExperiment();
+    const later = (ms) => new Date(Date.now() + ms).toISOString();
+    fs.writeFileSync(SKILL_FILE, JSON.stringify({ entries: [
+      { ts: later(1000), skillIds: ["dip_buy"], pnl_pct: 30, win: true },
+      { ts: later(2000), skillIds: ["dip_buy", "scalping"], pnl_pct: -10, win: false },
+    ], bySkill: {} }));
+
+    const out = runEvidenceBridge();
+    const r = out.results.find((x) => x.experiment_id === exp.id);
+    expect(r.recorded).toBe(true);
+    expect(r.window.trades).toBe(2);
+
+    const { runs } = getExperimentSummary({ id: exp.id });
+    expect(runs[0].context.source_kind).toBe("skill_attribution");
+    expect(runs[0].notes).toMatch(/per-skill: dip_buy=50%\/2 scalping=0%\/1/);
+    fs.unlinkSync(SKILL_FILE);
+  });
+
+  it("enableEvidence rejects unknown kinds", async () => {
+    const { enableEvidence } = await import("../infra/agent-collab/evidence-bridge.js");
+    expect(enableEvidence([1], "nope")[0].error).toMatch(/unknown kind/);
+  });
+});

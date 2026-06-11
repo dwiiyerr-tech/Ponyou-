@@ -9,7 +9,8 @@
  * Called at the start of each screening cycle in index.js.
  */
 
-import { listSmartWallets } from "../smart-wallets.js";
+import { listSmartWallets, _updateWallet } from "../smart-wallets.js";
+import { getWalletActivity, normalizeWalletActivity, gmgnCircuitOpen, isGmgnEnabled } from "./gmgn.js";
 import { listBlockedDevs } from "../dev-blocklist.js";
 import { listBlacklist, addToBlacklist } from "../token-blacklist.js";
 import { agentBus } from "../agents/agent-bus.js";
@@ -103,6 +104,67 @@ export function detectSmartMoneySignals({ minWinRate = 0.60 } = {}) {
   return signals.sort((a, b) => a.priority - b.priority || b.winRate - a.winRate);
 }
 
+// How far back a wallet buy still counts as a live signal.
+const RECENT_BUY_WINDOW_MS = 60 * 60 * 1000;
+// Cap on wallets polled per refresh — each GMGN call is rate-gated ~300ms.
+const MAX_WALLETS_POLLED = 5;
+
+/**
+ * Resolve wallet-level signals into token-level signals by pulling each
+ * wallet's recent GMGN activity. This is the piece the original injector
+ * shipped without: buildSmartMoneyCandidates emitted mint:"" stubs that the
+ * injection filter (rightly) dropped, so the source could never produce a
+ * candidate even with active wallets.
+ *
+ * Injected `deps` exist for tests; production uses the real GMGN client.
+ */
+export async function resolveSmartMoneyTokenSignals(signals, deps = {}) {
+  const fetchActivity = deps.getWalletActivity || getWalletActivity;
+  const normalize = deps.normalizeWalletActivity || normalizeWalletActivity;
+  const updateWallet = deps.updateWallet || _updateWallet;
+  const nowMs = deps.nowMs || Date.now();
+
+  const resolved = [];
+  const seenMints = new Set();
+  for (const sig of signals.slice(0, MAX_WALLETS_POLLED)) {
+    let rows;
+    try {
+      rows = normalize(await fetchActivity(sig.wallet, 10));
+    } catch (e) {
+      log("wallet_signal", `${sig.wallet.slice(0, 8)} activity fetch failed: ${e.message}`);
+      continue;
+    }
+    if (!Array.isArray(rows)) continue;
+
+    const recentBuys = rows.filter((row) =>
+      row?.side === "buy"
+      && row.token_mint
+      && Number(row.timestamp) > 0
+      && (nowMs - Number(row.timestamp) * 1000) <= RECENT_BUY_WINDOW_MS
+    );
+    if (recentBuys.length === 0) continue;
+
+    // Real activity observed — persist freshness so score decay means something.
+    const latestTs = Math.max(...recentBuys.map((r) => Number(r.timestamp) * 1000));
+    try {
+      await updateWallet({ address: sig.wallet, last_active: new Date(latestTs).toISOString() });
+    } catch { /* freshness is best-effort */ }
+
+    for (const buy of recentBuys) {
+      if (seenMints.has(buy.token_mint)) continue;
+      seenMints.add(buy.token_mint);
+      resolved.push({
+        ...sig,
+        mint: buy.token_mint,
+        symbol: buy.symbol || "?",
+        buy_sol_amount: Number(buy.sol_amount || 0),
+        buy_ts: Number(buy.timestamp) * 1000,
+      });
+    }
+  }
+  return resolved;
+}
+
 /**
  * Build synthetic token candidates from smart money wallet activity.
  * These are injected into the screening pipeline alongside DexScreener discovery.
@@ -110,10 +172,12 @@ export function detectSmartMoneySignals({ minWinRate = 0.60 } = {}) {
 export function buildSmartMoneyCandidates(signals) {
   if (!signals || signals.length === 0) return [];
 
-  return signals.map((sig, i) => ({
+  // Only token-resolved signals become candidates; wallet-level signals
+  // without a mint would be dropped by the injection filter anyway.
+  return signals.filter((sig) => sig.mint).map((sig) => ({
     // Minimal candidate structure — screening pipeline will enrich these
-    mint: "", // Will be filled by wallet activity data
-    symbol: "?",
+    mint: sig.mint,
+    symbol: sig.symbol || "?",
     name: "SmartMoney Signal",
     price: 0,
     mcap: 0,
@@ -221,16 +285,29 @@ export async function autoBlockRugDevToken({ creatorWallet, tokenMint, tokenSymb
  * Called at the start of each screening cycle.
  * Mirrors the hunter prey injection pattern.
  */
-export function getSmartMoneyCandidates({ minWinRate = 0.60 } = {}) {
+export async function getSmartMoneyCandidates({ minWinRate = 0.60 } = {}) {
   // Check cache TTL
   if (_smartMoneyCachedAt && (Date.now() - _smartMoneyCachedAt) <= SIGNAL_TTL_MS) {
     return buildSmartMoneyCandidates(_smartMoneySignals);
   }
-  
+
   _smartMoneySignals = [];
   _smartMoneyCachedAt = null;
 
-  const signals = detectSmartMoneySignals({ minWinRate });
+  let signals = detectSmartMoneySignals({ minWinRate });
+  // Resolve wallet signals → token signals via GMGN activity. Gated on the
+  // copyTrade feature flag and the GMGN circuit breaker.
+  if (signals.length > 0) {
+    if (!isGmgnEnabled() || config.gmgn?.copyTrade === false) {
+      _noteInertSource(`${signals.length} actionable wallets but GMGN copy-trade source unavailable (gmgn enabled=${isGmgnEnabled()}, copyTrade=${config.gmgn?.copyTrade !== false})`);
+      signals = [];
+    } else if (gmgnCircuitOpen()) {
+      log("wallet_signal", "GMGN circuit open — skipping smart-money activity poll this cycle");
+      signals = [];
+    } else {
+      signals = await resolveSmartMoneyTokenSignals(signals);
+    }
+  }
   const now = Date.now();
 
   // Only emit bus events for fresh signals

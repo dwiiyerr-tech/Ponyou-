@@ -518,10 +518,10 @@ export function createApiRouter() {
   });
 
   // ─── Wallet Signal Injector ───────────────────────────
-  router.get("/wallet-signals", (req, res) => {
+  router.get("/wallet-signals", async (req, res) => {
     try {
       const minWr = parseFloat(req.query.min_win_rate) || 0.60;
-      const smSignals = getSmartMoneyCandidates({ minWinRate: Number.isFinite(minWr) ? minWr : 0.60 });
+      const smSignals = await getSmartMoneyCandidates({ minWinRate: Number.isFinite(minWr) ? minWr : 0.60 });
       const rugAlerts = getRugDevAlerts(20);
       const stats = getWalletSignalStats();
       res.json({ ok: true, smartMoneySignals: smSignals, rugAlerts, stats });

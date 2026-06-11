@@ -67,3 +67,85 @@ describe("smart-money inert-source visibility", () => {
     expect(signals[0].followMode).toBe("active");
   });
 });
+
+// ─── Smart-money token resolution (collab task #15 follow-up) ────────────────
+import { resolveSmartMoneyTokenSignals, buildSmartMoneyCandidates } from "../tools/wallet-signal-injector.js";
+
+describe("smart-money token resolution", () => {
+  const SIG = { wallet: "WalletAAA", walletLabel: "vip", winRate: 0.9, signalStrength: "STRONG", priority: 1 };
+  const nowMs = Date.now();
+  const fresh = Math.floor(nowMs / 1000) - 60;          // 1 min ago
+  const stale = Math.floor(nowMs / 1000) - 2 * 60 * 60; // 2h ago — outside window
+
+  function deps(rows, updates = []) {
+    return {
+      getWalletActivity: async () => rows,
+      normalizeWalletActivity: (r) => r,
+      updateWallet: async (w) => { updates.push(w); return { updated: true }; },
+      nowMs,
+    };
+  }
+
+  it("resolves recent buys into token signals and persists last_active", async () => {
+    const updates = [];
+    const rows = [
+      { side: "buy", token_mint: "MintFresh", symbol: "FRESH", timestamp: fresh, sol_amount: 0.5 },
+      { side: "buy", token_mint: "MintStale", symbol: "OLD", timestamp: stale, sol_amount: 0.5 },
+      { side: "sell", token_mint: "MintSell", symbol: "SELL", timestamp: fresh, sol_amount: 0.5 },
+    ];
+    const out = await resolveSmartMoneyTokenSignals([SIG], deps(rows, updates));
+    expect(out).toHaveLength(1);
+    expect(out[0].mint).toBe("MintFresh");
+    expect(out[0].winRate).toBe(0.9);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].address).toBe("WalletAAA");
+  });
+
+  it("survives a failing activity fetch", async () => {
+    const out = await resolveSmartMoneyTokenSignals([SIG], {
+      getWalletActivity: async () => { throw new Error("429"); },
+      normalizeWalletActivity: (r) => r,
+      updateWallet: async () => ({}),
+    });
+    expect(out).toHaveLength(0);
+  });
+
+  it("buildSmartMoneyCandidates emits real-mint candidates and drops unresolved signals", () => {
+    const candidates = buildSmartMoneyCandidates([
+      { ...SIG, mint: "MintFresh", symbol: "FRESH" },
+      { ...SIG }, // unresolved wallet-level signal — must be dropped
+    ]);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].mint).toBe("MintFresh");
+    expect(candidates[0].symbol).toBe("FRESH");
+    expect(candidates[0]._hunter_source).toBe("smart_money_wallet");
+  });
+});
+
+// ─── Lesson application tracking ─────────────────────────────────────────────
+import { addLesson, getActiveLessonIds, recordLessonOutcome, getLessonAnalytics, clearAllLessons } from "../lessons.js";
+
+describe("lesson application tracking", () => {
+  beforeEach(() => clearAllLessons());
+
+  it("getActiveLessonIds mirrors prompt selection (pinned, role, general)", () => {
+    const a = addLesson("screener rule", [], { role: "SCREENER" }); // returns id
+    const b = addLesson("manager rule", [], { role: "MANAGER" });
+    const c = addLesson("general rule", []);
+    const ids = getActiveLessonIds({ agentType: "SCREENER" });
+    expect(ids).toContain(a);
+    expect(ids).toContain(c);
+    expect(ids).not.toContain(b);
+  });
+
+  it("recordLessonOutcome attributes wins/losses to active lessons", () => {
+    const lessonId = addLesson("rule x", [], { role: "SCREENER" });
+    const ids = getActiveLessonIds({ agentType: "SCREENER" });
+    recordLessonOutcome(ids, 25);   // win
+    recordLessonOutcome(ids, -10);  // loss
+    const stats = getLessonAnalytics().find((x) => x.id === lessonId);
+    expect(stats.times_applied).toBe(2);
+    expect(stats.success_count).toBe(1);
+    expect(stats.failure_count).toBe(1);
+  });
+});
