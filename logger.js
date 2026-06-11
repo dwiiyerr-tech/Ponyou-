@@ -61,6 +61,39 @@ function sanitizeLogText(s, max = 2000) {
   return out;
 }
 
+// ─── Error → Telegram throttle ──────────────────────────────────────────────
+// Key = category + message prefix. The first occurrence forwards immediately;
+// repeats inside the window are counted silently. When the window expires and
+// the same error fires again, the forward carries a "×N (diredam)" annotation
+// so the operator still sees the true volume without 142 separate messages.
+const TG_ERROR_WINDOW_MS = 15 * 60 * 1000;
+const TG_ERROR_MAX_KEYS = 200;
+const _tgErrorSeen = new Map(); // key → { windowStart, suppressed }
+
+export function _resetTelegramErrorThrottleForTests() { _tgErrorSeen.clear(); }
+
+export function shouldForwardErrorToTelegram(category, message, now = Date.now()) {
+  const key = `${category}|${String(message).slice(0, 80)}`;
+  const windowMin = Math.round(TG_ERROR_WINDOW_MS / 60000);
+  const seen = _tgErrorSeen.get(key);
+
+  if (seen && now - seen.windowStart < TG_ERROR_WINDOW_MS) {
+    seen.suppressed++;
+    return { send: false, suppressed: seen.suppressed, windowMin };
+  }
+
+  // New key or expired window: forward, reporting how many were suppressed in
+  // the window that just closed.
+  const suppressed = seen?.suppressed ?? 0;
+  if (_tgErrorSeen.size >= TG_ERROR_MAX_KEYS && !_tgErrorSeen.has(key)) {
+    // Bounded memory: drop the oldest entry rather than grow without limit.
+    const oldest = _tgErrorSeen.keys().next().value;
+    if (oldest !== undefined) _tgErrorSeen.delete(oldest);
+  }
+  _tgErrorSeen.set(key, { windowStart: now, suppressed: 0 });
+  return { send: true, suppressed, windowMin };
+}
+
 /**
  * General log function.
  */
@@ -80,13 +113,21 @@ export function log(category, message) {
   // Console output
   console.log(line);
 
-  // Send error to telegram (HTML so the tags actually render) — lazy import
+  // Send error to telegram (HTML so the tags actually render) — lazy import.
+  // Throttled: a repeating error must not become one chat message per
+  // occurrence (measured: 142 identical CRON_ERROR messages over two days).
   if (level === "error") {
-    getTelegram().then(tg => {
-      if (tg && tg.isEnabled && tg.isEnabled()) {
-        tg.sendHTML(`⚠️ <b>${htmlEscape(safeCategory)}</b>\n<code>${htmlEscape(safeMessage)}</code>`).catch(() => {});
-      }
-    }).catch(() => {});
+    const fwd = shouldForwardErrorToTelegram(safeCategory, safeMessage);
+    if (fwd.send) {
+      const suffix = fwd.suppressed > 0
+        ? `\n<i>×${fwd.suppressed + 1} dalam ${fwd.windowMin} menit terakhir (sisanya diredam)</i>`
+        : "";
+      getTelegram().then(tg => {
+        if (tg && tg.isEnabled && tg.isEnabled()) {
+          tg.sendHTML(`⚠️ <b>${htmlEscape(safeCategory)}</b>\n<code>${htmlEscape(safeMessage)}</code>${suffix}`).catch(() => {});
+        }
+      }).catch(() => {});
+    }
   }
 
   // File output (daily rotation, async to avoid blocking)
