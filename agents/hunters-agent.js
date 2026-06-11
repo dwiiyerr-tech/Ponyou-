@@ -240,7 +240,10 @@ export async function runHuntersExpedition({ strategy = null } = {}) {
       const effectiveMin = getSourceMinScore(src, baseMinScore);
       const score = token._hunter_score ?? token.score ?? 0;
       if (score < effectiveMin) {
-        log("hunters", `Source filter: ${token.symbol || token.mint?.slice(0, 8)} from "${src}" score=${score} < threshold=${effectiveMin} — dropped`);
+        // Debug level: fires tens of thousands of times per day (84k+ in one
+        // log archive) — the aggregate "Source thresholds dropped X/Y" line
+        // below is the operator-facing signal.
+        log("hunters_debug", `Source filter: ${token.symbol || token.mint?.slice(0, 8)} from "${src}" score=${score} < threshold=${effectiveMin} — dropped`);
         return false;
       }
       return true;

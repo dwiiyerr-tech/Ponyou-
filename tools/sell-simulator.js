@@ -72,7 +72,7 @@ function buildSelfTransferInstruction(mint, tokenAccount, owner, programId) {
 /**
  * Classify simulation errors to determine if the token is a sell-blocking honeypot.
  */
-function classifySellSimError(err, logs = []) {
+export function classifySellSimError(err, logs = []) {
   if (err === null || err === undefined) return { can_sell: true, reason: "sim_clean" };
 
   const errStr = typeof err === "string" ? err : JSON.stringify(err);
@@ -101,6 +101,12 @@ function classifySellSimError(err, logs = []) {
   }
   if (/InsufficientFunds/i.test(errStr)) {
     return { can_sell: true, reason: "sim_passed: insufficient funds (expected, no real tokens)" };
+  }
+
+  // Fee payer can't cover the sim fee — happens when every top holder owner is
+  // a PDA (pool/bonding curve). Says nothing about sellability: inconclusive.
+  if (/InvalidAccountForFee/i.test(errStr)) {
+    return { can_sell: null, reason: "fee_payer_rejected: holder owner can't pay sim fee (PDA holder)" };
   }
 
   // Unknown error — be conservative: flag as suspicious but not blocking
@@ -133,23 +139,46 @@ export async function simulateSell(mint, { timeoutMs = 6000 } = {}) {
     const programId = mintInfo.owner;
     const isToken2022 = programId.equals(TOKEN_2022_PROGRAM_ID);
 
-    // Step 2: Find a real holder to borrow their token account for simulation
+    // Step 2: Find a real holder to borrow their token account for simulation.
+    // The holder's OWNER becomes the fee payer, so it must be a system-owned
+    // wallet with lamports. The largest holder is frequently the pool /
+    // bonding-curve PDA whose owner is a program — a PDA fee payer makes the
+    // simulation fail with InvalidAccountForFee (inconclusive, not honeypot).
     let holderAccount = null;
     let holderOwner = null;
     try {
       const largest = await connection.getTokenLargestAccounts(mintPubkey);
-      if (largest?.value?.length > 0) {
-        // Get the account info of the largest holder to find the owner
-        const largestAddr = largest.value[0].address;
-        const accInfo = await connection.getParsedAccountInfo(new PublicKey(largestAddr));
-        const parsed = accInfo?.value?.data?.parsed?.info;
-        if (parsed?.owner) {
-          holderAccount = new PublicKey(largestAddr);
-          holderOwner = new PublicKey(parsed.owner);
+      const top = (largest?.value || []).slice(0, 3);
+      if (top.length > 0) {
+        const parsedAccs = await connection.getMultipleParsedAccounts(
+          top.map(a => new PublicKey(a.address))
+        );
+        const entries = [];
+        (parsedAccs?.value || []).forEach((acc, i) => {
+          const owner = acc?.data?.parsed?.info?.owner;
+          if (owner) entries.push({ tokenAccount: new PublicKey(top[i].address), owner: new PublicKey(owner) });
+        });
+        if (entries.length > 0) {
+          const ownerInfos = await connection.getMultipleAccountsInfo(entries.map(e => e.owner));
+          for (let i = 0; i < entries.length; i++) {
+            const info = ownerInfos?.[i];
+            if (info && info.owner.equals(SystemProgram.programId) && info.lamports > 10_000) {
+              holderAccount = entries[i].tokenAccount;
+              holderOwner = entries[i].owner;
+              break;
+            }
+          }
+          // No system-owned funded owner in the top 3: keep the largest holder
+          // (pre-fix behavior) so the sim still runs; classification below maps
+          // InvalidAccountForFee to an explicit inconclusive reason.
+          if (!holderAccount) {
+            holderAccount = entries[0].tokenAccount;
+            holderOwner = entries[0].owner;
+          }
         }
       }
     } catch {
-      // Fall through — we'll try with ATA derivation
+      // Fall through — no_holders_available below
     }
 
     // Step 3: If no real holder found, skip the simulation

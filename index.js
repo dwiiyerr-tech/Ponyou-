@@ -3881,10 +3881,19 @@ export async function runScreeningCycle({ silent = false } = {}) {
     if (freshOnChain.length > 0) {
       for (const oc of freshOnChain) {
         if (!cappedCandidates.find(c => c.mint === oc.mint)) {
+          if (!oc._hunt_source) oc._hunt_source = oc.source || "onchain-listener";
           cappedCandidates.push(oc);
         }
       }
       log("screening", `On-chain listener injected ${freshOnChain.length} fresh candidates → ${cappedCandidates.length} total`);
+    }
+
+    // ─── Buy Attribution Backfill ───────────────────
+    // Hunter prey arrive pre-tagged; every other channel must carry its origin
+    // too, or exits get attributed to source="unknown" and the per-source
+    // learning loop (hunter weights, darwin) trains on a hole.
+    for (const t of cappedCandidates) {
+      if (!t._hunt_source) t._hunt_source = t._source || "dexscreener-discovery";
     }
 
     // ─── Rug Dev Auto-Block ─────────────────────────
