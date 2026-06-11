@@ -13,16 +13,6 @@ const GCSS = `
   @keyframes orbGlow  { 0%,100%{filter:drop-shadow(0 0 6px rgba(232,141,106,.5))} 50%{filter:drop-shadow(0 0 14px rgba(232,141,106,.8))} }
   @keyframes blink    { 0%,100%{opacity:1} 50%{opacity:.18} }
   @keyframes fadeIn   { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:none} }
-  @keyframes bloodflow { to { stroke-dashoffset: -24; } }
-  .cosmos-thread { stroke:#FFFFFF; stroke-opacity:.09; stroke-width:1; transition: stroke-opacity .4s; }
-  .cosmos-thread.flow {
-    stroke:#E54D5A; stroke-opacity:.95; stroke-width:1.7;
-    stroke-dasharray:5 7; animation: bloodflow .55s linear infinite;
-    filter: drop-shadow(0 0 4px rgba(229,77,90,.9));
-  }
-  @keyframes sunBreathe { 0%,100%{transform:scale(1);opacity:.85} 50%{transform:scale(1.06);opacity:1} }
-  @keyframes coronaSpin { to { transform: rotate(360deg); } }
-  @keyframes twinkle { 0%,100%{opacity:.9} 50%{opacity:.25} }
   * { box-sizing:border-box; margin:0; padding:0; }
   ::-webkit-scrollbar { width:4px; height:4px; }
   ::-webkit-scrollbar-thumb { background:#20202A; border-radius:2px; }
@@ -145,12 +135,12 @@ const LiveClock = () => {
   return <span style={{ fontFamily: PX, fontSize: 22, color: C.ink2 }}>{v}</span>;
 };
 
-/* ─── Agent Cosmos — the living solar system ───────────────────────
-   Sun = Ponyou core. Planets = sub-agents (alive/dead from the real
-   watchdog checks). Stars = external information sources. Threads are
-   white when idle and run red — blood flow — only when a REAL log line
-   from that subsystem arrived in the last ACTIVE_MS. Orbital motion is
-   decoration; thread color is data.                                  */
+/* ─── Sub-Agent Solar System (simple) ───────────────────────────────
+   Just a sun and planets. Each sub-agent is a small glowing orb on its
+   own Kepler orbit around the Ponyou core. The only signals, both real:
+   an orb turns accent-orange while its agent logged a real line in the
+   last ACTIVE_MS, and a dead agent (watchdog check) shows a dark orb
+   with red ✕. No other effects.                                      */
 
 const ACTIVE_MS = 10_000;
 
@@ -191,53 +181,40 @@ function cosmosEntitiesOf(rawType, text) {
   return out;
 }
 
-// hue = sphere base; planets get a 3D radial-gradient body, a faint
-// atmosphere glow, and depth scaling along the ellipse. ring: saturn-style.
-const PLANETS = [
-  { id: "management",      label: "MGMT",      col: "#E88D6A", hi: "#F7C9B2", lo: "#5A2E1F", orbit: 105, size: 13, phase: 0.05, speed: 0.000150 },
-  { id: "screening",       label: "SCREEN",    col: "#9B7EC8", hi: "#D6C6EE", lo: "#3A2D55", orbit: 105, size: 11, phase: 0.38, speed: 0.000150 },
-  { id: "hunters",         label: "HUNTERS",   col: "#D4A35B", hi: "#F2DCB4", lo: "#5C4322", orbit: 105, size: 11, phase: 0.71, speed: 0.000150 },
-  { id: "trash-layer",     label: "TRASH",     col: "#8E8EA8", hi: "#D4D4E4", lo: "#33334A", orbit: 168, size: 9,  phase: 0.10, speed: 0.000095 },
-  { id: "learning",        label: "LEARN",     col: "#6BA879", hi: "#BFE3C8", lo: "#27412E", orbit: 168, size: 10, phase: 0.35, speed: 0.000095 },
-  { id: "portfolio",       label: "PORTFOLIO", col: "#C9876B", hi: "#F0CBB8", lo: "#4E2F22", orbit: 168, size: 11, phase: 0.60, speed: 0.000095, ring: true },
-  { id: "social-hunter",   label: "SOCIAL",    col: "#B8865B", hi: "#E8CCAC", lo: "#473324", orbit: 168, size: 8,  phase: 0.85, speed: 0.000095 },
-  { id: "orchestrator",    label: "ORCH",      col: "#7E9BC8", hi: "#C6D6EE", lo: "#2D3A55", orbit: 228, size: 8,  phase: 0.12, speed: 0.000062 },
-  { id: "pro-orchestrator",label: "PRO-ORCH",  col: "#A87E9B", hi: "#E3C6D6", lo: "#412D3A", orbit: 228, size: 8,  phase: 0.37, speed: 0.000062 },
-  { id: "general",         label: "GENERAL",   col: "#9898B0", hi: "#D8D8E8", lo: "#383850", orbit: 228, size: 7,  phase: 0.62, speed: 0.000062 },
-  { id: "watchdog",        label: "WATCHDOG",  col: "#6BA8A0", hi: "#BFE3DD", lo: "#27413D", orbit: 228, size: 8,  phase: 0.87, speed: 0.000062 },
-];
-const STARS = [
-  { id: "gmgn",        label: "GMGN",        x: 80,  y: 70 },
-  { id: "helius",      label: "HELIUS",      x: 280, y: 38 },
-  { id: "dexscreener", label: "DEXSCREENER", x: 500, y: 28 },
-  { id: "shyft",       label: "SHYFT",       x: 720, y: 38 },
-  { id: "gecko",       label: "GECKO",       x: 920, y: 70 },
-  { id: "jupiter",     label: "JUPITER",     x: 80,  y: 470 },
-  { id: "pumpfun",     label: "PUMP.FUN",    x: 350, y: 508 },
-  { id: "telegram",    label: "TELEGRAM",    x: 650, y: 508 },
-  { id: "llm",         label: "LLM (NIM)",   x: 920, y: 470 },
-];
-const SUN = { x: 500, y: 268 };
-// Deterministic decorative starfield (hash-seeded, stable across renders —
-// pure backdrop, carries no data).
-const BG_STARS = Array.from({ length: 160 }, (_, i) => {
-  const h = (i * 2654435761 + 0x9e3779b9) >>> 0;
-  return {
-    x: h % 1000,
-    y: (h >>> 10) % 540,
-    r: 0.4 + ((h >>> 20) % 9) / 11,
-    o: 0.12 + ((h >>> 24) % 50) / 100,
-    tw: (h >>> 29) % 7 === 0,
+// ── Simple solar system ──
+// Just a sun and planets. Each sub-agent is a small glowing orb on its
+// own Kepler orbit (inner = faster). The only signals: an orb turns
+// accent-orange while its agent logged a real line ≤ACTIVE_MS, and a
+// dead agent (real watchdog check) shows a dark orb with red ✕.
+const AGENTS = [
+  // ordered inner → outer (pipeline first, supervision outermost)
+  { id: "management",       label: "MGMT",      k: 0.220, phase: 0.10 },
+  { id: "screening",        label: "SCREEN",    k: 0.293, phase: 0.45 },
+  { id: "hunters",          label: "HUNTERS",   k: 0.366, phase: 0.80 },
+  { id: "trash-layer",      label: "TRASH",     k: 0.439, phase: 0.25 },
+  { id: "learning",         label: "LEARN",     k: 0.512, phase: 0.60 },
+  { id: "portfolio",        label: "PORTFOLIO", k: 0.585, phase: 0.95 },
+  { id: "social-hunter",    label: "SOCIAL",    k: 0.658, phase: 0.33 },
+  { id: "orchestrator",     label: "ORCH",      k: 0.731, phase: 0.70 },
+  { id: "pro-orchestrator", label: "PRO-ORCH",  k: 0.804, phase: 0.05 },
+  { id: "general",          label: "GENERAL",   k: 0.877, phase: 0.50 },
+  { id: "watchdog",         label: "WATCHDOG",  k: 0.950, phase: 0.85 },
+].map(a => ({ ...a, w: (Math.PI * 2) / (60_000 * Math.pow(a.k / 0.22, 1.5)) }));
+
+// deterministic PRNG so the backdrop is identical every load
+const mulberry32 = (seed) => {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-});
+};
 
 function AgentCosmos({ bus, watchdog }) {
-  const planetRefs = useRef({});   // id → <g>
-  const planetThreads = useRef({}); // id → <line>
-  const starRefs = useRef({});     // id → <g>
-  const starThreads = useRef({});  // id → <line>
+  const canvasRef = useRef(null);
   const activity = useRef(new Map());
-  const [activeNow, setActiveNow] = useState([]);
 
   // Agent liveness from the real watchdog checks (agent:<name>).
   const deadAgents = useMemo(() => {
@@ -247,189 +224,207 @@ function AgentCosmos({ bus, watchdog }) {
     }
     return dead;
   }, [watchdog]);
+  const deadRef = useRef(deadAgents);
+  useEffect(() => { deadRef.current = deadAgents; }, [deadAgents]);
 
   useEffect(() => {
     if (!bus) return;
     const onAct = (e) => activity.current.set(e.detail, Date.now());
     bus.addEventListener("activity", onAct);
     // Debug hook (console only): window.__cosmosPing("hunters") exercises the
-    // full bus→activity→thread path without waiting for a real log line.
+    // full bus→activity→orb path without waiting for a real log line.
     window.__cosmosPing = (id) => bus.dispatchEvent(new CustomEvent("activity", { detail: id }));
     return () => { bus.removeEventListener("activity", onAct); delete window.__cosmosPing; };
   }, [bus]);
 
   useEffect(() => {
-    let raf;
-    const labels = Object.fromEntries([...PLANETS, ...STARS].map(o => [o.id, o.label]));
-    let lastList = "";
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+
+    let W = 0, H = 0, Rx = 0, Ry = 0, bg = null, raf = 0;
+
+    // soft radial glow sprite per colour
+    const glowCache = new Map();
+    const glow = (col) => {
+      let cv = glowCache.get(col);
+      if (!cv) {
+        cv = document.createElement("canvas"); cv.width = cv.height = 64;
+        const g = cv.getContext("2d");
+        const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+        gr.addColorStop(0, col); gr.addColorStop(1, "rgba(0,0,0,0)");
+        g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+        glowCache.set(col, cv);
+      }
+      return cv;
+    };
+    const dGlow = (col, x, y, rad, al) => {
+      ctx.globalAlpha = al;
+      ctx.drawImage(glow(col), x - rad, y - rad, rad * 2, rad * 2);
+      ctx.globalAlpha = 1;
+    };
+    // solid 3D orb sprite (lit from upper-left) — planet bodies
+    const orbCache = new Map();
+    const orb = (col) => {
+      let cv = orbCache.get(col);
+      if (!cv) {
+        cv = document.createElement("canvas"); cv.width = cv.height = 64;
+        const g = cv.getContext("2d");
+        const gr = g.createRadialGradient(24, 20, 2, 32, 32, 30);
+        gr.addColorStop(0, "#FFFFFF");
+        gr.addColorStop(0.30, col);
+        gr.addColorStop(1, "#0A0A12");
+        g.fillStyle = gr;
+        g.beginPath(); g.arc(32, 32, 30, 0, Math.PI * 2); g.fill();
+        orbCache.set(col, cv);
+      }
+      return cv;
+    };
+    const dOrb = (col, x, y, r) => ctx.drawImage(orb(col), x - r, y - r, r * 2, r * 2);
+    const sunOrb = (() => {
+      const cv = document.createElement("canvas"); cv.width = cv.height = 256;
+      const g = cv.getContext("2d");
+      const gr = g.createRadialGradient(100, 84, 8, 128, 128, 120);
+      gr.addColorStop(0, "#FFF6E8");
+      gr.addColorStop(0.45, "#F7C9A0");
+      gr.addColorStop(0.80, "#E88D6A");
+      gr.addColorStop(1, "#B34A2E");
+      g.fillStyle = gr;
+      g.beginPath(); g.arc(128, 128, 120, 0, Math.PI * 2); g.fill();
+      return cv;
+    })();
+
+    const buildBg = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      bg = document.createElement("canvas");
+      bg.width = Math.round(W * dpr); bg.height = Math.round(H * dpr);
+      const b = bg.getContext("2d");
+      b.setTransform(dpr, 0, 0, dpr, 0, 0);
+      b.fillStyle = "#06060B";
+      b.fillRect(0, 0, W, H);
+      // sparse, quiet starfield
+      const rnd = mulberry32(20260611);
+      const n = Math.round((W * H) / 5200);
+      for (let i = 0; i < n; i++) {
+        b.globalAlpha = 0.05 + rnd() * 0.20;
+        b.fillStyle = "#E8E8F4";
+        b.beginPath(); b.arc(rnd() * W, rnd() * H, 0.3 + rnd() * 0.8, 0, Math.PI * 2); b.fill();
+      }
+      b.globalAlpha = 1;
+    };
+
+    const resize = () => {
+      const box = canvas.parentElement.getBoundingClientRect();
+      W = Math.max(280, box.width);
+      H = Math.max(260, box.height);
+      canvas.style.width = `${W}px`;
+      canvas.style.height = `${H}px`;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(W * dpr);
+      canvas.height = Math.round(H * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      Rx = W / 2 - 90;
+      Ry = Math.min(H / 2 - 64, Rx * 0.40);
+      buildBg();
+    };
+
     const tick = () => {
       const now = Date.now();
-      const isActive = (id) => now - (activity.current.get(id) || 0) < ACTIVE_MS;
+      const tms = performance.now();
+      const env = (id) => {
+        const dt = now - (activity.current.get(id) || 0);
+        return dt < ACTIVE_MS ? 1 - dt / ACTIVE_MS : 0;
+      };
+      const cx = W / 2, cy = H / 2;
 
-      for (const p of PLANETS) {
-        const a = (p.phase + now * p.speed % 1) * Math.PI * 2;
-        const x = SUN.x + Math.cos(a) * p.orbit * 1.9;
-        const y = SUN.y + Math.sin(a) * p.orbit * 0.46; // elliptical orbit
-        // pseudo-3D: lower half of the ellipse is "near" — bigger + brighter
-        const depth = (Math.sin(a) + 1) / 2;
-        const scale = 0.78 + depth * 0.5;
-        const g = planetRefs.current[p.id];
-        const th = planetThreads.current[p.id];
-        if (g) {
-          g.setAttribute("transform", `translate(${x},${y}) scale(${scale})`);
-          g.style.opacity = 0.62 + depth * 0.38;
-          g.style.filter = isActive(p.id) ? "drop-shadow(0 0 7px rgba(229,77,90,.95))" : "none";
-        }
-        if (th) {
-          th.setAttribute("x2", x); th.setAttribute("y2", y);
-          th.setAttribute("class", isActive(p.id) ? "cosmos-thread flow" : "cosmos-thread");
-        }
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
+      ctx.drawImage(bg, 0, 0, W, H);
+
+      // orbit rings
+      ctx.strokeStyle = "rgba(255,255,255,0.05)";
+      ctx.lineWidth = 1;
+      for (const a of AGENTS) {
+        ctx.beginPath(); ctx.ellipse(cx, cy, Rx * a.k, Ry * a.k, 0, 0, Math.PI * 2); ctx.stroke();
       }
-      for (const s of STARS) {
-        const g = starRefs.current[s.id];
-        const th = starThreads.current[s.id];
-        const on = isActive(s.id);
-        if (g) g.style.filter = on ? "drop-shadow(0 0 7px rgba(229,77,90,.9))" : "none";
-        if (th) th.setAttribute("class", on ? "cosmos-thread flow" : "cosmos-thread");
-      }
-      // Honest textual readout of what is pulsing right now (throttled).
-      const list = [...PLANETS, ...STARS].filter(o => isActive(o.id)).map(o => labels[o.id]).join(" · ");
-      if (list !== lastList) { lastList = list; setActiveNow(list ? list.split(" · ") : []); }
+
+      // planet positions, depth-sorted (far ones pass behind the sun)
+      const orbs = AGENTS.map(a => {
+        const ang = (a.phase * Math.PI * 2 + now * a.w) % (Math.PI * 2);
+        return {
+          a,
+          x: cx + Math.cos(ang) * Rx * a.k,
+          y: cy + Math.sin(ang) * Ry * a.k,
+          depth: Math.sin(ang),
+        };
+      }).sort((p, q) => p.depth - q.depth);
+
+      const drawPlanet = ({ a, x, y, depth }) => {
+        const near = (depth + 1) / 2;
+        const sc = 0.72 + near * 0.42;
+        const dead = deadRef.current.has(a.id);
+        if (dead) {
+          dOrb("#3A3A44", x, y, 6 * sc);
+          ctx.font = `10px ${MN}`;
+          ctx.textAlign = "center";
+          ctx.fillStyle = C.red;
+          ctx.fillText(`${a.label} ✕`, x, y + 22 * sc);
+          return;
+        }
+        const e = env(a.id);
+        ctx.globalCompositeOperation = "lighter";
+        dGlow(e > 0 ? "#E88D6A" : "#FFFFFF", x, y, (13 + 9 * e) * sc, (0.25 + 0.55 * e));
+        ctx.globalCompositeOperation = "source-over";
+        dOrb(e > 0 ? "#E88D6A" : "#F4F4FF", x, y, (7 + 2 * e) * sc);
+        ctx.font = `10px ${MN}`;
+        ctx.textAlign = "center";
+        ctx.fillStyle = e > 0 ? "#F0B9A5" : C.dim;
+        ctx.fillText(a.label, x, y + 22 * sc);
+      };
+
+      for (const o of orbs) if (o.depth < 0) drawPlanet(o);
+
+      // the sun
+      const pul = 1 + 0.04 * Math.sin(tms / 1100);
+      const SR = Math.min(W, H) * 0.085;
+      ctx.globalCompositeOperation = "lighter";
+      dGlow("#E88D6A", cx, cy, SR * 3.0 * pul, 0.45);
+      dGlow("#F2B088", cx, cy, SR * 1.7 * pul, 0.70);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.drawImage(sunOrb, cx - SR * pul, cy - SR * pul, SR * 2 * pul, SR * 2 * pul);
+      ctx.font = `15px ${PX}`;
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#F2B088";
+      ctx.fillText("PONYOU CORE", cx, cy + SR + 26);
+
+      for (const o of orbs) if (o.depth >= 0) drawPlanet(o);
+
       raf = requestAnimationFrame(tick);
     };
+
+    const ro = new ResizeObserver(() => resize());
+    ro.observe(canvas.parentElement);
+    resize();
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => { ro.disconnect(); cancelAnimationFrame(raf); };
   }, []);
 
   return (
-    <Panel
-      title="AGENT COSMOS · LIVE WORKFLOW"
-      right={<Lbl col={C.dim}>white = idle · <span style={{ color: C.red }}>red flow = real event ≤10s</span></Lbl>}
-      style={{ minHeight: 560 }}
-    >
-      <svg viewBox="0 0 1000 540" style={{ width: "100%", height: "auto", display: "block", borderRadius: 4 }}>
-        <defs>
-          {/* deep space */}
-          <radialGradient id="space" cx="50%" cy="48%" r="75%">
-            <stop offset="0%" stopColor="#0C0A18" />
-            <stop offset="55%" stopColor="#070710" />
-            <stop offset="100%" stopColor="#030306" />
-          </radialGradient>
-          <radialGradient id="nebulaP" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#9B7EC8" stopOpacity=".14" /><stop offset="100%" stopColor="#9B7EC8" stopOpacity="0" />
-          </radialGradient>
-          <radialGradient id="nebulaO" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#E88D6A" stopOpacity=".10" /><stop offset="100%" stopColor="#E88D6A" stopOpacity="0" />
-          </radialGradient>
-          {/* sun layers */}
-          <radialGradient id="sunCorona" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#F2B088" stopOpacity=".55" />
-            <stop offset="35%" stopColor="#E88D6A" stopOpacity=".22" />
-            <stop offset="70%" stopColor="#C45B3A" stopOpacity=".07" />
-            <stop offset="100%" stopColor="#C45B3A" stopOpacity="0" />
-          </radialGradient>
-          <radialGradient id="sunCore" cx="42%" cy="38%" r="68%">
-            <stop offset="0%" stopColor="#FFF6E8" />
-            <stop offset="28%" stopColor="#F7C9A0" />
-            <stop offset="62%" stopColor="#E88D6A" />
-            <stop offset="100%" stopColor="#B34A2E" />
-          </radialGradient>
-          {/* one 3D sphere gradient per planet (lit from upper-left) */}
-          {PLANETS.map(p => (
-            <radialGradient key={`g-${p.id}`} id={`pl-${p.id}`} cx="33%" cy="28%" r="78%">
-              <stop offset="0%" stopColor={p.hi} />
-              <stop offset="45%" stopColor={p.col} />
-              <stop offset="100%" stopColor={p.lo} />
-            </radialGradient>
-          ))}
-          <radialGradient id="starGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity=".9" /><stop offset="40%" stopColor="#D0D0E8" stopOpacity=".25" /><stop offset="100%" stopColor="#D0D0E8" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-
-        {/* backdrop */}
-        <rect x="0" y="0" width="1000" height="540" fill="url(#space)" />
-        <ellipse cx="240" cy="420" rx="300" ry="160" fill="url(#nebulaP)" />
-        <ellipse cx="800" cy="120" rx="280" ry="150" fill="url(#nebulaO)" />
-        {BG_STARS.map((s, i) => (
-          <circle key={i} cx={s.x} cy={s.y} r={s.r} fill="#E8E8F4" opacity={s.o}
-            style={s.tw ? { animation: `twinkle ${2 + (i % 5)}s ease-in-out infinite` } : undefined} />
-        ))}
-
-        {/* orbit rings */}
-        {[105, 168, 228].map(r => (
-          <ellipse key={r} cx={SUN.x} cy={SUN.y} rx={r * 1.9} ry={r * 0.46}
-            fill="none" stroke="#FFFFFF" strokeOpacity=".06" strokeWidth="1" />
-        ))}
-
-        {/* threads — the data layer */}
-        {STARS.map(s => (
-          <line key={`t-${s.id}`} ref={el => (starThreads.current[s.id] = el)}
-            x1={s.x} y1={s.y} x2={SUN.x} y2={SUN.y} className="cosmos-thread" />
-        ))}
-        {PLANETS.map(p => (
-          <line key={`t-${p.id}`} ref={el => (planetThreads.current[p.id] = el)}
-            x1={SUN.x} y1={SUN.y} x2={SUN.x} y2={SUN.y} className="cosmos-thread" />
-        ))}
-
-        {/* sun — the Ponyou core */}
-        <circle cx={SUN.x} cy={SUN.y} r="118" fill="url(#sunCorona)"
-          style={{ animation: "sunBreathe 4s ease-in-out infinite", transformOrigin: `${SUN.x}px ${SUN.y}px` }} />
-        <g style={{ animation: "coronaSpin 90s linear infinite", transformOrigin: `${SUN.x}px ${SUN.y}px` }}>
-          {Array.from({ length: 12 }, (_, i) => {
-            const a = (i / 12) * Math.PI * 2;
-            return <line key={i}
-              x1={SUN.x + Math.cos(a) * 40} y1={SUN.y + Math.sin(a) * 40}
-              x2={SUN.x + Math.cos(a) * (54 + (i % 3) * 8)} y2={SUN.y + Math.sin(a) * (54 + (i % 3) * 8)}
-              stroke="#F2B088" strokeOpacity=".30" strokeWidth="1.6" strokeLinecap="round" />;
-          })}
-        </g>
-        <circle cx={SUN.x} cy={SUN.y} r="38" fill="url(#sunCore)" />
-        <circle cx={SUN.x} cy={SUN.y} r="38" fill="none" stroke="#FFE9D0" strokeOpacity=".5" strokeWidth="1" />
-        <text x={SUN.x} y={SUN.y + 64} textAnchor="middle" fill="#F2B088" fontSize="15" fontFamily={PX} letterSpacing="2">PONYOU CORE</text>
-
-        {/* stars — information sources */}
-        {STARS.map(s => (
-          <g key={s.id} ref={el => (starRefs.current[s.id] = el)}>
-            <circle cx={s.x} cy={s.y} r="13" fill="url(#starGlow)" />
-            <path d={`M ${s.x} ${s.y - 8} Q ${s.x + 1.6} ${s.y - 1.6} ${s.x + 8} ${s.y} Q ${s.x + 1.6} ${s.y + 1.6} ${s.x} ${s.y + 8} Q ${s.x - 1.6} ${s.y + 1.6} ${s.x - 8} ${s.y} Q ${s.x - 1.6} ${s.y - 1.6} ${s.x} ${s.y - 8} Z`}
-              fill="#F4F4FF" opacity=".95" />
-            <text x={s.x} y={s.y + (s.y > SUN.y ? -16 : 22)} textAnchor="middle" fill={C.dim} fontSize="10" fontFamily={MN} letterSpacing=".5">{s.label}</text>
-          </g>
-        ))}
-
-        {/* planets — sub-agents (rendered at origin; tick() translates+scales) */}
-        {PLANETS.map(p => {
-          const dead = deadAgents.has(p.id);
-          return (
-            <g key={p.id} ref={el => (planetRefs.current[p.id] = el)}>
-              {/* atmosphere */}
-              <circle r={p.size + 3.5} fill={dead ? "#3a3a44" : p.col} opacity=".16" />
-              {p.ring && (
-                <ellipse rx={p.size + 9} ry={(p.size + 9) * 0.32} fill="none"
-                  stroke={dead ? "#3a3a44" : p.hi} strokeOpacity=".55" strokeWidth="2"
-                  transform="rotate(-18)" />
-              )}
-              {/* body */}
-              <circle r={p.size} fill={dead ? "#2E2E38" : `url(#pl-${p.id})`}
-                stroke={dead ? C.red : "none"} strokeWidth={dead ? 2 : 0} />
-              {/* specular highlight */}
-              {!dead && <ellipse cx={-p.size * 0.32} cy={-p.size * 0.38} rx={p.size * 0.28} ry={p.size * 0.18}
-                fill="#FFFFFF" opacity=".35" transform="rotate(-25)" />}
-              <text y={p.size + 14} textAnchor="middle" fill={dead ? C.red : C.ink2} fontSize="10" fontFamily={MN} letterSpacing=".5">
-                {p.label}{dead ? " ✕" : ""}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-      <div style={{ borderTop: `1px dashed ${C.border}`, paddingTop: 6, marginTop: 4, minHeight: 22 }}>
-        <Lbl col={C.dim2}>PULSING NOW: </Lbl>
-        {activeNow.length
-          ? activeNow.map(n => <Bdg key={n} col={C.red}>{n}</Bdg>).reduce((acc, el, i) => acc === null ? [el] : [...acc, <span key={`s${i}`}> </span>, el], null)
-          : <Lbl col={C.dim2}>silence — no subsystem produced a log line in the last 10s</Lbl>}
+    <section style={{
+      background: C.panel, border: `1px solid ${C.border}`,
+      height: "100%", display: "flex", flexDirection: "column", minHeight: 0,
+    }}>
+      <header style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        padding: "7px 12px", borderBottom: `1px solid ${C.border}`, flexShrink: 0,
+      }}>
+        <span style={{ color: C.ink2, fontSize: 11, fontFamily: MN, letterSpacing: 1.5 }}>SUB-AGENT WORKFLOW</span>
+        <Dot ok blink />
+      </header>
+      <div style={{ flex: "1 1 0", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <canvas ref={canvasRef} style={{ display: "block" }} />
       </div>
-    </Panel>
+    </section>
   );
 }
 
@@ -478,7 +473,7 @@ function Header({ s, internals }) {
 }
 
 /* ─── Liveness (watchdog) ──────────────────────────────────────── */
-function LivenessPanel({ watchdog }) {
+function LivenessPanel({ watchdog, style }) {
   const checks = watchdog?.checks || [];
   const alive = checks.filter(c => c.ok).length;
   const age = watchdog?.ts ? Date.now() - Date.parse(watchdog.ts) : null;
@@ -486,6 +481,7 @@ function LivenessPanel({ watchdog }) {
 
   return (
     <Panel
+      style={style}
       title="LIVENESS · WATCHDOG"
       right={checks.length
         ? <Bdg col={alive === checks.length ? C.green : C.red}>
@@ -530,10 +526,10 @@ function LivenessPanel({ watchdog }) {
 }
 
 /* ─── Positions ────────────────────────────────────────────────── */
-function PositionsPanel({ positions }) {
+function PositionsPanel({ positions, style }) {
   const rows = positions || [];
   return (
-    <Panel title="OPEN POSITIONS" right={<Bdg col={rows.length ? C.amber : C.dim2}>{rows.length}</Bdg>}>
+    <Panel style={style} title="OPEN POSITIONS" right={<Bdg col={rows.length ? C.amber : C.dim2}>{rows.length}</Bdg>}>
       {!rows.length && <Empty>Book empty — no open positions.</Empty>}
       {rows.length > 0 && (
         <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: MN, fontSize: 10 }}>
@@ -570,10 +566,10 @@ function PositionsPanel({ positions }) {
 }
 
 /* ─── Trade timeline ───────────────────────────────────────────── */
-function TimelinePanel({ events }) {
+function TimelinePanel({ events, style }) {
   const rows = events || [];
   return (
-    <Panel title="TRADE TIMELINE" right={<Lbl col={C.dim}>last {rows.length} events</Lbl>}>
+    <Panel style={style} title="TRADE TIMELINE" right={<Lbl col={C.dim}>last {rows.length} events</Lbl>}>
       {!rows.length && <Empty>No deploy/close events recorded yet.</Empty>}
       {rows.map((e, i) => {
         const isDeploy = e.action === "deploy";
@@ -595,7 +591,7 @@ function TimelinePanel({ events }) {
 }
 
 /* ─── Darwin learned weights ───────────────────────────────────── */
-function DarwinPanel({ darwin }) {
+function DarwinPanel({ darwin, style }) {
   const weights = darwin?.weights && typeof darwin.weights === "object" ? darwin.weights
     : (darwin && typeof darwin === "object" && !Array.isArray(darwin) ? darwin : null);
   const entries = weights
@@ -606,7 +602,7 @@ function DarwinPanel({ darwin }) {
   const max = entries.length ? Math.max(...entries.map(e => e[1]), 1) : 1;
 
   return (
-    <Panel title="DARWIN · LEARNED SIGNAL WEIGHTS"
+    <Panel style={style} title="DARWIN · LEARNED SIGNAL WEIGHTS"
       right={<Bdg col={entries.length ? C.purple : C.dim2}>{entries.length ? `${entries.length} SIGNALS` : "UNTRAINED"}</Bdg>}>
       {!entries.length && (
         <Empty>
@@ -635,11 +631,11 @@ function DarwinPanel({ darwin }) {
 
 /* ─── Shadow watchlist ─────────────────────────────────────────── */
 const SHADOW_COL = { watching: C.amber, survived: C.green, mooned: C.purple, rugged: C.red };
-function ShadowPanel({ shadow }) {
+function ShadowPanel({ shadow, style }) {
   const rows = shadow?.recent || [];
   const by = shadow?.by_status || {};
   return (
-    <Panel title="SHADOW WATCHLIST"
+    <Panel style={style} title="SHADOW WATCHLIST"
       right={<span style={{ display: "flex", gap: 4 }}>
         {Object.entries(by).map(([k, n]) => (
           <Bdg key={k} col={SHADOW_COL[k] || C.dim}>{k.toUpperCase()} {n}</Bdg>
@@ -672,13 +668,13 @@ function ShadowPanel({ shadow }) {
 }
 
 /* ─── GMGN health + experiment #1 ──────────────────────────────── */
-function GmgnPanel({ gmgn, exp }) {
+function GmgnPanel({ gmgn, exp, style }) {
   const en = Boolean(gmgn?.enabled);
   const circuit = Boolean(gmgn?.circuit_open);
   const lastOk = gmgn?.last_ok_at ? Date.now() - Date.parse(gmgn.last_ok_at) : null;
   const c = gmgn?.counters || {};
   return (
-    <Panel title="GMGN LAYER"
+    <Panel style={style} title="GMGN LAYER"
       right={<Bdg col={!en ? C.dim2 : circuit ? C.red : C.green}>
         {!en ? "DISABLED" : circuit ? "CIRCUIT OPEN" : "LIVE"}
       </Bdg>}>
@@ -704,11 +700,11 @@ function GmgnPanel({ gmgn, exp }) {
 }
 
 /* ─── Portfolio + skill loop ───────────────────────────────────── */
-function PortfolioPanel({ portfolio, skillLoop }) {
+function PortfolioPanel({ portfolio, skillLoop, style }) {
   const attr = portfolio?.attribution || {};
   const skills = Object.entries(attr).sort((a, b) => (b[1]?.trades || 0) - (a[1]?.trades || 0));
   return (
-    <Panel title="STRATEGY ENSEMBLE"
+    <Panel style={style} title="STRATEGY ENSEMBLE"
       right={<span style={{ display: "flex", gap: 4 }}>
         <Bdg col={portfolio?.enabled ? C.green : C.dim2}>
           PORTFOLIO {portfolio?.enabled ? (portfolio.mode || "on").toUpperCase() : "OFF"}
@@ -756,10 +752,10 @@ function PortfolioPanel({ portfolio, skillLoop }) {
 }
 
 /* ─── Feature flags ────────────────────────────────────────────── */
-function FeaturesPanel({ features }) {
+function FeaturesPanel({ features, style }) {
   const entries = Object.entries(features || {});
   return (
-    <Panel title="FEATURE FLAGS" right={<Lbl col={C.dim}>{entries.filter(([, v]) => v).length}/{entries.length} on</Lbl>}>
+    <Panel style={style} title="FEATURE FLAGS" right={<Lbl col={C.dim}>{entries.filter(([, v]) => v).length}/{entries.length} on</Lbl>}>
       {!entries.length && <Empty>No flags reported.</Empty>}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
         {entries.map(([k, v]) => (
@@ -771,12 +767,12 @@ function FeaturesPanel({ features }) {
 }
 
 /* ─── Second brain + comms ─────────────────────────────────────── */
-function BrainCommsPanel({ s }) {
+function BrainCommsPanel({ s, style }) {
   const sb = s?.second_brain || {};
   const tg = s?.telegram || {};
   const lastUpd = sb.last_updated ? Date.now() - Date.parse(sb.last_updated) : null;
   return (
-    <Panel title="SECOND BRAIN · COMMS"
+    <Panel style={style} title="SECOND BRAIN · COMMS"
       right={<Bdg col={sb.available ? C.purple : C.dim2}>{sb.available ? "VAULT LINKED" : "NO VAULT"}</Bdg>}>
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 8 }}>
         <KPI label="NOTES" value={sb.file_count ?? 0} col={C.purpleL} />
@@ -806,12 +802,12 @@ function groupOf(rawType) {
   }
   return "SYS";
 }
-function LogStream({ logs, filter, setFilter }) {
+function LogStream({ logs, filter, setFilter, style }) {
   const shown = filter === "ALL" ? logs : logs.filter(l => l.group === filter);
   return (
     <Panel
       title="LIVE LOG STREAM"
-      style={{ height: 280 }}
+      style={{ height: 280, ...style }}
       right={
         <span style={{ display: "flex", gap: 4 }}>
           {["ALL", ...Object.keys(LOG_GROUPS), "SYS"].map(g => (
@@ -924,12 +920,18 @@ export default function App() {
     return () => { stop = true; clearInterval(iv); };
   }, []);
 
-  const cols = mobile ? "1fr" : "0.75fr 2.5fr 0.75fr";
+  // Info rows above/below; the solar system gets the FULL page width.
+  const PANEL_H = 330;
+  const gridStyle = {
+    display: "grid",
+    gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr",
+    gap: 12,
+  };
 
   return (
     <div style={{ background: C.bg, minHeight: "100vh", padding: 12, color: C.ink }}>
       <style>{GCSS}</style>
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 1700, margin: "0 auto" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 1880, margin: "0 auto" }}>
         <Header s={botState} internals={internals} />
         {!wsUp && (
           <div style={{
@@ -939,30 +941,24 @@ export default function App() {
             ⚠ WebSocket disconnected — values frozen at last received state. Reconnecting…
           </div>
         )}
-        <div style={{ display: "grid", gridTemplateColumns: cols, gap: 12, alignItems: "start" }}>
-          {/* col 1 — health */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <LivenessPanel watchdog={internals?.watchdog} />
-            <GmgnPanel gmgn={gmgn} exp={internals?.experiment_gmgn_row} />
-          </div>
-          {/* col 2 (wide) — the living system + trading */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <AgentCosmos bus={cosmosBus} watchdog={internals?.watchdog} />
-            <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 12, alignItems: "start" }}>
-              <PositionsPanel positions={botState?.positions} />
-              <TimelinePanel events={botState?.recent_events} />
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 12, alignItems: "start" }}>
-              <PortfolioPanel portfolio={portfolio} skillLoop={skillLoop} />
-              <FeaturesPanel features={botState?.features} />
-            </div>
-          </div>
-          {/* col 3 — learning */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <DarwinPanel darwin={internals?.darwin} />
-            <ShadowPanel shadow={internals?.shadow} />
-            <BrainCommsPanel s={botState} />
-          </div>
+        {/* top info row */}
+        <div style={gridStyle}>
+          <LivenessPanel watchdog={internals?.watchdog} style={{ height: PANEL_H }} />
+          <PositionsPanel positions={botState?.positions} style={{ height: PANEL_H }} />
+          <TimelinePanel events={botState?.recent_events} style={{ height: PANEL_H }} />
+        </div>
+        {/* the sub-agent solar system — full width, 16:9 centered */}
+        <div style={{ height: mobile ? 480 : "min(82vh, 1000px)" }}>
+          <AgentCosmos bus={cosmosBus} watchdog={internals?.watchdog} />
+        </div>
+        {/* bottom info rows */}
+        <div style={gridStyle}>
+          <GmgnPanel gmgn={gmgn} exp={internals?.experiment_gmgn_row} style={{ height: PANEL_H }} />
+          <PortfolioPanel portfolio={portfolio} skillLoop={skillLoop} style={{ height: PANEL_H }} />
+          <DarwinPanel darwin={internals?.darwin} style={{ height: PANEL_H }} />
+          <ShadowPanel shadow={internals?.shadow} style={{ height: PANEL_H }} />
+          <FeaturesPanel features={botState?.features} style={{ height: PANEL_H }} />
+          <BrainCommsPanel s={botState} style={{ height: PANEL_H }} />
         </div>
         <LogStream logs={logs} filter={logFilter} setFilter={setLogFilter} />
         <footer style={{ textAlign: "center", padding: "4px 0 10px" }}>
