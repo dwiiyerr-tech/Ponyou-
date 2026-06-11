@@ -150,56 +150,57 @@ const signed = (n, suf = "") => (n > 0 ? "+" : "") + Number(n || 0).toFixed(2) +
 /**
  * Format laporan menjadi HTML minimalist untuk Telegram.
  */
+// Mono Terminal style (shared with telegram.js fmt): aligned label/value
+// columns inside <pre>, one bold title per section, outcome emoji only.
+function monoBlock(rows) {
+  const items = rows.filter(r => Array.isArray(r) && r.length >= 2 && r[1] !== null && r[1] !== undefined && r[1] !== "");
+  if (!items.length) return "";
+  const w = Math.max(...items.map(([k]) => String(k).length));
+  return `<pre>${esc(items.map(([k, v]) => `  ${String(k).padEnd(w + 2)}${String(v)}`).join("\n"))}</pre>`;
+}
+
 export function formatReportTelegram(report) {
   const p = report.plan;
   const s = report.trades.stats;
   const v = report.vault;
   const lines = [];
 
-  lines.push(`📊 <b>Laporan harian</b> · ${esc(report.date)}`);
+  const dayIcon = p ? (p.achieved_today ? "🟢" : p.pnl_pct > 0 ? "" : "🔴") : "";
+  lines.push(`<b>LAPORAN HARIAN</b> · ${esc(report.date)}${dayIcon ? `  ${dayIcon}` : ""}`);
   lines.push(DIVIDER);
 
   if (p) {
-    const emoji = p.achieved_today ? "✅" : p.pnl_pct > 0 ? "📈" : "📉";
-    lines.push(
-      `${emoji} <b>Day ${p.day}/${p.days_total}</b> · target +${p.target_pct}%`,
-    );
-    lines.push(
-      `$${Number(p.start_usd || 0).toFixed(2)} → $${Number(p.end_usd || 0).toFixed(2)}  (${signed(p.pnl_pct, "%")})`,
-    );
-    lines.push(`Wins: ${esc(p.win_rate_days)} · selesai ${p.days_completed}d`);
-    lines.push(``);
+    lines.push(monoBlock([
+      ["day",     `${p.day}/${p.days_total} · target +${p.target_pct}%`],
+      ["capital", `$${Number(p.start_usd || 0).toFixed(2)} → $${Number(p.end_usd || 0).toFixed(2)} (${signed(p.pnl_pct, "%")})`],
+      ["wins",    `${p.win_rate_days} · selesai ${p.days_completed}d`],
+    ]));
   }
 
-  lines.push(`📈 <b>Trades 24h</b>`);
+  lines.push(`<b>TRADES</b> · 24h`);
   if (s) {
-    lines.push(`${s.total} total · W ${s.wins} · L ${s.losses}${s.rugs ? ` · rug ${s.rugs}` : ""}`);
-    lines.push(`WR ${s.win_rate_pct}% · avg ${signed(s.avg_pnl_pct, "%")} · hold ${s.avg_hold_min}m`);
-    if (s.best_trade)  lines.push(`🏆 ${esc(s.best_trade.symbol)}  ${signed(s.best_trade.pnl_pct, "%")}`);
-    if (s.worst_trade) lines.push(`💀 ${esc(s.worst_trade.symbol)}  ${signed(s.worst_trade.pnl_pct, "%")}`);
+    lines.push(monoBlock([
+      ["total", `${s.total} · W ${s.wins} · L ${s.losses}${s.rugs ? ` · rug ${s.rugs}` : ""}`],
+      ["wr",    `${s.win_rate_pct}% · avg ${signed(s.avg_pnl_pct, "%")} · hold ${s.avg_hold_min}m`],
+      s.best_trade  ? ["best",  `${s.best_trade.symbol} ${signed(s.best_trade.pnl_pct, "%")}`]  : null,
+      s.worst_trade ? ["worst", `${s.worst_trade.symbol} ${signed(s.worst_trade.pnl_pct, "%")}`] : null,
+    ].filter(Boolean)));
   } else {
-    lines.push(`<i>Tidak ada trade</i>`);
+    lines.push(`<i>tidak ada trade</i>`);
   }
-  lines.push(``);
 
-  lines.push(`🌡️ <b>Market</b> · ${esc(report.market.current_condition)} (${esc(report.market.trend)})`);
-
+  const tail = [
+    ["market", `${report.market.current_condition} (${report.market.trend})`],
+  ];
   if (report.learning.events_total > 0) {
-    lines.push(``);
-    lines.push(`🧠 <b>Learning</b> · ${report.learning.events_total} events · ${report.learning.analyses_total} analyses`);
     const last = report.learning.recent_analyses[report.learning.recent_analyses.length - 1];
-    if (last) lines.push(`Last: ${esc(last.symbol)} ${signed(last.pnl_pct, "%")} · ${last.lessons_count} lessons`);
+    tail.push(["learning", `${report.learning.events_total} events · ${report.learning.analyses_total} analyses`]);
+    if (last) tail.push(["last", `${last.symbol} ${signed(last.pnl_pct, "%")} · ${last.lessons_count} lessons`]);
   }
-
-  lines.push(``);
-  if (v.configured) {
-    const due = v.is_due
-      ? `<b>jatuh tempo</b> · siap transfer ${v.vault_pct}%`
-      : `next ${Number(v.days_until_next || 0).toFixed(1)}d`;
-    lines.push(`🏦 <b>Vault</b> · ${Number(v.total_vaulted_sol || 0).toFixed(3)} SOL ($${Number(v.total_vaulted_usd || 0).toFixed(2)}) · ${due}`);
-  } else {
-    lines.push(`🏦 <i>Vault belum dikonfigurasi</i>`);
-  }
+  tail.push(v.configured
+    ? ["vault", `${Number(v.total_vaulted_sol || 0).toFixed(3)} SOL ($${Number(v.total_vaulted_usd || 0).toFixed(2)}) · ${v.is_due ? `jatuh tempo · siap ${v.vault_pct}%` : `next ${Number(v.days_until_next || 0).toFixed(1)}d`}`]
+    : ["vault", "belum dikonfigurasi"]);
+  lines.push(monoBlock(tail));
 
   return lines.join("\n");
 }

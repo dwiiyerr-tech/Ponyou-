@@ -6651,20 +6651,20 @@ export async function handleIncomingTelegramMessage(msg) {
     const market = getMarketIntelligence();
     const ucStatus = getUserClientStatus();
     const planLine = plan
-      ? `Day ${plan.day}/${plan.days_total} · PnL ${fmt.pct(plan.today_pnl_pct ?? 0)}`
-      : fmt.it("plan belum diinisialisasi");
-    const autoLine = cronStarted ? "🟢 ON" : "🔴 OFF";
-    const dailyGuard = formatDailyTradeGuardLine();
+      ? `Day ${plan.day}/${plan.days_total} · ${fmt.pct(plan.today_pnl_pct ?? 0)}`
+      : "belum diinisialisasi";
     const tgSignalLine = ucStatus.connected
-      ? `🟢 User client (${ucStatus.monitor_mode})`
-      : ucStatus.enabled ? "🟡 User client (connecting…)" : "🤖 Bot polling";
+      ? `user client (${ucStatus.monitor_mode})`
+      : ucStatus.enabled ? "user client (connecting…)" : "bot polling";
     const message = [
-      `📊 <b>Status</b>`,
-      planLine,
-      `Market · ${htmlEscape(market.condition)}`,
-      `Automation · ${autoLine}`,
-      `Daily Guard · ${htmlEscape(dailyGuard)}`,
-      `Signal Source · ${tgSignalLine}`,
+      fmt.title("Status"),
+      fmt.monoBlock([
+        ["plan",   planLine],
+        ["market", market.condition],
+        ["auto",   cronStarted ? "ON" : "OFF"],
+        ["guard",  formatDailyTradeGuardLine()],
+        ["signal", tgSignalLine],
+      ]),
     ].join("\n");
     await sendHTML(message);
     return;

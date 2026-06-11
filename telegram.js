@@ -80,6 +80,24 @@ export const fmt = {
     if (!Number.isFinite(n)) return "—";
     return `${n.toFixed(n >= 1 ? 3 : 4)} SOL`;
   },
+  // ── Mono Terminal design system ────────────────────────────────
+  // One visual language for recurring notifications:
+  //   <b>TITLE</b> · context  [status emoji]
+  //   <pre>  label   value</pre>   ← 2-space indent, aligned columns
+  // Emoji discipline: 🟢/🔴 for outcomes, ⚠️ for alerts — nothing else.
+  title: (text, context, icon) => {
+    const left = `<b>${htmlEscape(String(text).toUpperCase())}</b>`;
+    const ctx  = context ? ` · ${htmlEscape(context)}` : "";
+    const ic   = icon ? `  ${icon}` : "";
+    return `${left}${ctx}${ic}`;
+  },
+  monoBlock: (rows) => {
+    const items = (rows || []).filter(r => Array.isArray(r) && r.length >= 2 && r[1] !== null && r[1] !== undefined && r[1] !== "");
+    if (!items.length) return "";
+    const w = Math.max(...items.map(([k]) => String(k).length));
+    const lines = items.map(([k, v]) => `  ${String(k).padEnd(w + 2)}${String(v)}`);
+    return `<pre>${htmlEscape(lines.join("\n"))}</pre>`;
+  },
 };
 
 // Allow callers to opt-out of escape for already-HTML strings.
@@ -190,7 +208,7 @@ export function formatPnLTable(trades) {
   });
 
   return [
-    "<b>PnL — last 10</b>",
+    fmt.title("PnL", "last 10"),
     "<pre>" + rows.join("\n") + "</pre>",
   ].join("\n");
 }
@@ -485,8 +503,11 @@ const SOLSCAN = (tx) => `https://solscan.io/tx/${tx}`;
 
 export function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {
   const lines = [
-    `🔄 ${fmt.bold("Swap")}`,
-    `${htmlEscape(amountIn ?? "?")} ${htmlEscape(inputSymbol || "?")} → ${htmlEscape(amountOut ?? "?")} ${htmlEscape(outputSymbol || "?")}`,
+    fmt.title("Swap", `${inputSymbol || "?"} → ${outputSymbol || "?"}`),
+    fmt.monoBlock([
+      ["in",  `${amountIn ?? "?"} ${inputSymbol || "?"}`],
+      ["out", `${amountOut ?? "?"} ${outputSymbol || "?"}`],
+    ]),
   ];
   if (tx) lines.push(fmt.link("solscan", SOLSCAN(tx)));
   return sendHTML(lines.join("\n"));
@@ -494,8 +515,8 @@ export function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx 
 
 export function notifyDeploy({ symbol, amount, tx }) {
   const lines = [
-    `🚀 ${fmt.bold("Open")} · ${htmlEscape(symbol || "?")}`,
-    `Size: ${fmt.sol(Number(amount))}`,
+    fmt.title("Open", symbol || "?"),
+    fmt.monoBlock([["size", fmt.sol(Number(amount))]]),
   ];
   if (tx) lines.push(fmt.link("solscan", SOLSCAN(tx)));
   return sendHTML(lines.join("\n"));
@@ -503,10 +524,10 @@ export function notifyDeploy({ symbol, amount, tx }) {
 
 export function notifyClose({ symbol, pnl, tx }) {
   const pnlNum = Number(pnl);
-  const icon = pnlNum >= 0 ? "💰" : "📉";
+  const icon = pnlNum >= 0 ? "🟢" : "🔴";
   const lines = [
-    `${icon} ${fmt.bold("Close")} · ${htmlEscape(symbol || "?")}`,
-    `PnL: ${fmt.pct(pnlNum)}`,
+    fmt.title("Close", symbol || "?", icon),
+    fmt.monoBlock([["pnl", fmt.pct(pnlNum)]]),
   ];
   if (tx) lines.push(fmt.link("solscan", SOLSCAN(tx)));
   return sendHTML(lines.join("\n"));
