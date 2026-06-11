@@ -87,6 +87,9 @@ export default defineConfig({
       PONYOU_AUTOMATION_STATE_FILE: path.join(STATE_TMP, "automation-state.json"),
       PONYOU_ACTIVE_STRATEGY_FILE: path.join(STATE_TMP, "active-strategy.json"),
       PONYOU_STRATEGY_OVERRIDES_FILE: path.join(STATE_TMP, "strategies-overrides.json"),
+      // counterfactual evaluator reads these via env so tests feed fixtures
+      PONYOU_OBSERVED_TOKENS_FILE: path.join(STATE_TMP, "observed-tokens.json"),
+      PONYOU_SHADOW_WATCHLIST_FILE: path.join(STATE_TMP, "shadow-watchlist.json"),
     },
   },
 });

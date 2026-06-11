@@ -119,7 +119,7 @@ function nextForOwner(owner) {
   };
 }
 
-function main() {
+async function main() {
   // Refresh experiment evidence from live telemetry before reporting status,
   // so every session starts from current recommendations instead of stale
   // insufficient_data. Cheap no-op when there are no new closed trades.
@@ -130,6 +130,17 @@ function main() {
       .filter((r) => r.recorded)
       .map((r) => ({ experiment_id: r.experiment_id, new_trades: r.window.trades, recommendation: r.recommendation }));
   } catch { /* bridge failure must not block session start */ }
+
+  // Counterfactual replay: same self-sustaining idea, backtest-grade ledger.
+  // Delta-windowed and idempotent, so this is a no-op until the observed
+  // cohort grows.
+  let counterfactual = null;
+  try {
+    const { runCounterfactualScenarios } = await import("../../tools/counterfactual-evaluator.js");
+    counterfactual = runCounterfactualScenarios().results
+      .filter((r) => r.recorded)
+      .map((r) => ({ scenario: r.scenario, new_observations: r.window.count, recommendation: r.recommendation }));
+  } catch { /* cf failure must not block session start */ }
 
   const tasks = listOrchestrationTasks({ limit: 50 });
   const experiments = getExperimentOverview({ limit: 20 });
@@ -142,6 +153,7 @@ function main() {
       experiments_total: experiments.length,
       experiments_by_recommendation: summarizeBy(experiments, "recommendation"),
       evidence_bridge_runs: evidence,
+      counterfactual_runs: counterfactual,
     },
     claude: {
       next: nextForOwner("claude"),
@@ -157,4 +169,4 @@ function main() {
   console.log(JSON.stringify(payload, null, 2));
 }
 
-main();
+main().catch((e) => { console.error(e); process.exit(1); });

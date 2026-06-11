@@ -23,6 +23,7 @@
     "collab:triage": "node infra/agent-collab/collab-triage.js",
     "collab:submit": "node infra/agent-collab/collab-submit.js",
     "collab:evidence": "node infra/agent-collab/evidence-bridge.js",
+    "collab:cf": "node tools/counterfactual-evaluator.js",
     "backtest": "node tools/backtest-cli.js",
     "promote-demo": "node scripts/promote-demo.js",
     "agent:24x7": "bash ./ops/run-24x7.sh live",
