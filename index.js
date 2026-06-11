@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { createRugCircuitBreaker } from "./rug-circuit-breaker.js";
 import { heliusCircuitOpen, helius429Hit } from "./tools/rug-signals.js";
 import { agentLoop } from "./agent.js";
-import AgentRouter from "./agent-router.js";
+import AgentRouter, { displayName as agentDisplayName } from "./agent-router.js";
 import { agentBus } from "./agents/agent-bus.js";
 import { registerAgent, setAgentStatus, getDashboardSummary } from "./agents/agent-registry.js";
 import { initHuntersAgent, runHuntersExpedition, getHuntersPrey, getHuntersDashboard } from "./agents/hunters-agent.js";
@@ -712,7 +712,7 @@ async function enrichMarketResearchWithAgentRouter({ marketIntel, candidates }) 
     condition: marketIntel.condition,
     summary: String(researchResult.result || "").slice(0, 2000),
   });
-  log("market_research", `AgentRouter enrichment saved via ${researchResult.agent}`);
+  log("market_research", `AgentRouter enrichment saved via ${agentDisplayName(researchResult.agent)}`);
   return saved;
 }
 

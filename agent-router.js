@@ -14,6 +14,14 @@ const GEMINI_BIN = "/home/ubuntu/.npm-global/bin/gemini";
 const RUFLO_BIN = "./node_modules/.bin/ruflo";
 const VALID_AGENTS = new Set(["claude", "gemini", "codex"]);
 
+// Route id "claude" predates the NVIDIA NIM migration — it is the in-process
+// primary LLM (whatever config.llm points at via the injected callLLM), NOT
+// an Anthropic model. The id stays for API compatibility (preferAgent,
+// classifier, fallback checks), but logs use an honest display name: the old
+// label sent a 2026-06-11 audit chasing a phantom "flaky claude provider".
+const AGENT_DISPLAY = { claude: "main-llm" };
+export const displayName = (agent) => AGENT_DISPLAY[agent] || agent;
+
 const KEYWORDS = {
   // Gemini disabled — all research routes to Claude
   gemini: [],
@@ -136,7 +144,7 @@ class AgentRouter {
     b.failures++;
     if (b.failures >= MAX_CONSECUTIVE_FAILURES) {
       b.trippedAt = Date.now();
-      warn(`[Router] Circuit breaker TRIPPED for ${agent} after ${MAX_CONSECUTIVE_FAILURES} consecutive failures. Blocking ${agent} for ${BREAKER_RESET_MS / 60000}min.`);
+      warn(`[Router] Circuit breaker TRIPPED for ${displayName(agent)} after ${MAX_CONSECUTIVE_FAILURES} consecutive failures. Blocking ${displayName(agent)} for ${BREAKER_RESET_MS / 60000}min.`);
     }
     this.#breaker.set(agent, b);
   }
@@ -240,7 +248,7 @@ class AgentRouter {
         try {
           result = await this.#callClaude(prompt, systemPrompt);
           const errMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
-          warn(`[Router] Fallback to claude after ${agent} failed: ${errMsg.slice(0, 120)}`);
+          warn(`[Router] Fallback to ${displayName("claude")} after ${displayName(agent)} failed: ${errMsg.slice(0, 120)}`);
           lastError = null;
         } catch (fallbackErr) {
           // AR-10: preserve the primary agent's error too — without this,
@@ -249,7 +257,7 @@ class AgentRouter {
           const primaryMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
           const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
           const composed = new Error(
-            `Both ${agent} and claude failed. ${agent}: ${primaryMsg.slice(0, 120)} | claude: ${fallbackMsg.slice(0, 120)}`,
+            `Both ${displayName(agent)} and ${displayName("claude")} failed. ${displayName(agent)}: ${primaryMsg.slice(0, 120)} | ${displayName("claude")}: ${fallbackMsg.slice(0, 120)}`,
           );
           composed.primaryAgent = agent;
           composed.primaryError = primaryErr;
@@ -257,7 +265,7 @@ class AgentRouter {
           lastError = composed;
         }
       } else if (lastError && agent !== "claude" && !this.#callLLM) {
-        warn("[Router] Fallback to claude skipped: callLLM not injected");
+        warn(`[Router] Fallback to ${displayName("claude")} skipped: callLLM not injected`);
       }
       if (lastError) {
         this.#recordFailure(agent);
@@ -267,14 +275,14 @@ class AgentRouter {
       this.#recordSuccess(agent);
       const durationMs = Date.now() - t0;
       this.#updateStats(agent, durationMs, false);
-      console.log(`[Router] → ${agent} (${reason}: ${confidence}) [${durationMs}ms]`);
+      console.log(`[Router] → ${displayName(agent)} (${reason}: ${confidence}) [${durationMs}ms]`);
       return { result, agent, durationMs, error: null, classified: selection.classified, selected: selection };
     } catch (err) {
       const durationMs = Date.now() - t0;
       const message = err instanceof Error ? err.message : String(err);
       this.#updateStats(agent, durationMs, true);
       // Truncate error message to avoid log spam
-      errlog(`[Router] → ${agent} ERROR: ${message.slice(0, 200)}`);
+      errlog(`[Router] → ${displayName(agent)} ERROR: ${message.slice(0, 200)}`);
       return { result: "", agent, durationMs, error: message };
     }
   }
