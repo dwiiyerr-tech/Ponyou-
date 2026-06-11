@@ -4229,8 +4229,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
       };
       const cabal = analyzeCabalPlay(cabalInput);
 
-      if (rugRisk.score >= 60) {
-        log("filter", `${token.symbol}: SKIP rug score ${rugRisk.score}`);
+      // Entry hard-block threshold — configurable (exp #10: paper book runs at
+      // 35; default 60 = legacy). Auto-blacklist below still requires >= 100.
+      const maxEntryRug = config.screening?.maxEntryRugScore ?? 60;
+      if (rugRisk.score >= maxEntryRug) {
+        log("filter", `${token.symbol}: SKIP rug score ${rugRisk.score} >= ${maxEntryRug}`);
         // Auto-blacklist confirmed honeypots so they never waste another cycle
         if (rugRisk.score >= 100 && !rugRisk.no_autoblacklist) {
           const honeypotReasons = rugRisk.reasons.join("; ");

@@ -109,4 +109,17 @@ describe("config — main config object", () => {
     expect(config.llm.maxTokens).toBeGreaterThan(0);
     expect(typeof config.llm.temperature).toBe("number");
   });
+
+  // exp #10 plumbing — values come from live user-config so only assert shape
+  // and sane bounds, not operational numbers.
+  it("plumbs screening.maxEntryRugScore as a finite number", () => {
+    expect(Number.isFinite(config.screening.maxEntryRugScore)).toBe(true);
+    expect(config.screening.maxEntryRugScore).toBeGreaterThan(0);
+    expect(config.screening.maxEntryRugScore).toBeLessThanOrEqual(100);
+  });
+
+  it("plumbs positionLimits as an object so user perStrategy overrides reach position-limits", () => {
+    expect(config.positionLimits).toBeDefined();
+    expect(typeof config.positionLimits).toBe("object");
+  });
 });

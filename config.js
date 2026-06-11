@@ -329,6 +329,13 @@ export const config = {
     maxDeployAmount: finiteNumber(u.maxDeployAmount, 35),
   },
 
+  // Per-strategy position limits (tools/position-limits.js). Was never plumbed
+  // from user config — getStrategyPositionLimit always fell back to the
+  // hardcoded defaults (scalp:3 etc.), so user maxPositions had no effect on
+  // the screening-cycle position cap. Shape: { mode, kellyFraction,
+  // perStrategy: { [strategyId]: { maxPositions, minSolToActivate, maxPerCoin } } }
+  positionLimits: u.positionLimits ?? {},
+
   kelly: {
     enabled:         u.kellyEnabled ?? true,
     fraction:        u.kellyFraction ?? 0.5,
@@ -386,6 +393,10 @@ export const config = {
     timeframe:         nonEmptyString(u.timeframe) ?? "5m",
     category:          nonEmptyString(u.category)  ?? "trending",
     minTokenFeesSol:   u.minTokenFeesSol   ?? 30,  // global fees paid (priority+jito tips). below = bundled/scam
+    // Entry hard-block when rug score >= this. 60 = legacy behavior; exp #10
+    // runs the paper book at 35 (every rugged pick entered at 35-48, the only
+    // clean win at 18). Score >= 100 auto-blacklist is unaffected.
+    maxEntryRugScore:  finiteNumber(u.maxEntryRugScore, 60),
     useDiscordSignals:    u.useDiscordSignals    ?? false,
     discordSignalMode:    u.discordSignalMode    ?? "merge",  // merge | only
     useTelegramCalls:     u.useTelegramCalls     ?? false,    // parse incoming TG messages as calls
