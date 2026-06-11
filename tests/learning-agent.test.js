@@ -4,44 +4,24 @@
  *   Bug #1: getConsecutiveLosses importable from trading-plan.js (via executor)
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import fs from "fs";
 
-// ─── Bug #2: prescreen trash-block classification ─────────────────────────────
-// The fix: only scam_name, honeypot, rugcheck types bump source rug count.
-// prescreen (dust mcap, zero liquidity) must NOT inflate rug_rate.
+// ─── Exp #11: trash blocks never feed per-source rates ───────────────────────
+// History: Bug #2 narrowed the bump to scam_name/honeypot/rugcheck types, but
+// even those are numerator-only by construction (there is no "block that
+// survived" counterpart), so any contribution biases rug_rate toward 1.0.
+// Source-stats v2 removed the trash-block bump entirely; per-source quality
+// now comes from real trades + shadow-watchlist terminal outcomes, which have
+// proper denominators (every watched token ends rugged/mooned/survived).
 
-const RUG_QUALITY_TYPES = new Set(["scam_name", "honeypot", "rugcheck"]);
-
-function shouldBumpRug(type) {
-  return RUG_QUALITY_TYPES.has(type);
-}
-
-describe("learning-agent: trash-block rug classification (Bug #2)", () => {
-  it("scam_name → bumps rug (real signal)", () => {
-    expect(shouldBumpRug("scam_name")).toBe(true);
-  });
-
-  it("honeypot → bumps rug (real signal)", () => {
-    expect(shouldBumpRug("honeypot")).toBe(true);
-  });
-
-  it("rugcheck → bumps rug (real signal)", () => {
-    expect(shouldBumpRug("rugcheck")).toBe(true);
-  });
-
-  it("prescreen → does NOT bump rug (data quality filter, not source quality)", () => {
-    expect(shouldBumpRug("prescreen")).toBe(false);
-  });
-
-  it("research → does NOT bump rug", () => {
-    expect(shouldBumpRug("research")).toBe(false);
-  });
-
-  it("unknown → does NOT bump rug", () => {
-    expect(shouldBumpRug("unknown")).toBe(false);
-  });
-
-  it("blacklisted_token → does NOT bump rug", () => {
-    expect(shouldBumpRug("blacklisted_token")).toBe(false);
+describe("learning-agent: trash-block stat policy (exp #11)", () => {
+  it("the trash_blocked handler contains no bumpSource call", () => {
+    const src = fs.readFileSync(
+      new URL("../agents/learning-agent.js", import.meta.url), "utf8"
+    );
+    const handler = src.slice(src.indexOf('"learning:trash_blocked"'));
+    const handlerBody = handler.slice(0, handler.indexOf("}));"));
+    expect(handlerBody).not.toContain("bumpSource(");
   });
 });
 

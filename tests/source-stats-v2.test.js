@@ -71,6 +71,28 @@ describe("bumpSource v2 — separated counters", () => {
     // Legacy v1 would have reported 100/102 = 0.98 regardless of weight.
   });
 
+  it("shadow survivals enter the denominator and pull rug_rate off 1.0", () => {
+    const w = config.learning?.shadowObservationWeight ?? 1.0;
+    // Realistic shadow mix (live 2026-06-11: 8 survived, 2 mooned, 1 rugged)
+    for (let i = 0; i < 8; i++) bumpSource("srcE", "neutral", "shadow");
+    bumpSource("srcE", "win", "shadow");
+    bumpSource("srcE", "win", "shadow");
+    bumpSource("srcE", "rug", "shadow");
+    const s = readPerf().sources.srcE;
+    expect(s.shadow_survived).toBe(8);
+    // rug_rate = w*1 / (w*11) = 1/11 regardless of weight — honest base rate
+    expect(s.rug_rate).toBeCloseTo(1 / 11, 2);
+    expect(s.rug_rate).toBeLessThan(0.2);
+  });
+
+  it("a rug-only shadow stream without survivals still reads 1.0 (no data, no mercy)", () => {
+    bumpSource("srcF", "rug", "shadow");
+    const s = readPerf().sources.srcF;
+    expect(s.rug_rate).toBe(1.0);
+    // ...but effective_closed stays tiny, below the 5-sample threshold gate
+    expect(s.effective_closed).toBeLessThan(5);
+  });
+
   it("migrates v1 entries (no shadow fields) in place", () => {
     fs.writeFileSync(TMP, JSON.stringify({
       sources: { legacy: { found: 3, won: 1, lost: 1, rugged: 1, rug_rate: 0.333, win_rate: 0.333 } },

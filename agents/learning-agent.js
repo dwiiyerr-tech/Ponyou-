@@ -127,18 +127,20 @@ export function bumpSource(sourceKey, outcome, kind = "trade") {
   if (!perf.sources[sourceKey]) {
     perf.sources[sourceKey] = {
       found: 0, won: 0, lost: 0, rugged: 0,
-      shadow_found: 0, shadow_won: 0, shadow_rugged: 0,
+      shadow_found: 0, shadow_won: 0, shadow_rugged: 0, shadow_survived: 0,
       rug_rate: 0, win_rate: 0, effective_closed: 0,
     };
   }
   const s = perf.sources[sourceKey];
   // v1 entries lack shadow fields — initialize in place.
   if (s.shadow_found === undefined) { s.shadow_found = 0; s.shadow_won = 0; s.shadow_rugged = 0; }
+  if (s.shadow_survived === undefined) s.shadow_survived = 0;
 
   if (kind === "shadow") {
     s.shadow_found++;
-    if (outcome === "win") s.shadow_won++;
-    if (outcome === "rug") s.shadow_rugged++;
+    if (outcome === "win")     s.shadow_won++;
+    if (outcome === "rug")     s.shadow_rugged++;
+    if (outcome === "neutral") s.shadow_survived++;
   } else {
     s.found++;
     if (outcome === "win")   s.won++;
@@ -146,9 +148,14 @@ export function bumpSource(sourceKey, outcome, kind = "trade") {
     if (outcome === "rug")   s.rugged++;
   }
 
+  // Survivals MUST be in the denominator: shadow rugs/moons arrive one by one,
+  // so without the neutral outcomes every source pins at rug_rate 1.0 the
+  // moment its first shadow rug lands, regardless of the discount weight
+  // (a one-sided sample is scale-invariant under discounting).
   const w = config.learning?.shadowObservationWeight ?? 1.0;
   const realClosed = s.won + s.lost + s.rugged;
-  const effective = realClosed + w * (s.shadow_won + s.shadow_rugged);
+  const shadowClosed = s.shadow_won + s.shadow_rugged + s.shadow_survived;
+  const effective = realClosed + w * shadowClosed;
   s.effective_closed = parseFloat(effective.toFixed(2));
   s.rug_rate = effective > 0 ? parseFloat(((s.rugged + w * s.shadow_rugged) / effective).toFixed(3)) : 0;
   s.win_rate = effective > 0 ? parseFloat(((s.won + w * s.shadow_won) / effective).toFixed(3)) : 0;
@@ -322,10 +329,13 @@ export function initLearningAgent() {
     // the hunt source's ability to find good tokens. Counting them as "rug"
     // inflated rug_rate to 1.0 for all sources after a single scan cycle.
     // Only scam_name, honeypot, and rugcheck blocks reflect source quality.
-    const RUG_QUALITY_TYPES = new Set(["scam_name", "honeypot", "rugcheck"]);
-    if (RUG_QUALITY_TYPES.has(type)) {
-      bumpSource(source, "rug", "shadow");
-    }
+    // Exp #11: trash blocks no longer bump per-source rates AT ALL. They are
+    // numerator-only by construction — there is no "block that survived"
+    // counterpart event — so any contribution biases rug_rate toward 1.0.
+    // (Measured: 41 shadow rugs in the first minute after a stats reset, all
+    // from this path + shadow rugs, pinning the fresh stats at 1.0 again.)
+    // Shadow-watchlist outcomes carry the per-source signal instead: every
+    // watched token terminates as exactly one of rugged/mooned/survived.
     log("learning", `TRASH BLOCK free learn: ${symbol} type=${type} source=${source}`);
   }));
 
@@ -425,6 +435,15 @@ export function initLearningAgent() {
       last_missed_symbol: symbol,
       last_missed_peak_pct: payload?.peak_gain_pct ?? null,
     });
+  }));
+
+  // ── Shadow watchlist survivals → denominator for per-source rates ──
+  // Neutral outcomes keep rug_rate honest: rugs and moons are rare events;
+  // without survivals every source pins at 1.0 on its first shadow rug.
+  _unsubscribers.push(agentBus.subscribe("shadow:survived", (payload) => {
+    const source = payload?.hunt_source || "unknown";
+    bumpSource(source, "neutral", "shadow");
+    if (payload?.social_source) bumpSource(`social:${payload.social_source}`, "neutral", "shadow");
   }));
 
   // Start shadow watchlist price monitor

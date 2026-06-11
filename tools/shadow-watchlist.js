@@ -161,6 +161,16 @@ export async function checkAll() {
         _feedDarwin(token.active_signals, peakGain);
       } else {
         token.status = "survived"; // flat/mild — neutral, no darwin signal
+        // Still emitted: per-source rates need survivals in the denominator.
+        // Counting only rugs/moons makes every source look like a 100%-rug
+        // source the moment its first shadow rug lands (numerator-only bias).
+        agentBus.emit("shadow:survived", {
+          mint:          token.mint,
+          symbol:        token.symbol,
+          hunt_source:   token.hunt_source,
+          social_source: token.social_source,
+          timestamp:     Date.now(),
+        });
       }
       expired++;
       continue;
