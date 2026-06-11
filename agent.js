@@ -319,6 +319,11 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   let sawToolCall = false;
   let noToolRetryCount = 0;
   let emptyResponseCount = 0; // P3-2: track consecutive empty responses
+  // Nemotron quirk: with a tools array attached it sometimes returns neither
+  // content nor tool_calls, deterministically — identical retries all come
+  // back empty. After the first empty, retry WITHOUT tools (chat-only) so
+  // conversational agents still answer; tool-required goals keep their tools.
+  let dropToolsOnRetry = false;
 
   for (let step = 0; step < maxSteps; step++) {
     log("agent", `Step ${step + 1}/${maxSteps}`);
@@ -353,8 +358,8 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           response = await client.chat.completions.create({
             model: usedModel,
             messages,
-            tools: getToolsForRole(agentType, goal),
-            tool_choice: toolChoice,
+            tools: dropToolsOnRetry ? undefined : getToolsForRole(agentType, goal),
+            tool_choice: dropToolsOnRetry ? undefined : toolChoice,
             temperature: config.llm.temperature,
             max_tokens: maxOutputTokens ?? config.llm.maxTokens,
           }, { signal: controller.signal });
@@ -413,6 +418,11 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
       if (!response.choices?.length) throw new Error("API returned no choices");
       
       const msg = response.choices[0].message;
+      // Nemotron sometimes puts the whole answer in reasoning_content and
+      // leaves content empty — salvage it instead of treating it as empty.
+      if (!msg.content && typeof msg.reasoning_content === "string" && msg.reasoning_content.trim()) {
+        msg.content = msg.reasoning_content.trim();
+      }
       messages.push(msg);
 
       if (!msg.tool_calls || msg.tool_calls.length === 0) {
@@ -421,9 +431,14 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
           // burning all remaining steps on no-op iterations.
           emptyResponseCount++;
           if (emptyResponseCount >= 3) return { content: "No response from model.", userMessage: goal };
+          if (!mustUseRealTool) {
+            dropToolsOnRetry = true;
+            log("agent", `empty response #${emptyResponseCount} — retrying without tools`);
+          }
           messages.pop(); continue;
         }
         emptyResponseCount = 0;
+        dropToolsOnRetry = false;
         if (mustUseRealTool && !sawToolCall) {
           noToolRetryCount += 1;
           messages.pop();
