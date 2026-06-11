@@ -380,6 +380,15 @@ export const config = {
   },
 
   // ─── Pool Screening Thresholds ───────────
+  // ─── Learning data quality ────────────────────────────────────────────────
+  // Weight of shadow/no-buy observations (shadow rugs, trash blocks, missed
+  // winners) in per-source rug/win rates. 1.0 = legacy blend (observations
+  // count like real trades — measured poisoning stats at ~500:1 volume vs 22
+  // real trades, choking hunter thresholds). Exp #11 runs the paper book at 0.1.
+  learning: {
+    shadowObservationWeight: boundedNumber(u.learning?.shadowObservationWeight, 1.0, 0, 1),
+  },
+
   screening: {
     excludeHighSupplyConcentration: u.excludeHighSupplyConcentration ?? true,
     minTvl:            u.minTvl            ?? 10_000,

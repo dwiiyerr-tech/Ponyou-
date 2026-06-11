@@ -157,8 +157,10 @@ export function initHuntersAgent() {
       const src = entry.source;
       if (!src || src === "unknown") continue;
 
-      // Need at least 5 closed trades from this source to trust the stats
-      const closed = (entry.won || 0) + (entry.lost || 0) + (entry.rugged || 0);
+      // Need at least 5 closed samples from this source to trust the stats.
+      // v2 stats publish effective_closed = real trades + discounted shadow
+      // observations; fall back to the v1 sum for old-schema entries.
+      const closed = entry.effective_closed ?? ((entry.won || 0) + (entry.lost || 0) + (entry.rugged || 0));
       if (closed < 5) continue;
 
       const rugRate = entry.rug_rate || 0;

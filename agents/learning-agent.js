@@ -21,6 +21,7 @@
  */
 
 import { agentBus } from "./agent-bus.js";
+import { config } from "../config.js";
 import { setAgentStatus, updateAgentHealth } from "./agent-registry.js";
 import { log } from "../logger.js";
 import { recordRug } from "../lessons.js";
@@ -34,7 +35,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PERFORMANCE_FILE   = path.join(__dirname, "../hunter-performance.json");
+// Env override exists for test isolation — tests must never write the live file.
+const PERFORMANCE_FILE   = process.env.PONYOU_HUNTER_PERF_FILE || path.join(__dirname, "../hunter-performance.json");
 const STRATEGY_PERF_FILE = path.join(__dirname, "../strategy-performance.json");
 // T3-1: persist _openTrades so source attribution survives process restart.
 const OPEN_TRADES_FILE   = path.join(__dirname, "../open-trades-learning.json");
@@ -113,21 +115,43 @@ function savePerf(data) {
 
 // ─── Source stats helpers ───────────────────────────────────────────────────
 
-function bumpSource(sourceKey, outcome) {
+// Schema v2 (exp #11): real-trade counters and shadow/no-buy observation
+// counters are tracked separately. Measured on 2026-06-11: shadow events
+// outnumbered real trades ~500:1 (source "hunters": 10,186 of 10,188 "rugged"
+// without a single real trade), so the mixed v1 rates pinned rug_rate at 1.0
+// and choked hunter thresholds (+25 offset). Rates are blended with
+// config.learning.shadowObservationWeight (1.0 = legacy blend).
+export function bumpSource(sourceKey, outcome, kind = "trade") {
   if (!sourceKey) return;
   const perf = loadPerf();
   if (!perf.sources[sourceKey]) {
-    perf.sources[sourceKey] = { found: 0, won: 0, lost: 0, rugged: 0, rug_rate: 0, win_rate: 0 };
+    perf.sources[sourceKey] = {
+      found: 0, won: 0, lost: 0, rugged: 0,
+      shadow_found: 0, shadow_won: 0, shadow_rugged: 0,
+      rug_rate: 0, win_rate: 0, effective_closed: 0,
+    };
   }
   const s = perf.sources[sourceKey];
-  s.found++;
-  if (outcome === "win")   s.won++;
-  if (outcome === "loss")  s.lost++;
-  if (outcome === "rug")   s.rugged++;
+  // v1 entries lack shadow fields — initialize in place.
+  if (s.shadow_found === undefined) { s.shadow_found = 0; s.shadow_won = 0; s.shadow_rugged = 0; }
 
-  const closed = s.won + s.lost + s.rugged;
-  s.rug_rate  = closed > 0 ? parseFloat((s.rugged / closed).toFixed(3)) : 0;
-  s.win_rate  = closed > 0 ? parseFloat((s.won / closed).toFixed(3)) : 0;
+  if (kind === "shadow") {
+    s.shadow_found++;
+    if (outcome === "win") s.shadow_won++;
+    if (outcome === "rug") s.shadow_rugged++;
+  } else {
+    s.found++;
+    if (outcome === "win")   s.won++;
+    if (outcome === "loss")  s.lost++;
+    if (outcome === "rug")   s.rugged++;
+  }
+
+  const w = config.learning?.shadowObservationWeight ?? 1.0;
+  const realClosed = s.won + s.lost + s.rugged;
+  const effective = realClosed + w * (s.shadow_won + s.shadow_rugged);
+  s.effective_closed = parseFloat(effective.toFixed(2));
+  s.rug_rate = effective > 0 ? parseFloat(((s.rugged + w * s.shadow_rugged) / effective).toFixed(3)) : 0;
+  s.win_rate = effective > 0 ? parseFloat(((s.won + w * s.shadow_won) / effective).toFixed(3)) : 0;
 
   savePerf(perf);
   return perf.sources;
@@ -300,7 +324,7 @@ export function initLearningAgent() {
     // Only scam_name, honeypot, and rugcheck blocks reflect source quality.
     const RUG_QUALITY_TYPES = new Set(["scam_name", "honeypot", "rugcheck"]);
     if (RUG_QUALITY_TYPES.has(type)) {
-      bumpSource(source, "rug");
+      bumpSource(source, "rug", "shadow");
     }
     log("learning", `TRASH BLOCK free learn: ${symbol} type=${type} source=${source}`);
   }));
@@ -345,9 +369,9 @@ export function initLearningAgent() {
       log("learning_error", `shadow recordRug failed: ${e.message}`);
     }
 
-    // Update source performance stats
-    bumpSource(source, "rug");
-    if (payload?.social_source) bumpSource(`social:${payload.social_source}`, "rug");
+    // Update source performance stats — shadow rugs are observations, not trades
+    bumpSource(source, "rug", "shadow");
+    if (payload?.social_source) bumpSource(`social:${payload.social_source}`, "rug", "shadow");
 
     // Record loss fingerprint — shadow rugs are free data, should feed loss DB
     try {
@@ -394,8 +418,8 @@ export function initLearningAgent() {
     const symbol = payload?.symbol || "";
     const source = payload?.hunt_source || "unknown";
     log("learning", `SHADOW WINNER MISSED: ${symbol} peaked +${payload?.peak_gain_pct}% source=${source}`);
-    bumpSource(source, "win");
-    if (payload?.social_source) bumpSource(`social:${payload.social_source}`, "win");
+    bumpSource(source, "win", "shadow");
+    if (payload?.social_source) bumpSource(`social:${payload.social_source}`, "win", "shadow");
     updateAgentHealth(AGENT_NAME, {
       last_missed_winner: new Date().toISOString(),
       last_missed_symbol: symbol,
