@@ -197,6 +197,21 @@ export function createExperiment({
   return experiment;
 }
 
+// Opt an experiment into the evidence bridge. `source` describes where live
+// telemetry for it comes from; the bridge interprets the kind.
+export function setExperimentEvidenceSource({ id, source } = {}) {
+  const data = loadExperiments();
+  const experiment = data.experiments.find((item) => item.id === Number(id));
+  if (!experiment) return { error: `Experiment ${id} not found` };
+  if (!source || typeof source !== "object" || !source.kind) {
+    return { error: "source must be an object with a kind" };
+  }
+  experiment.evidence_source = { kind: String(source.kind) };
+  experiment.updated_at = nowIso();
+  saveExperiments(data);
+  return experiment;
+}
+
 export function updateExperimentStatus({ id, status, notes } = {}) {
   const data = loadExperiments();
   const experiment = data.experiments.find((item) => item.id === Number(id));

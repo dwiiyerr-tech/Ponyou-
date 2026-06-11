@@ -1,5 +1,6 @@
 import { getExperimentOverview } from "./experiment-tracker.js";
 import { getOrchestrationTask, getOpenHandoffs, listOrchestrationTasks } from "./agent-orchestrator.js";
+import { runEvidenceBridge } from "./evidence-bridge.js";
 
 function summarizeBy(items, key) {
   return items.reduce((acc, item) => {
@@ -119,6 +120,17 @@ function nextForOwner(owner) {
 }
 
 function main() {
+  // Refresh experiment evidence from live telemetry before reporting status,
+  // so every session starts from current recommendations instead of stale
+  // insufficient_data. Cheap no-op when there are no new closed trades.
+  let evidence = null;
+  try {
+    const bridged = runEvidenceBridge();
+    evidence = bridged.results
+      .filter((r) => r.recorded)
+      .map((r) => ({ experiment_id: r.experiment_id, new_trades: r.window.trades, recommendation: r.recommendation }));
+  } catch { /* bridge failure must not block session start */ }
+
   const tasks = listOrchestrationTasks({ limit: 50 });
   const experiments = getExperimentOverview({ limit: 20 });
 
@@ -129,6 +141,7 @@ function main() {
       tasks_by_status: summarizeBy(tasks, "status"),
       experiments_total: experiments.length,
       experiments_by_recommendation: summarizeBy(experiments, "recommendation"),
+      evidence_bridge_runs: evidence,
     },
     claude: {
       next: nextForOwner("claude"),
