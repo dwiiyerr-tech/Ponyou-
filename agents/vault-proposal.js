@@ -289,7 +289,8 @@ export class VaultProposalEngine {
       for (const p of proposals) {
         const hash = contentHash(p.lesson);
         if (state.history.some(h => h.hash === hash)) continue;
-        if (Object.values(state.pending).some(pend => pend.hash === hash)) continue;
+        if (Object.values(state.pending).some(pend =>
+          pend.hash === hash || (p.tag && pend.tag === p.tag))) continue;
 
         const id = `vault_${crypto.randomUUID().slice(0, 8)}`;
         const proposal = { id, hash, ...p, ts: now, status: "pending", source: "notebooklm" };
@@ -346,8 +347,12 @@ export class VaultProposalEngine {
         .sort((a, b) => b.ts - a.ts)[0];
       if (lastOfType && (now - lastOfType.ts) < COOLDOWN_BETWEEN_PROPOSALS_MS) continue;
 
-      // Skip if already pending
-      if (Object.values(state.pending).some(pend => pend.hash === hash)) continue;
+      // Skip if already pending — match by content hash OR stable tag. The
+      // lesson text embeds changing counts ("rug 100% dari 102/7131/10186
+      // trades"), so hash alone re-proposed the same insight every cycle
+      // (measured 2026-06-11: 22 identical source_quality proposals pending).
+      if (Object.values(state.pending).some(pend =>
+        pend.hash === hash || (p.tag && pend.tag === p.tag))) continue;
 
       const id = `vault_${crypto.randomUUID().slice(0, 8)}`;
       const proposal = { id, hash, ...p, ts: now, status: "pending" };

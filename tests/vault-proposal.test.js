@@ -87,3 +87,16 @@ describe("VaultProposalEngine: Telegram message format", () => {
     expect(msg).toMatch(/AI\/agent/);
   });
 });
+
+describe("VaultProposalEngine: pending dedup by stable tag (exp #11 fallout)", () => {
+  // The lesson text embeds changing counts ("rug 100% dari 102/7131/10186
+  // trades"), so contentHash alone re-proposed the same insight every cycle —
+  // 22 identical source_quality proposals were pending on 2026-06-11. Both
+  // pending-dedup sites must also match on the proposal's stable tag.
+  it("both pending-dedup sites match on tag, not just content hash", () => {
+    const fs = require("fs");
+    const src = fs.readFileSync(new URL("../agents/vault-proposal.js", import.meta.url), "utf8");
+    const tagChecks = src.match(/pend\.tag === p\.tag/g) || [];
+    expect(tagChecks.length).toBeGreaterThanOrEqual(2);
+  });
+});
