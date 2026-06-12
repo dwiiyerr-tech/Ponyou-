@@ -1835,6 +1835,8 @@ async function executePendingIntent(id) {
       pool_name: symbol,
       amount_sol: exec.amount || 0,
       initial_value_usd: (exec.amount || 0) * solPriceUsd,
+      // Confirm-mode BUYs come out of a MANAGER decision context.
+      active_lessons: getActiveLessonIds({ agentType: "MANAGER" }),
       signal_snapshot: {
         mint: args.token_out,
         symbol,
@@ -2913,6 +2915,10 @@ async function checkStagedEntries(tokens, balance) {
           strategy_used:     buy.tracked.strategy_used || null,
           cast_net_group_id: buy.tracked.cast_net_group_id || null,
           cast_net_slot:     buy.tracked.cast_net_slot ?? null,
+          // trackPosition replaces the whole position object — omitting these
+          // wiped lesson + Darwin attribution on every stage-2 top-up.
+          active_lessons:    buy.tracked.active_lessons || [],
+          active_signals:    buy.tracked.active_signals || [],
           paper_trade: process.env.DRY_RUN === 'true' || process.env.PAPER_TRADING === 'true',
         });
 
@@ -3601,6 +3607,11 @@ TUGAS:
               _rugMonitor?.detachPosition(llmPosKey);
               await clearPartialTPGuard(llmPosKey);
               recordRuggedNarrativesForExit({ reason: "LLM Manager Decision", token: {} });
+              // Lesson effectiveness — this exit path bypassed the main exit
+              // loop, so lessons never got credited for LLM-decided sells.
+              if (trackedPos?.active_lessons?.length > 0 && pnlPct != null) {
+                recordLessonOutcome(trackedPos.active_lessons, pnlPct);
+              }
 
               if (isWin != null) {
                 recordTrade(isWin);
@@ -5243,6 +5254,10 @@ export async function runScreeningCycle({ silent = false } = {}) {
               // Darwin: the components that voted for this entry — fed back
               // into signal weights when the trade closes (updateDarwinWeights).
               active_signals: best.active_signals || triggeredSignals(best.signal),
+              // Lessons in force at entry — exit feeds these to
+              // recordLessonOutcome. This is the main BUY path; without this
+              // line every lesson sat at times_applied=0 (audit 2026-06-12).
+              active_lessons: getActiveLessonIds({ agentType: "SCREENER" }),
               signal_snapshot: {
                 mint: best.mint,
                 symbol: best.symbol,
@@ -5886,6 +5901,12 @@ function startTurboButtons() {
                 _rugMonitor?.detachPosition(pos.position_key || mint);
                 await clearPartialTPGuard(pos.position_key || mint);
                 recordRuggedNarrativesForExit({ reason: closeReason, token: pos });
+                // Lesson effectiveness — emergency exits are loss outcomes;
+                // when PnL is unknown record -1 so the lesson is still scored.
+                if (pos.active_lessons?.length > 0) {
+                  const emergencyPnl = Number(res?.pnl_pct);
+                  recordLessonOutcome(pos.active_lessons, Number.isFinite(emergencyPnl) ? emergencyPnl : -1);
+                }
               } else {
                 log("geyser_exit_emergency", `Emergency exit failed for ${pos.symbol}: ${res?.error || "unknown error"}`);
               }

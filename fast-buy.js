@@ -22,6 +22,7 @@ import { planCastNetExecution } from "./wallet-strategy.js";
 import { recordCastNetFire } from "./tools/cast-net-gate.js";
 import { getAllWallets, getWalletByAddress } from "./tools/wallet-manager.js";
 import { trackPosition } from "./state.js";
+import { getActiveLessonIds } from "./lessons.js";
 import { recordSwapOutcome } from "./kill-switch.js";
 import {
   startTimer, elapsedMs, recordLatency, recordCounter,
@@ -156,6 +157,8 @@ export async function executeFastBuy({
       pool_name: token.symbol || token.mint.slice(0, 8),
       amount_sol: deployAmountSol,
       initial_value_usd: deployAmountSol * (solPriceUsd || 0),
+      // Lessons in force at entry — exit feeds these to recordLessonOutcome.
+      active_lessons: getActiveLessonIds({ agentType: "SCREENER" }),
       signal_snapshot: {
         mint: token.mint,
         symbol: token.symbol,
