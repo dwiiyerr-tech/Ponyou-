@@ -6,6 +6,7 @@ import {
   replayGate,
   compareGates,
   runCounterfactualScenarios,
+  SCENARIOS,
 } from "../tools/counterfactual-evaluator.js";
 import { _resetExperimentsForTests, getExperimentSummary, listExperiments } from "../infra/agent-collab/experiment-tracker.js";
 
@@ -67,6 +68,34 @@ describe("replay and comparison", () => {
     const loose = replayGate(gates.rugScoreMax(80), observations);
     expect(loose.entered).toBe(3);
     expect(loose.rugs_entered).toBe(1);
+  });
+
+  it("rugScoreByBand applies the first band whose maxMcap covers the observation", () => {
+    const band = gates.rugScoreByBand([
+      { maxMcap: 200_000, maxRug: 25 },
+      { maxMcap: Infinity, maxRug: 35 },
+    ]);
+    expect(band({ mcap: 50_000, rug_score: 30 })).toBe(false);  // micro: gate 25
+    expect(band({ mcap: 50_000, rug_score: 20 })).toBe(true);
+    expect(band({ mcap: 5_000_000, rug_score: 30 })).toBe(true); // besar: gate 35
+    expect(band({ mcap: 5_000_000, rug_score: 40 })).toBe(false);
+  });
+
+  it("hasNarrative excludes OTHER and empty narratives", () => {
+    const g = gates.hasNarrative();
+    expect(g({ narrative: "FINANCE" })).toBe(true);
+    expect(g({ narrative: "OTHER" })).toBe(false);
+    expect(g({ narrative: "" })).toBe(false);
+  });
+
+  it("every registered scenario has paired callable arms and rule strings", () => {
+    for (const [name, s] of Object.entries(SCENARIOS)) {
+      expect(typeof s.baseline, name).toBe("function");
+      expect(typeof s.candidate, name).toBe("function");
+      expect(s.baseline_rule, name).toBeTruthy();
+      expect(s.candidate_rule, name).toBeTruthy();
+      expect(s.hypothesis, name).toBeTruthy();
+    }
   });
 
   it("compareGates runs both arms on the identical dataset", () => {

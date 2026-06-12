@@ -102,6 +102,13 @@ export const gates = {
   rugScoreMax: (max) => (o) => o.rug_score < max,
   mcapBand: (min, max) => (o) => o.mcap >= min && o.mcap <= max,
   narrativeIn: (allow) => (o) => allow.map((n) => n.toUpperCase()).includes(o.narrative),
+  hasNarrative: () => (o) => !!o.narrative && o.narrative !== "OTHER",
+  // Per-mcap-band rug thresholds: [{ maxMcap, maxRug }, ...] checked in order;
+  // an observation falls into the first band whose maxMcap covers it.
+  rugScoreByBand: (bands) => (o) => {
+    const band = bands.find((b) => o.mcap <= b.maxMcap) || bands[bands.length - 1];
+    return o.rug_score < band.maxRug;
+  },
   all: (...fns) => (o) => fns.every((fn) => fn(o)),
 };
 
@@ -168,6 +175,36 @@ export const SCENARIOS = {
     candidate_rule: "enter when 3K <= mcap <= 50M",
     baseline: gates.mcapBand(3_000, 200_000),
     candidate: gates.mcapBand(3_000, 50_000_000),
+  },
+  // Counter-scenario to cf:mcap-diversified's negative verdict (n=110,
+  // WR -5.8pp): is the problem the wide band itself, or one uniform rug gate
+  // across bands with structurally different rug rates?
+  "cf:rug-gate-per-band": {
+    supports: "exp #13 (mcap-band diversified hunting) — pertanyaan lanjutan dari verdict negatif cf:mcap-diversified",
+    hypothesis: "Gate rug per-band (micro <=200K dipersempit ke 25, di atasnya tetap 35) vs gate seragam 35 — apakah selektivitas ekstra di band micro memulihkan win-rate set terdiversifikasi?",
+    baseline_rule: "enter when rug_score < 35 (uniform)",
+    candidate_rule: "enter when rug_score < 25 if mcap <= 200K, else rug_score < 35",
+    baseline: gates.rugScoreMax(35),
+    candidate: gates.rugScoreByBand([
+      { maxMcap: 200_000, maxRug: 25 },
+      { maxMcap: Infinity, maxRug: 35 },
+    ]),
+  },
+  "cf:rug-gate-25": {
+    supports: "exp #10 (gate-35 sudah dikunci via cf:rug-gate-35) — uji apakah lebih ketat lagi masih menambah",
+    hypothesis: "Gate 25 vs gate 35 — apakah memperketat melewati 35 menambah win-rate, atau mulai memakan winner (winners_missed)?",
+    baseline_rule: "enter when rug_score < 35",
+    candidate_rule: "enter when rug_score < 25",
+    baseline: gates.rugScoreMax(35),
+    candidate: gates.rugScoreMax(25),
+  },
+  "cf:narrative-heat": {
+    supports: "exp #9 (narrative-heat-driven hunting)",
+    hypothesis: "Dalam cohort yang sudah lolos gate 35, apakah token ber-narasi (non-OTHER) mengungguli cohort penuh? Catatan bias: observasi shadow selalu OTHER, jadi arm kandidat condong ke sumber observed.",
+    baseline_rule: "enter when rug_score < 35",
+    candidate_rule: "enter when rug_score < 35 AND narrative != OTHER",
+    baseline: gates.rugScoreMax(35),
+    candidate: gates.all(gates.rugScoreMax(35), gates.hasNarrative()),
   },
 };
 
