@@ -5,6 +5,7 @@ import "dotenv/config";
 // tools/wallet.js below, ahead of the named config import further down.
 import "./config.js";
 import cron from "node-cron";
+import { scheduleUtc } from "./tools/cron-utils.js";
 import readline from "readline";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -6045,7 +6046,7 @@ export function startCronJobs() {
   // Runs at 00:01 UTC each night. Fetches actual wallet balance,
   // records yesterday's results, and resets session for the new day.
   // Without this, the 30-day compound plan stays on day 1 forever.
-  tasks.push(cron.schedule("1 0 * * *", async () => {
+  tasks.push(scheduleUtc("1 0 * * *", async () => {
     if (!config.pilot?.enabled) return;
     const plan = getTradingPlan();
     if (!plan) return;
@@ -6316,7 +6317,7 @@ export function startCronJobs() {
   }));
 
   // Daily prune: archive closed positions older than 7 days (3am UTC)
-  tasks.push(cron.schedule("0 3 * * *", async () => {
+  tasks.push(scheduleUtc("0 3 * * *", async () => {
     const { pruned } = pruneClosedPositions();
     if (pruned > 0) log("cron", `Daily prune: archived ${pruned} old closed positions`);
     // Wallet pruning — prevent discovered-wallets.json bloat
@@ -6343,7 +6344,7 @@ export function startCronJobs() {
   // Strategy degradation scan — auto-deactivate evolved strategies whose
   // live win rate has dropped below the degradation threshold (4am UTC).
   // Runs daily; only scans strategies with ≥10 live trades.
-  tasks.push(cron.schedule("0 4 * * *", async () => {
+  tasks.push(scheduleUtc("0 4 * * *", async () => {
     try {
       if (typeof _evolutionEngine?.scanAllDegradations === "function") {
         const degraded = await _evolutionEngine.scanAllDegradations();
@@ -6359,7 +6360,7 @@ export function startCronJobs() {
 
   // Day Phase Trade screening — daily sweep for mature sideway tokens (8am UTC)
   // Runs once per day because these tokens don't appear/disappear quickly.
-  tasks.push(cron.schedule("0 8 * * *", async () => {
+  tasks.push(scheduleUtc("0 8 * * *", async () => {
     try {
       const active = getStrategy(null)?.id;
       if (active !== "day_phase_trading") return; // only when strategy is active
@@ -6425,7 +6426,7 @@ export function startCronJobs() {
   // Daily Report (setiap hari jam dailyReportHourUtc:dailyReportMinuteUtc UTC)
   const reportH = config.report.hourUtc ?? 0;
   const reportM = config.report.minuteUtc ?? 5;
-  tasks.push(cron.schedule(`${reportM} ${reportH} * * *`, () => {
+  tasks.push(scheduleUtc(`${reportM} ${reportH} * * *`, () => {
     runDailyReport().catch(e => log("report_error", e.message));
   }));
 

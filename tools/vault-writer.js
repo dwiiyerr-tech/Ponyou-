@@ -610,12 +610,13 @@ export async function writeEvolutionStatus() {
       }
       return "-";
     };
+    const cell = v => String(v ?? "-").replace(/\|/g, "/");
     const rows = [...records]
       .sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
       .slice(0, 20)
       .map(r => {
         const note = r.rejectReason || r.deactivationReason || "";
-        return `| ${r.status} | ${r.name} | ${r.type} | ${r.regime || "-"} | ${r.source} | ${scoreOf(r)} | ${note.slice(0, 60)} |`;
+        return `| ${cell(r.status)} | ${cell(r.name)} | ${cell(r.type)} | ${cell(r.regime || "-")} | ${cell(r.source)} | ${scoreOf(r)} | ${cell(note).slice(0, 60)} |`;
       })
       .join("\n");
 
