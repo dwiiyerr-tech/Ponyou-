@@ -30,7 +30,8 @@ import { log, captureUncaught } from "./logger.js";
 captureUncaught(); // register process-level error handlers for Doctor diagnostics
 import { getWalletBalances } from "./tools/wallet.js";
 import { applyFeeEntryGuard, getSolanaGasFee, shouldSkipEntriesForGasFee } from "./tools/solana-rpc.js";
-import { discoverTokens, getTokenSecurityDetails, getTokenKlines } from "./tools/dexscreener.js";
+import { discoverTokens, getTokenSecurityDetails, getTokenKlines, getTokenPricesBatch } from "./tools/dexscreener.js";
+import { startFastExitSentinel } from "./tools/fast-exit-sentinel.js";
 import { preSwapGuard, swapToken } from "./tools/jupiter.js";
 import { GMGN_CHAINS } from "./tools/gmgn.js";
 
@@ -260,6 +261,7 @@ log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
     `capitalGuard=${onOff(config.capitalGuard?.enabled)}`,
     `streakSizer=${onOff(config.streakSizer?.enabled)}`,
     `rrGuard=${onOff(config.rrGuard?.enabled)}`,
+    `fastExit=${onOff(config.fastExit?.enabled)}`,
     `gmgnKey=${process.env.GMGN_API_KEY ? "set" : "MISSING"}`,
     `shyftKey=${process.env.SHYFT_API_KEY ? "set" : "MISSING"}`,
   ];
@@ -4909,11 +4911,13 @@ export async function runScreeningCycle({ silent = false } = {}) {
         }
       }
 
-      // ─── G3: Per-coin strategy match ─────────────────────────────
-      // Score this candidate against every preset and pick the best fit.
-      // Pro-orch-only feature — without pro-orch, we keep using the global
-      // active strategy (legacy behavior). Annotated as `selected_strategy`
-      // so the deployment path can dispatch under the chosen preset's params.
+      // ─── G3: Per-coin strategy match (TELEMETRY ONLY) ────────────
+      // Scores the candidate against every preset for the strategy_match
+      // annotation and as a last-resort selected_strategy fallback below.
+      // `suggest_override` NEVER overrides: matchedStrategyId always wins,
+      // which keeps the R:R guard consistent with the deployed strategy.
+      // Making the suggestion actually override selection is a risk-rule
+      // change — do it behind an experiment_id, not here.
       let strategyMatch = null;
       try {
         if (isProModeActive()) {
@@ -6426,6 +6430,16 @@ export function startCronJobs() {
   // Dashboard IPC — check for commands from dashboard process every 3s
   _dashboardIpcTimer = setInterval(() => checkDashboardCommands().catch(e => log("dashboard_ipc", e.message)), 3000);
   log("cron", `Jobs started: mgmt=${config.schedule.managementIntervalMin}m screen=${config.schedule.screeningIntervalMin}m vault=6h report=${reportH}:${String(reportM).padStart(2,"0")}UTC`);
+
+  // Fast-exit sentinel (exp #24) — wakes the management cycle early on a stop
+  // breach; the cycle's busy-guard makes overlap with the cron a no-op.
+  startFastExitSentinel({
+    getOpenPositions: () => Object.values(getState()?.positions || {}).filter((p) => !p.closed),
+    fetchPrices: (mints) => getTokenPricesBatch(mints),
+    getStrategyById: (id) => { try { return getStrategy(id); } catch { return null; } },
+    triggerCycle: () => withTimeout(runManagementCycle(), CYCLE_RPC_TIMEOUT_MS, "mgmt-fast"),
+    config: config.fastExit,
+  });
 }
 
 // ─── Dashboard IPC ────────────────────────────────────────────────

@@ -128,7 +128,10 @@
     { "label": "scout", "env_ref": "WALLET_KEY_2", "capital_pct": 40 }
   ],
 
-  "_comment_live_manifest": "MANIFEST AKTIVASI LIVE (tracked di git — pelajaran insiden 2026-06-10 saat user-config.json yang gitignored lenyap dan SEMUA opt-in mati senyap). Flag yang sedang ON di user-config.json produksi per 2026-06-12: portfolioEnabled(shadow), skillLoopEnabled, vaultIntelligenceEnabled, episodicMemoryEnabled, adaptiveRiskEnabled, promptEvolutionEnabled, capitalGuard.enabled, streakSizer.enabled, rrGuard.enabled, strategyPreserveMultiOnSwitch, maxEntryRugScore=35 (exp #10), positionLimits scalping/degen=6, learningModeDurationMin=15. Kalau user-config hilang lagi: restore daftar ini, jangan cuma sebagian.",
+  "_comment_live_manifest": "MANIFEST AKTIVASI LIVE (tracked di git — pelajaran insiden 2026-06-10 saat user-config.json yang gitignored lenyap dan SEMUA opt-in mati senyap). Flag yang sedang ON di user-config.json produksi per 2026-06-12: portfolioEnabled(shadow), skillLoopEnabled, vaultIntelligenceEnabled, episodicMemoryEnabled, adaptiveRiskEnabled, promptEvolutionEnabled, capitalGuard.enabled, streakSizer.enabled, rrGuard.enabled, fastExit.enabled (exp #24), strategyPreserveMultiOnSwitch, maxEntryRugScore=35 (exp #10), positionLimits scalping/degen=6, learningModeDurationMin=15. Kalau user-config hilang lagi: restore daftar ini, jangan cuma sebagian.",
+
+  "_comment_fast_exit": "Fast-exit sentinel (exp #24): cek harga posisi TERBUKA tiap intervalSec dan bangunkan management cycle lebih awal saat SL strategi/hard-drop tertembus — tidak pernah menjual sendiri. Menyerang gap eksekusi exit 2-menit.",
+  "fastExit": { "enabled": false, "intervalSec": 20, "triggerPnlPct": null, "hardDropPct": -35 },
   "_comment_super_brain": "Super Brain opt-ins (default OFF; semua aktif di produksi sejak 2026-06-03/06-10):",
   "vaultIntelligenceEnabled": false,
   "episodicMemoryEnabled": false,

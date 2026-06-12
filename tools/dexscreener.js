@@ -784,6 +784,35 @@ function _cacheMarketInfo(mint, info) {
   }
 }
 
+/**
+ * Batch price lookup — one HTTP call for up to 30 mints, no cache (the
+ * fast-exit sentinel polls faster than MARKET_INFO_TTL_MS, so the cached
+ * single-token path would feed it stale prices). Returns Map mint → priceUsd
+ * from the highest-liquidity Solana pair; mints without pairs are absent.
+ */
+export async function getTokenPricesBatch(mints = []) {
+  const out = new Map();
+  const list = [...new Set(mints)].filter(Boolean).slice(0, 30);
+  if (!list.length) return out;
+  try {
+    const data = await fetchDS(`${DS_BASE}/latest/dex/tokens/${list.join(",")}`);
+    const byMint = new Map();
+    for (const p of data.pairs || []) {
+      if (p.chainId !== "solana") continue;
+      const mint = p.baseToken?.address;
+      const prev = byMint.get(mint);
+      if (!prev || (p.liquidity?.usd || 0) > (prev.liquidity?.usd || 0)) byMint.set(mint, p);
+    }
+    for (const [mint, pair] of byMint) {
+      const price = parseFloat(pair.priceUsd || 0);
+      if (price > 0) out.set(mint, price);
+    }
+  } catch (error) {
+    log("price_batch_error", error.message);
+  }
+  return out;
+}
+
 export async function getTokenMarketInfo({ mint }) {
   const cached = _marketInfoCache.get(mint);
   if (cached && Date.now() - cached.ts < MARKET_INFO_TTL_MS) return cached.info;

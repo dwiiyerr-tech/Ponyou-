@@ -280,6 +280,17 @@ export const config = {
     layer1PauseMin:  u.capitalGuard?.layer1PauseMin  ?? 60,
   },
 
+  // ─── Fast-Exit Sentinel (experiment #24) ─────────────────────────
+  // Watches OPEN positions every intervalSec and wakes the management cycle
+  // early when a stop is breached — never sells on its own. Attacks the
+  // 2-minute exit-execution gap measured by cf-exit:current-replayed.
+  fastExit: {
+    enabled:       u.fastExit?.enabled       ?? false,
+    intervalSec:   u.fastExit?.intervalSec   ?? 20,
+    triggerPnlPct: u.fastExit?.triggerPnlPct ?? null, // null = pakai SL strategi posisi
+    hardDropPct:   u.fastExit?.hardDropPct   ?? -35,
+  },
+
   // ─── Smart Money Quality Filter ──────────────────────────────────
   // 4-criterion gate: win rate, trade count, profit factor, consistency.
   // Applied in wallet discovery and signal injection when enabled.
