@@ -255,6 +255,11 @@ log("startup", `Model: ${process.env.LLM_MODEL || "minimax/minimax-m2.7"}`);
     `promptEvo=${onOff(config.promptEvolution?.enabled)}`,
     `proValidation=${config.pro?.validationMode === false ? "off" : executionMode.isDemo ? "ON(demo)" : "off(live)"}`,
     `proForceApprove=${onOff(config.pro?.forceApprove)}`,
+    // Risk guards activated 2026-06-10, then silently lost with user-config —
+    // exactly the failure this banner exists for. Keep them visible.
+    `capitalGuard=${onOff(config.capitalGuard?.enabled)}`,
+    `streakSizer=${onOff(config.streakSizer?.enabled)}`,
+    `rrGuard=${onOff(config.rrGuard?.enabled)}`,
     `gmgnKey=${process.env.GMGN_API_KEY ? "set" : "MISSING"}`,
     `shyftKey=${process.env.SHYFT_API_KEY ? "set" : "MISSING"}`,
   ];

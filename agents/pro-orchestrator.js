@@ -260,16 +260,18 @@ export function runProAnalysis() {
     };
   }
 
-  // 4. Execution quality analysis
-  const execQual = tryReadJson("execution-quality-memory.json") || {};
-  const providers = execQual.providers || execQual.entries || [];
+  // 4. Execution quality analysis — execution-quality.json (env-redirected in
+  // demo) keeps per-route aggregates under `routes`. The old read targeted
+  // "execution-quality-memory.json", a file that never existed, so this
+  // section had produced an empty intelligence.execution since it shipped.
+  const execQual = tryReadJson("execution-quality.json") || {};
   const providerStats = {};
-  for (const p of providers) {
-    const name = p.provider || p.name || "unknown";
+  for (const r of Object.values(execQual.routes || {})) {
+    const name = r.provider || "unknown";
     if (!providerStats[name]) providerStats[name] = { attempts: 0, successes: 0, totalLatency: 0 };
-    providerStats[name].attempts++;
-    if (p.success) providerStats[name].successes++;
-    providerStats[name].totalLatency += p.latency_ms || 0;
+    providerStats[name].attempts += safeNum(r.attempts);
+    providerStats[name].successes += safeNum(r.successes);
+    providerStats[name].totalLatency += safeNum(r.cumulative_latency_ms);
   }
   for (const [name, stats] of Object.entries(providerStats)) {
     intelligence.execution[name] = {
@@ -612,15 +614,18 @@ export function validateStrategyReadiness() {
   try {
     const exec = readJsonSafe(resolveStorePath("execution-quality.json"));
     const metrics = readJsonSafe(resolveStorePath("metrics.json"));
+    // Real schema is `routes` (per wallet|provider|mode aggregates with
+    // attempts/successes); the old `providers` read always summed over {}.
+    const routes = Object.values(exec?.routes || exec?.providers || {});
     const swaps = safeNum(metrics?.counters?.swaps_executed || metrics?.counters?.swaps) +
-      safeNum(Object.values(exec?.providers || {}).reduce((s, p) => s + safeNum(p.swaps || p.total), 0));
+      routes.reduce((s, r) => s + safeNum(r.attempts ?? r.swaps ?? r.total), 0);
     const slippageSamples = metrics?.series?.swap_slippage_ratio;
     const avgSlippage = slippageSamples?.mean ? slippageSamples.mean * 100 : null;
     const latencySamples = metrics?.series?.management_cycle_ms || metrics?.series?.screening_cycle_ms;
     const avgLatency = latencySamples?.mean || null;
-    const providers = exec?.providers || {};
-    const totalProviderSwaps = Object.values(providers).reduce((s, p) => s + safeNum(p.success || 0) + safeNum(p.failure || 0), 0);
-    const totalSuccess = Object.values(providers).reduce((s, p) => s + safeNum(p.success), 0);
+    const totalProviderSwaps = routes.reduce(
+      (s, r) => s + safeNum(r.attempts ?? (safeNum(r.success) + safeNum(r.failure))), 0);
+    const totalSuccess = routes.reduce((s, r) => s + safeNum(r.successes ?? r.success), 0);
     const successRate = totalProviderSwaps > 0 ? totalSuccess / totalProviderSwaps : 0;
 
     execPassed =
