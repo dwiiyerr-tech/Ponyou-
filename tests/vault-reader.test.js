@@ -49,6 +49,14 @@ afterEach(() => {
 });
 
 describe("vault-reader", () => {
+  // The override-section root beforeEach (further down this file) repoints
+  // PONYOU_VAULT_NOTES_FILE for every test in the file; reclaim it here.
+  // Describe-scoped hooks run after all root-level hooks.
+  beforeEach(() => {
+    process.env.PONYOU_VAULT_NOTES_FILE = TMP_FILE;
+    _resetVaultCache();
+  });
+
   it("returns empty overrides when the file is missing (graceful)", () => {
     try { fs.unlinkSync(TMP_FILE); } catch { /* ignore */ }
     _resetVaultCache();

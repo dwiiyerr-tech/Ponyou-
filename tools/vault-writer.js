@@ -644,6 +644,76 @@ export async function ensureIntelligenceTemplates() {
  * Refresh all vault snapshots. Called on the 5-min cron.
  * Each snapshot runs independently — one failure never blocks the others.
  */
+/**
+ * 00-Overview/_engine-reality.md — the LIVE deterministic engine parameters
+ * (task #21). The vault's prose rules guide the LLM; THIS file states what
+ * the machine actually enforces, so the two can never silently diverge (the
+ * operator-notes said "rug > 45 skip" while the real gate was 35 for days).
+ */
+export async function writeEngineReality() {
+  try {
+    const { config } = await import("../config.js");
+    const { getActiveStrategyIds, getStrategy } = await import("../strategies.js");
+    const { getVaultOverrides } = await import("./vault-reader.js");
+
+    const vaultDir = _getVaultWriterDir();
+    const dir = path.join(vaultDir, "00-Overview");
+    _ensureDir(dir);
+
+    const ov = getVaultOverrides();
+    const cfgGate = config.screening?.maxEntryRugScore ?? 60;
+    const gateLine = ov.max_entry_rug_score != null
+      ? `**${ov.max_entry_rug_score}** (OVERRIDE operator-notes frontmatter; config=${cfgGate})`
+      : `**${cfgGate}** (config)`;
+
+    const stratIds = (() => { try { return getActiveStrategyIds() || []; } catch { return []; } })();
+    const stratRows = stratIds.map((id) => {
+      try {
+        const s = getStrategy(id) || {};
+        const sl = Number.isFinite(s.stoploss) ? `${(s.stoploss * 100).toFixed(0)}%` : "—";
+        const trail = s.trailing_stop?.positive_offset != null
+          ? `aktif +${(s.trailing_stop.positive_offset * 100).toFixed(0)}%, drop ${((s.trailing_stop.positive_distance ?? 0) * 100).toFixed(0)}%` : "—";
+        const lim = config.positionLimits?.perStrategy?.[id]?.maxPositions ?? "—";
+        return `| ${id} | ${sl} | ${trail} | ${lim} |`;
+      } catch { return `| ${id} | ? | ? | ? |`; }
+    }).join("\n");
+
+    const onOff = (v) => (v ? "ON" : "off");
+    const body = `---
+tags: [engine, auto-generated]
+updated: ${new Date().toISOString()}
+type: engine-reality
+---
+
+# ⚙️ Engine Reality — Parameter Mesin LIVE
+
+> [!warning] AUTO-GENERATED — jangan diedit
+> File ini adalah sumber kebenaran tentang apa yang MESIN benar-benar lakukan.
+> Aturan prosa di operator-notes/money-management membimbing LLM; file ini
+> menyatakan gate deterministiknya. Untuk menyetir mesin dari Obsidian, pakai
+> frontmatter operator-notes.md (mis. \`max_entry_rug_score: 45\`, clamp 10-60).
+
+## Entry
+- Rug gate (hard-block): ${gateLine}
+- Pause trading: ${ov.pause_trading ? "⛔ YA (operator)" : "tidak"}
+- Mcap cap operator: ${ov.skip_mcap_above != null ? `$${ov.skip_mcap_above}` : "—"}
+
+## Exit & Posisi (per strategi aktif)
+| Strategi | Stop Loss | Trailing (aktif/drop) | Max Posisi |
+| -------- | --------- | --------------------- | ---------- |
+${stratRows || "| (tidak ada strategi aktif) | | | |"}
+
+- Partial take-profit: belum dijalankan mesin (sedang diuji cf-exit:ptp-50-25)
+- Fast-exit sentinel: ${onOff(config.fastExit?.enabled)}${config.fastExit?.enabled ? ` (${config.fastExit.intervalSec ?? 20}s, hard-drop ${config.fastExit.hardDropPct ?? -35}%)` : ""}
+
+## Guards
+- Capital guard: ${onOff(config.capitalGuard?.enabled)} | Streak sizer: ${onOff(config.streakSizer?.enabled)} | R:R guard: ${onOff(config.rrGuard?.enabled)}
+- Learning-mode pause per loss: ${config.pilot?.learningModeDurationMin ?? "?"} menit
+`;
+    atomicWriteText(path.join(dir, "_engine-reality.md"), body);
+  } catch { /* best-effort, never throws */ }
+}
+
 export async function refreshVaultSnapshots() {
   await Promise.allSettled([
     writeDevBlacklistSnapshot(),
@@ -653,5 +723,6 @@ export async function refreshVaultSnapshots() {
     writeChainStatus(),
     writeStrategyInsights(),
     writeDarwinLearning(),
+    writeEngineReality(),
   ]);
 }

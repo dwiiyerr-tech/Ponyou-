@@ -11,7 +11,9 @@ import { fileURLToPath } from "url";
 import { log } from "../logger.js";
 
 const DEFAULT_VAULT_FILE = "/home/ubuntu/ponyou-brain/operator-notes.md";
-const VAULT_FILE = process.env.PONYOU_VAULT_NOTES_FILE || DEFAULT_VAULT_FILE;
+// Resolved at call time, not import time — tests (and any future env change)
+// must not be pinned to whatever the env held at first import.
+const VAULT_FILE = () => process.env.PONYOU_VAULT_NOTES_FILE || DEFAULT_VAULT_FILE;
 const CACHE_TTL_MS = 5 * 60_000;
 
 let _cache = null;
@@ -57,7 +59,7 @@ export function getVaultOverrides() {
   if (_cache && (Date.now() - _cacheTs) < CACHE_TTL_MS) return _cache;
 
   try {
-    const content = fs.readFileSync(VAULT_FILE, "utf8");
+    const content = fs.readFileSync(VAULT_FILE(), "utf8");
     const parsed = parseFrontmatter(content);
     _cache = {
       pause_trading:       parsed.pause_trading       === true,
@@ -65,14 +67,24 @@ export function getVaultOverrides() {
       blacklist_narratives:Array.isArray(parsed.blacklist_narratives) ? parsed.blacklist_narratives.map(s => String(s).toLowerCase()) : [],
       focus_narrative:     typeof parsed.focus_narrative === "string" ? parsed.focus_narrative.toLowerCase() : null,
       skip_mcap_above:     Number.isFinite(parsed.skip_mcap_above)   ? parsed.skip_mcap_above : null,
+      // Control-plane v2 (task #21): frontmatter keys that steer DETERMINISTIC
+      // engine knobs, not just the LLM. Clamped so a typo in Obsidian can
+      // never disable a safety gate; out-of-range values are ignored (null).
+      max_entry_rug_score: _clampOrNull(parsed.max_entry_rug_score, 10, 60),
     };
     _cacheTs = Date.now();
   } catch (e) {
     // File missing or malformed — return empty overrides, never throw
-    _cache = { pause_trading: false, blacklist_tokens: [], blacklist_narratives: [], focus_narrative: null, skip_mcap_above: null };
+    _cache = { pause_trading: false, blacklist_tokens: [], blacklist_narratives: [], focus_narrative: null, skip_mcap_above: null, max_entry_rug_score: null };
     _cacheTs = Date.now();
   }
   return _cache;
+}
+
+// Engine-knob overrides must never escape their safe band: a value outside
+// [min,max] is treated as not set, and the drift line surfaces what applied.
+function _clampOrNull(v, min, max) {
+  return Number.isFinite(v) && v >= min && v <= max ? v : null;
 }
 
 /** Force-expire cache (for tests) */
@@ -95,8 +107,8 @@ export function getVaultContext() {
 
   try {
     // Resolve the notes path at call time so tests can repoint the env var
-    // after module load (VAULT_FILE is a load-time const).
-    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    // (VAULT_FILE resolves the env at call time).
+    const notesFile = VAULT_FILE();
     const vaultDir = path.dirname(notesFile);
     const lines = [];
 
@@ -176,7 +188,7 @@ let _devOvCache = null, _devOvTs = 0;
 export function getDevOverrides() {
   if (_devOvTs && (Date.now() - _devOvTs) < CACHE_TTL_MS) return _devOvCache;
   try {
-    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const notesFile = VAULT_FILE();
     const vaultDir = path.dirname(notesFile);
     const file = path.join(vaultDir, "20-Devs", "dev-overrides.md");
     const fm = parseFrontmatter(fs.readFileSync(file, "utf8"));
@@ -198,7 +210,7 @@ let _walletOvCache = null, _walletOvTs = 0;
 export function getWalletOverrides() {
   if (_walletOvTs && (Date.now() - _walletOvTs) < CACHE_TTL_MS) return _walletOvCache;
   try {
-    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const notesFile = VAULT_FILE();
     const vaultDir = path.dirname(notesFile);
     const file = path.join(vaultDir, "10-SmartMoney", "follow-overrides.md");
     const fm = parseFrontmatter(fs.readFileSync(file, "utf8"));
@@ -220,7 +232,7 @@ let _smLiveCache = null, _smLiveTs = 0;
 export function getSmartMoneyContext() {
   if (_smLiveTs && (Date.now() - _smLiveTs) < CACHE_TTL_MS) return _smLiveCache;
   try {
-    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const notesFile = VAULT_FILE();
     const vaultDir = path.dirname(notesFile);
     const file = path.join(vaultDir, "10-SmartMoney", "_live.md");
     const fm = parseFrontmatter(fs.readFileSync(file, "utf8"));
@@ -247,7 +259,7 @@ let _patOvCache = null, _patOvTs = 0;
 export function getPatternOverrides() {
   if (_patOvTs && (Date.now() - _patOvTs) < CACHE_TTL_MS) return _patOvCache;
   try {
-    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const notesFile = VAULT_FILE();
     const vaultDir = path.dirname(notesFile);
     const file = path.join(vaultDir, "40-RugPatterns", "pattern-overrides.md");
     const fm = parseFrontmatter(fs.readFileSync(file, "utf8"));
@@ -286,7 +298,7 @@ export function getVaultIntelligenceContext() {
   if (_intelCacheTs && (Date.now() - _intelCacheTs) < CACHE_TTL_MS) return _intelCache;
 
   try {
-    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const notesFile = VAULT_FILE();
     const vaultDir  = path.dirname(notesFile);
     const sections  = [];
 
@@ -395,6 +407,10 @@ export function getVaultIntelligenceContext() {
       if (Array.isArray(fm.blacklist_narratives) && fm.blacklist_narratives.length > 0)
         parts.push(`avoid=${fm.blacklist_narratives.join(",")}`);
       if (typeof fm.notes === "string" && fm.notes.trim()) parts.push(fm.notes.trim());
+      // Drift visibility (task #21): an active engine override must be loud in
+      // the LLM context, so prose rules and the actual gate never silently differ.
+      const rugOverride = _clampOrNull(fm.max_entry_rug_score, 10, 60);
+      if (rugOverride != null) parts.push(`⚙️ ENGINE OVERRIDE: entry rug gate = ${rugOverride} (dari frontmatter, menggantikan config)`);
       if (parts.length > 0) sections.push(`Operator: ${parts.join(" | ")}`);
     } catch { /* skip */ }
 
@@ -455,7 +471,7 @@ const KNOWN_CHAINS = ["sol", "base", "bsc", "eth"];
 export function getChainOverrides() {
   if (_chainOvTs && (Date.now() - _chainOvTs) < CACHE_TTL_MS) return _chainOvCache;
   try {
-    const notesFile = process.env.PONYOU_VAULT_NOTES_FILE || VAULT_FILE;
+    const notesFile = VAULT_FILE();
     const vaultDir  = path.dirname(notesFile);
     const file = path.join(vaultDir, "50-Chains", "chain-overrides.md");
     const fm = parseFrontmatter(fs.readFileSync(file, "utf8"));

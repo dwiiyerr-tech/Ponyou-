@@ -4281,7 +4281,11 @@ export async function runScreeningCycle({ silent = false } = {}) {
 
       // Entry hard-block threshold — configurable (exp #10: paper book runs at
       // 35; default 60 = legacy). Auto-blacklist below still requires >= 100.
-      const maxEntryRug = config.screening?.maxEntryRugScore ?? 60;
+      // Vault control-plane (task #21): operator-notes frontmatter
+      // max_entry_rug_score (clamped 10-60 in the reader) wins over config —
+      // the operator can steer the gate from Obsidian without a restart.
+      const _vaultRugGate = getVaultOverrides().max_entry_rug_score;
+      const maxEntryRug = _vaultRugGate ?? config.screening?.maxEntryRugScore ?? 60;
       if (rugRisk.score >= maxEntryRug) {
         log("filter", `${token.symbol}: SKIP rug score ${rugRisk.score} >= ${maxEntryRug}`);
         // Auto-blacklist confirmed honeypots so they never waste another cycle
