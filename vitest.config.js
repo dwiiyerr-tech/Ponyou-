@@ -97,6 +97,7 @@ export default defineConfig({
       // counterfactual evaluator reads these via env so tests feed fixtures
       PONYOU_OBSERVED_TOKENS_FILE: path.join(STATE_TMP, "observed-tokens.json"),
       PONYOU_SHADOW_WATCHLIST_FILE: path.join(STATE_TMP, "shadow-watchlist.json"),
+      PONYOU_EXIT_CANDLE_ARCHIVE: path.join(STATE_TMP, "exit-candle-archive.json"),
     },
   },
 });

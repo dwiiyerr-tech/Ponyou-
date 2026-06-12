@@ -34,7 +34,8 @@
     "secondbrain:setup": "node scripts/setup-secondbrain.mjs",
     "secondbrain:status": "node -e \"import('./secondbrain-sync.js').then(m=>console.log(m.buildSyncStatus()))\"",
     "notebooklm:export": "node scripts/export-notebooklm.js",
-    "notebooklm:watch": "node scripts/export-notebooklm.js --watch"
+    "notebooklm:watch": "node scripts/export-notebooklm.js --watch",
+    "collab:cf-exit": "node tools/counterfactual-exit.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

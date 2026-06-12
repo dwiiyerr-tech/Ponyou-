@@ -4,6 +4,7 @@ import {
   _resetExperimentsForTests,
   createExperiment,
   getExperimentSummary,
+  recordExperimentRun,
   setExperimentEvidenceSource,
 } from "../infra/agent-collab/experiment-tracker.js";
 import { enableEvidence, runEvidenceBridge } from "../infra/agent-collab/evidence-bridge.js";
@@ -98,6 +99,30 @@ describe("evidence bridge", () => {
     const out = enableEvidence([exp.id, 999]);
     expect(out[0].evidence_source.kind).toBe("closed_trades");
     expect(out[1].error).toMatch(/not found/);
+  });
+
+  it("counterfactual_twin experiments are settable but never bridged from live trades", () => {
+    const exp = createExperiment({ name: "twin", hypothesis: "h", baseline_rule: "b", candidate_rule: "c", status: "running" });
+    const out = enableEvidence([exp.id], "counterfactual_twin", { scenario: "cf:narrative-heat" });
+    expect(out[0].evidence_source).toEqual({ kind: "counterfactual_twin", scenario: "cf:narrative-heat" });
+    writeTrades([trade("2099-01-01T00:00:00Z", true, 10)]);
+    const res = runEvidenceBridge();
+    // the twin experiment must not appear among bridged experiments
+    expect(res.results.find((r) => r.experiment_id === exp.id)).toBeUndefined();
+  });
+
+  it("non_pnl experiments never fabricate a zero-lift comparison", () => {
+    const exp = createExperiment({
+      name: "precision", hypothesis: "h", baseline_rule: "b", candidate_rule: "c",
+      status: "running", minimum_sample_size: 1,
+    });
+    enableEvidence([exp.id], "screening_precision", { non_pnl: true });
+    // paired runs whose pnl/win fields are structurally zero (precision sample)
+    recordExperimentRun({ experiment_id: exp.id, variant: "baseline", sample_size: 50, notes: "precision baseline" });
+    recordExperimentRun({ experiment_id: exp.id, variant: "candidate", sample_size: 50, notes: "precision candidate" });
+    const { summary } = getExperimentSummary({ id: exp.id });
+    expect(summary.comparison).toBeNull();           // bukan lift-0 palsu
+    expect(summary.recommendation).toBe("review_manually");
   });
 });
 

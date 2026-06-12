@@ -163,10 +163,16 @@ function _skillBreakdown(windowTrades) {
     .join(" ") || "none";
 }
 
-export function enableEvidence(ids, kind = "closed_trades") {
-  if (!SOURCE_KINDS.has(kind)) return [{ error: `unknown kind: ${kind}` }];
+// Kinds the bridge can be POINTED at. The bridge only ACTS on SOURCE_KINDS;
+// counterfactual_twin / screening_precision experiments are deliberately
+// skipped here — their evidence accrues in the cf:* twin (replay) or in run
+// notes, so live closes are no longer double-attributed to them.
+const SETTABLE_KINDS = new Set([...SOURCE_KINDS, "counterfactual_twin", "screening_precision"]);
+
+export function enableEvidence(ids, kind = "closed_trades", extras = {}) {
+  if (!SETTABLE_KINDS.has(kind)) return [{ error: `unknown kind: ${kind}` }];
   return ids.map((id) => {
-    const r = setExperimentEvidenceSource({ id, source: { kind } });
+    const r = setExperimentEvidenceSource({ id, source: { kind, ...extras } });
     return r.error ? { id, error: r.error } : { id: r.id, name: r.name, evidence_source: r.evidence_source };
   });
 }

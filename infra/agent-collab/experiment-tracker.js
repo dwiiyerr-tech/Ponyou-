@@ -135,7 +135,11 @@ function computeExperimentSummary(experiment, runs) {
     quality_score: average(candidateRuns, "quality_score"),
   } : null;
 
-  const comparison = baselineAvg && candidateAvg ? {
+  // Non-PnL experiments (evidence_source.non_pnl): their runs carry results
+  // in notes, not numeric pnl/win fields — averaging those zeros produced a
+  // fake "0 lift everywhere" comparison (exp #1 artifact, 2026-06-12).
+  const nonPnl = !!experiment.evidence_source?.non_pnl;
+  const comparison = !nonPnl && baselineAvg && candidateAvg ? {
     pnl_lift_pct: Number((candidateAvg.pnl_pct - baselineAvg.pnl_pct).toFixed(2)),
     win_rate_lift: Number((candidateAvg.win_rate - baselineAvg.win_rate).toFixed(4)),
     drawdown_delta_pct: Number((candidateAvg.max_drawdown_pct - baselineAvg.max_drawdown_pct).toFixed(2)),
@@ -144,7 +148,8 @@ function computeExperimentSummary(experiment, runs) {
 
   let recommendation = "insufficient_data";
   if ((totals.sample_size || 0) >= (experiment.minimum_sample_size || 0)) {
-    if (comparison && comparison.quality_lift >= 5 && comparison.drawdown_delta_pct <= 2) recommendation = "promote_candidate";
+    if (nonPnl) recommendation = "review_manually"; // hasil riil ada di notes run
+    else if (comparison && comparison.quality_lift >= 5 && comparison.drawdown_delta_pct <= 2) recommendation = "promote_candidate";
     else if (comparison && comparison.quality_lift <= -5) recommendation = "keep_baseline";
     else recommendation = "review_manually";
   }
@@ -207,6 +212,12 @@ export function setExperimentEvidenceSource({ id, source } = {}) {
     return { error: "source must be an object with a kind" };
   }
   experiment.evidence_source = { kind: String(source.kind) };
+  // Whitelisted extras: `scenario` points at the cf:* twin that carries this
+  // experiment's evidence; `non_pnl` marks experiments whose runs have no
+  // PnL fields (e.g. screening-precision) so the summary never fabricates a
+  // misleading zero-lift comparison from structurally-empty metrics.
+  if (source.scenario) experiment.evidence_source.scenario = String(source.scenario);
+  if (source.non_pnl) experiment.evidence_source.non_pnl = true;
   experiment.updated_at = nowIso();
   saveExperiments(data);
   return experiment;

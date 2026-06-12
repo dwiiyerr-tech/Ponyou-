@@ -172,3 +172,4 @@ error-log.jsonl
 
 # Archived/poisoned data snapshots kept for forensics, never source-controlled.
 data/archive/
+data/exit-candle-archive.json

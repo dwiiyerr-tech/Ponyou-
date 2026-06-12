@@ -142,6 +142,18 @@ async function main() {
       .map((r) => ({ scenario: r.scenario, new_observations: r.window.count, recommendation: r.recommendation }));
   } catch { /* cf failure must not block session start */ }
 
+  // Exit-side counterfactual: capture candle paths for newly closed positions
+  // (GT minute data ages out in days) then replay alternative exit policies.
+  // Capture does network I/O — failure-tolerant and delta-windowed like the rest.
+  let cfExit = null;
+  try {
+    const { captureCandles, runExitScenarios } = await import("../../tools/counterfactual-exit.js");
+    await captureCandles();
+    cfExit = runExitScenarios().results
+      .filter((r) => r.recorded)
+      .map((r) => ({ scenario: r.scenario, positions: r.window.count, delta_pnl: r.delta_pnl, recommendation: r.recommendation }));
+  } catch { /* cf-exit failure must not block session start */ }
+
   const tasks = listOrchestrationTasks({ limit: 50 });
   const experiments = getExperimentOverview({ limit: 20 });
 
@@ -154,6 +166,7 @@ async function main() {
       experiments_by_recommendation: summarizeBy(experiments, "recommendation"),
       evidence_bridge_runs: evidence,
       counterfactual_runs: counterfactual,
+      counterfactual_exit_runs: cfExit,
     },
     claude: {
       next: nextForOwner("claude"),
