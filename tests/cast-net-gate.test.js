@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
 import path from "path";
 
-const STATE_FILE = path.join(process.cwd(), "cast-net-state.json");
+// vitest.config.js points this at the test tmp dir so the suite never
+// backup/restores the repo-root file out from under the live bot.
+const STATE_FILE = process.env.PONYOU_CAST_NET_STATE_FILE
+  || path.join(process.cwd(), "cast-net-state.json");
 
 // Helper: build an all-green token candidate. Tests can override fields
 // individually to flip a single category red and assert the gate blocks.

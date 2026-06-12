@@ -18,7 +18,10 @@ import { getState, saveState } from "./state.js";
 import { atomicWriteJson } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ARCHIVE_FILE = path.join(__dirname, "closed-positions-archive.json");
+// Env override so tests never append fixtures to the real archive, which the
+// pro-orchestrator readiness gate counts as trade evidence.
+const ARCHIVE_FILE = process.env.PONYOU_ARCHIVE_FILE
+  || path.join(__dirname, "closed-positions-archive.json");
 
 /**
  * Move closed positions older than maxAgeDays from state.json to the archive.

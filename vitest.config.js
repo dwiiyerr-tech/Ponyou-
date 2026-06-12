@@ -75,6 +75,12 @@ export default defineConfig({
       PONYOU_RUG_PATTERNS_FILE: path.join(STATE_TMP, "rug-patterns-learned.json"),
       PONYOU_PERF_FILE: path.join(STATE_TMP, "performance.json"),
       PONYOU_EXEC_QUALITY_FILE: path.join(STATE_TMP, "execution-quality.json"),
+      // closed-trade archive counts as trade evidence in the pro-orchestrator
+      // readiness gate — test fixtures must never append to the real one
+      PONYOU_ARCHIVE_FILE: path.join(STATE_TMP, "closed-positions-archive.json"),
+      // cast-net gate state — tests used to backup/restore the repo-root file,
+      // racing the live bot
+      PONYOU_CAST_NET_STATE_FILE: path.join(STATE_TMP, "cast-net-state.json"),
       PONYOU_LESSONS_FILE: path.join(STATE_TMP, "lessons.json"),
       PONYOU_DARWIN_FILE: path.join(STATE_TMP, "darwin-weights.json"),
       // structured error log — logger/state/shadow-watchlist tests log

@@ -21,6 +21,7 @@ import { fileURLToPath } from "url";
 import { gateBatch } from "./social-trash-gate.js";
 import { log } from "./logger.js";
 import { withFileLock, atomicWriteJson } from "./atomic-write.js";
+import { updateAgentHealth } from "./agents/agent-registry.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT      = __dirname;
@@ -418,6 +419,14 @@ export async function runScan() {
     }));
 
     const result  = await saveCache(scored);
+
+    // Proof of life for the watchdog: heartbeat only on a completed scan
+    // (a scan loop that throws every cycle should still go stale and alert).
+    updateAgentHealth("social-hunter", {
+      lastScanAt: new Date().toISOString(),
+      lastScanSignals: scored.length,
+      lastScanSources: [reddit, cgecko, dex, nitter].filter(r => r.status === "fulfilled").length,
+    });
 
     log("social_hunter", `Scan done — ${scored.length} signals passed gate, saved to social-signals.json`);
     return result;

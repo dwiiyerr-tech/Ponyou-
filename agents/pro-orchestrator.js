@@ -45,6 +45,23 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 
+// Demo mode redirects safety/session stores into demo/ via env vars (see
+// runtime-mode.js PAPER_REDIRECT_STORES). Evidence must come from the store
+// the bot actually writes — reading the root file here counted a stale test
+// fixture as the only "closed trade" while 13 real demo closes went unseen.
+const STORE_ENV = {
+  "state.json":                    "PONYOU_STATE_FILE",
+  "execution-quality.json":        "PONYOU_EXEC_QUALITY_FILE",
+  "trade-attribution.json":        "PONYOU_TRADE_ATTRIBUTION_FILE",
+  "trading-plan.json":             "PONYOU_PLAN_FILE",
+  "closed-positions-archive.json": "PONYOU_ARCHIVE_FILE",
+};
+
+function resolveStorePath(filename) {
+  const envVar = STORE_ENV[filename];
+  return (envVar && process.env[envVar]) || path.join(PROJECT_ROOT, filename);
+}
+
 const AGENT_NAME = "pro-orchestrator";
 
 let _initialized = false;
@@ -137,7 +154,7 @@ const PRO_THRESHOLDS = _buildThresholds();
 
 function tryReadJson(filename) {
   try {
-    const fp = path.join(PROJECT_ROOT, filename);
+    const fp = resolveStorePath(filename);
     if (!fs.existsSync(fp)) return null;
     return JSON.parse(fs.readFileSync(fp, "utf8"));
   } catch { return null; }
@@ -154,6 +171,7 @@ export function runProAnalysis() {
 
   // Return cached result if still fresh
   if (_analysisCache && (Date.now() - _analysisCacheTime) < ANALYSIS_CACHE_TTL_MS) {
+    updateAgentHealth(AGENT_NAME, { lastAnalysisServedAt: new Date().toISOString() });
     return _analysisCache;
   }
 
@@ -292,6 +310,9 @@ export function runProAnalysis() {
   _analysisCache = intelligence;
   _analysisCacheTime = Date.now();
   _consecutiveErrors = 0;          // reset error counter on a clean analysis
+  // Proof of life for the watchdog: a completed analysis is real output.
+  // The error path below intentionally does NOT heartbeat.
+  updateAgentHealth(AGENT_NAME, { lastAnalysisAt: intelligence.analyzedAt });
   return intelligence;
   } catch (e) {
     _consecutiveErrors++;
@@ -417,8 +438,8 @@ export function validateStrategyReadiness() {
   let tradePassed = false;
   let tradeDetail = "";
   try {
-    const archive = readJsonSafe(path.join(PROJECT_ROOT, "closed-positions-archive.json"));
-    const state = readJsonSafe(path.join(PROJECT_ROOT, "state.json"));
+    const archive = readJsonSafe(resolveStorePath("closed-positions-archive.json"));
+    const state = readJsonSafe(resolveStorePath("state.json"));
     const closedList = (Array.isArray(archive) ? archive : []);
     const stateClosed = Object.values(state?.positions || {}).filter(p => p.closed);
     const raw = [...closedList, ...stateClosed];
@@ -427,21 +448,54 @@ export function validateStrategyReadiness() {
     const seen = new Set();
     const unique = [];
     for (const t of raw) {
-      const key = `${t.position_key || t.mint || ""}::${t.closed_at || t.deployed_at || ""}`;
-      if (seen.has(key) || !t.position_key || !t.closed_at) continue;
+      // Legacy archive entries (pre position_key, < 2026-06-10) carry the
+      // mint in `position` — accept it as identity so old closes still count.
+      const pk = t.position_key || t.position || t.mint || "";
+      const key = `${pk}::${t.closed_at || t.deployed_at || ""}`;
+      if (seen.has(key) || !pk || !t.closed_at) continue;
       seen.add(key);
       unique.push(t);
       allTrades.push(t);
     }
 
+    // Per-trade PnL lives in trade-attribution (the credit ledger), not on
+    // the position object — positions only carry it inside free-text notes.
+    // Join by mint + closest close timestamp so wins/losses/avg reflect
+    // reality instead of reading a field that closes never set.
+    const attribRaw = readJsonSafe(resolveStorePath("trade-attribution.json"));
+    const attribByMint = new Map();
+    for (const a of (attribRaw?.trades || [])) {
+      if (!a?.mint || !Number.isFinite(Number(a.pnl_pct))) continue;
+      if (!attribByMint.has(a.mint)) attribByMint.set(a.mint, []);
+      attribByMint.get(a.mint).push(a);
+    }
+    const pnlOf = (t) => {
+      const direct = t.pnl_pct ?? t.pnlPercent;
+      if (direct != null && Number.isFinite(Number(direct))) return Number(direct);
+      const mint = String(t.position_key || t.position || t.mint || "").split("::")[0];
+      const closedTs = Date.parse(t.closed_at || "") || 0;
+      let best = null, bestGap = Infinity;
+      for (const a of (attribByMint.get(mint) || [])) {
+        const gap = Math.abs((Date.parse(a.ts || "") || 0) - closedTs);
+        if (gap < bestGap) { bestGap = gap; best = a; }
+      }
+      // 48h window — same mint re-traded later must not inherit this PnL
+      return best && bestGap <= 48 * 60 * 60 * 1000 ? Number(best.pnl_pct) : null;
+    };
+
     const verified = unique.filter(t => safeNum(t.initial_value_usd) > 0);
-    const wins = verified.filter(t => safeNum(t.pnl_pct ?? t.pnlPercent) > 0);
-    const losses = verified.filter(t => safeNum(t.pnl_pct ?? t.pnlPercent) < 0);
-    const avgPnl = verified.length > 0
-      ? verified.reduce((s, t) => s + safeNum(t.pnl_pct ?? t.pnlPercent), 0) / verified.length
-      : 0;
+    const pnls = verified.map(pnlOf).filter(v => v != null);
+    const wins = pnls.filter(v => v > 0);
+    const losses = pnls.filter(v => v < 0);
+    const avgPnl = pnls.length > 0 ? pnls.reduce((s, v) => s + v, 0) / pnls.length : 0;
+    // Positions don't carry exit_reason either — it lives in the close note
+    // ("Closed at ...: price_drop: -97% ...") and in attribution.
+    const exitTextOf = (t) => [
+      t.exit_reason, t.reason,
+      ...(Array.isArray(t.notes) ? t.notes : [t.notes]),
+    ].filter(s => typeof s === "string").join(" ");
     const rugCount = verified.filter(t =>
-      /rug/i.test(t.exit_reason || t.reason || "") || t.rug_detected
+      /rug|price_drop|honeypot/i.test(exitTextOf(t)) || t.rug_detected
     ).length;
     const rugRate = verified.length > 0 ? rugCount / verified.length : 1;
 
@@ -556,8 +610,8 @@ export function validateStrategyReadiness() {
   let execPassed = false;
   let execDetail = "";
   try {
-    const exec = readJsonSafe(path.join(PROJECT_ROOT, "execution-quality.json"));
-    const metrics = readJsonSafe(path.join(PROJECT_ROOT, "metrics.json"));
+    const exec = readJsonSafe(resolveStorePath("execution-quality.json"));
+    const metrics = readJsonSafe(resolveStorePath("metrics.json"));
     const swaps = safeNum(metrics?.counters?.swaps_executed || metrics?.counters?.swaps) +
       safeNum(Object.values(exec?.providers || {}).reduce((s, p) => s + safeNum(p.swaps || p.total), 0));
     const slippageSamples = metrics?.series?.swap_slippage_ratio;
@@ -703,7 +757,7 @@ export function validateStrategyReadiness() {
     let oldestDate = null;
     let filesWithData = 0;
     for (const f of allFiles) {
-      const fp = path.join(PROJECT_ROOT, f);
+      const fp = resolveStorePath(f);
       if (!fs.existsSync(fp)) continue;
       try {
         const content = JSON.parse(fs.readFileSync(fp, "utf8"));

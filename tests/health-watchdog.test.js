@@ -70,6 +70,18 @@ describe("collectLiveness", () => {
     expect(c.critical).toBe(true);
   });
 
+  it("social-hunter and pro-orchestrator use the 75m cadence, not the 6h default", () => {
+    // Both heartbeat from periodic work now (scan completion / analysis tick);
+    // the 6h default leash hid a dead loop for hours and false-alarmed live.
+    const d = deps({ agentStatuses: [
+      { name: "social-hunter",    status: "running", lastHeartbeat: new Date(NOW - 2 * HOUR).toISOString() },
+      { name: "pro-orchestrator", status: "running", lastHeartbeat: new Date(NOW - 70 * MIN).toISOString() },
+    ] });
+    const checks = collectLiveness(d);
+    expect(checks.find(c => c.id === "agent:social-hunter").ok).toBe(false);
+    expect(checks.find(c => c.id === "agent:pro-orchestrator").ok).toBe(true);
+  });
+
   it("book_frozen: full book + no close for hours = exits dead", () => {
     const d = deps({
       state: {

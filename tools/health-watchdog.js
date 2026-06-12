@@ -37,6 +37,8 @@ const AGENT_CADENCE_MS = {
   screening:   75 * 60 * 1000,        // 30m cron
   hunters:     75 * 60 * 1000,
   "trash-layer": 75 * 60 * 1000,
+  "social-hunter": 75 * 60 * 1000,    // 30m scan loop heartbeats on completion
+  "pro-orchestrator": 75 * 60 * 1000, // 15m analysis tick heartbeats on success
   default:     6 * 60 * 60 * 1000,    // event-driven (learning, portfolio, ...)
 };
 

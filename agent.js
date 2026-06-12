@@ -113,6 +113,7 @@ import { log } from "./logger.js";
 import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
 import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
+import { updateAgentHealth } from "./agents/agent-registry.js";
 
 // Multi-provider LLM client (OpenRouter, OpenAI, Claude, LM Studio, Groq, etc.)
 let client = null;
@@ -454,6 +455,13 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
             messages.push({ role: "user", content: NUDGE });
           }
           continue;
+        }
+        // Proof of life for the watchdog: the general agent is on-demand
+        // (it only heartbeats on operator messages), but every completed
+        // GENERAL loop — reports, market research, strategy composing —
+        // is real output from the same machinery, so it counts.
+        if (agentType === "GENERAL") {
+          updateAgentHealth("general", { lastLlmLoopAt: new Date().toISOString() });
         }
         return { content: msg.content, userMessage: goal };
       }

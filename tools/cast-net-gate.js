@@ -32,7 +32,10 @@ import { atomicWriteJson, withFileLock } from "../atomic-write.js";
 import { enrichHolderData } from "./holder-data-enricher.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const STATE_FILE = path.join(__dirname, "..", "cast-net-state.json");
+// Env override so tests write to a tmp dir instead of racing the live bot
+// on the repo-root file (vitest.config.js sets it).
+const STATE_FILE = process.env.PONYOU_CAST_NET_STATE_FILE
+  || path.join(__dirname, "..", "cast-net-state.json");
 
 function readState() {
   try {
