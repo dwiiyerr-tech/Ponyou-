@@ -57,6 +57,21 @@ const GUARDED = [
   "loss-patterns.json",
 ];
 
+// Files the LIVE BOT writes on its own cadence whose test access is fully
+// env-redirected (module honors PONYOU_* and no test writes the root path —
+// verified 2026-06-12). A mid-run change here is BY DEFINITION the bot's, so
+// restoring would destroy real data (it reverted live metrics 3× today).
+// These get delete-protection only: restore if a test unlinked the file,
+// never overwrite content.
+const EXTERNAL_WRITERS = new Set([
+  "metrics.json",
+  "coin-conviction.json",
+  "profit-patterns.json",
+  "loss-patterns.json",
+  "rug-memory.json",
+  "market-chain-intel.json",
+]);
+
 // Flatten a (possibly nested) relative path into a safe flat backup filename.
 const backupName = (rel) => rel.replace(/[/\\]/g, "__");
 
@@ -78,6 +93,15 @@ export default function setup() {
       const src = path.join(backupDir, backupName(rel));
       const dst = path.join(ROOT, rel);
       if (existed.has(rel)) {
+        if (EXTERNAL_WRITERS.has(rel)) {
+          // Bot-owned file: leave live content alone; only resurrect it if a
+          // misbehaving test deleted it outright.
+          if (!fs.existsSync(dst)) {
+            try { fs.copyFileSync(src, dst); } catch { /* best-effort */ }
+            console.warn(`[tests/_globals] ${rel} was deleted during the test run; restored pre-test version.`);
+          }
+          continue;
+        }
         try {
           // The MCP collab server (or another agent) may legitimately write a
           // guarded file WHILE tests run; a blind restore would destroy that

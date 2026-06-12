@@ -72,6 +72,7 @@ export default defineConfig({
       PONYOU_STATE_FILE: path.join(STATE_TMP, "state.json"),
       PONYOU_REGIME_FILE: path.join(STATE_TMP, "regime-memory.json"),
       PONYOU_RUG_MEMORY_FILE: path.join(STATE_TMP, "rug-memory.json"),
+      PONYOU_CHAIN_INTEL_FILE: path.join(STATE_TMP, "market-chain-intel.json"),
       PONYOU_RUG_PATTERNS_FILE: path.join(STATE_TMP, "rug-patterns-learned.json"),
       PONYOU_PERF_FILE: path.join(STATE_TMP, "performance.json"),
       PONYOU_EXEC_QUALITY_FILE: path.join(STATE_TMP, "execution-quality.json"),

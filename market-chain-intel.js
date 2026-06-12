@@ -21,7 +21,7 @@ import { log } from "./logger.js";
 import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const INTEL_FILE = path.join(__dirname, "market-chain-intel.json");
+const INTEL_FILE = process.env.PONYOU_CHAIN_INTEL_FILE || path.join(__dirname, "market-chain-intel.json");
 
 // A snapshot is "fresh" for ranking if < FRESH_MS old. Beyond STALE_MS it is
 // treated as dead/missing for allocation purposes.

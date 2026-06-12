@@ -143,7 +143,7 @@ export function pruneDeprecatedLessons({ maxAgeDays = 90 } = {}) {
  * Cap rug-memory blacklist arrays.
  */
 export function capRugMemoryBlacklists({ maxTokens = 500, maxDevs = 200 } = {}) {
-  const filePath = path.join(__dirname, "rug-memory.json");
+  const filePath = process.env.PONYOU_RUG_MEMORY_FILE || path.join(__dirname, "rug-memory.json");
   if (!fs.existsSync(filePath)) return { tokens: 0, devs: 0 };
 
   const data = safeReadJson(filePath);

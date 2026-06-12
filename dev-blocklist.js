@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 import { atomicWriteJson, withFileLock } from "./atomic-write.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RUG_FILE = path.join(__dirname, "rug-memory.json");
+const RUG_FILE = process.env.PONYOU_RUG_MEMORY_FILE || path.join(__dirname, "rug-memory.json");
 
 let _cachedMem = null;
 let _cachedMtime = 0;

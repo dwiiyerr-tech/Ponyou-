@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const INTEL_FILE = path.join(__dirname, "..", "market-chain-intel.json");
+const INTEL_FILE = process.env.PONYOU_CHAIN_INTEL_FILE || path.join(__dirname, "..", "market-chain-intel.json");
 
 function clean() {
   try { fs.unlinkSync(INTEL_FILE); } catch {}
