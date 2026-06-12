@@ -7,6 +7,7 @@
  */
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { atomicWriteText } from "../atomic-write.js";
 
 const DEFAULT_VAULT_FILE = "/home/ubuntu/ponyou-brain/operator-notes.md";
@@ -575,6 +576,83 @@ export async function writeDarwinLearning() {
 }
 
 /**
+ * 60-Learning/_evolution.md — strategy-evolution registry snapshot. The
+ * evolution engine READS the vault when designing strategies but never
+ * reported itself back: evolved/candidate strategies were only visible in
+ * Telegram /strategies and the dashboard, never in Obsidian.
+ */
+export async function writeEvolutionStatus() {
+  try {
+    const regPath = process.env.PONYOU_STRATEGY_REGISTRY_FILE
+      || path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "strategy-registry.json");
+    if (!fs.existsSync(regPath)) return;
+    const parsed = JSON.parse(fs.readFileSync(regPath, "utf8"));
+    const records = Array.isArray(parsed) ? parsed : (parsed?.strategies || []);
+    if (!Array.isArray(records)) return;
+
+    const vaultDir = _getVaultWriterDir();
+    const dir = path.join(vaultDir, "60-Learning");
+    _ensureDir(dir);
+
+    const byStatus = {};
+    for (const r of records) {
+      const s = r.status || "candidate";
+      (byStatus[s] ||= []).push(r);
+    }
+    const count = s => (byStatus[s] || []).length;
+    const latestActive = (byStatus.active || [])
+      .sort((a, b) => String(b.activatedAt || b.createdAt).localeCompare(String(a.activatedAt || a.createdAt)))[0];
+
+    const scoreOf = r => {
+      for (const key of ["live", "winRate", "score", "paper", "backtest"]) {
+        const v = Number(r.scores?.[key]);
+        if (Number.isFinite(v)) return `${key}=${v}`;
+      }
+      return "-";
+    };
+    const rows = [...records]
+      .sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
+      .slice(0, 20)
+      .map(r => {
+        const note = r.rejectReason || r.deactivationReason || "";
+        return `| ${r.status} | ${r.name} | ${r.type} | ${r.regime || "-"} | ${r.source} | ${scoreOf(r)} | ${note.slice(0, 60)} |`;
+      })
+      .join("\n");
+
+    // Pending operator proposals (vault-proposal engine queue)
+    let pendingProposals = [];
+    try {
+      const propPath = process.env.PONYOU_VAULT_PROPOSALS_FILE
+        || path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "vault-proposals.json");
+      if (fs.existsSync(propPath)) {
+        const propState = JSON.parse(fs.readFileSync(propPath, "utf8"));
+        pendingProposals = Object.values(propState?.pending || {});
+      }
+    } catch { /* proposals optional */ }
+
+    const now = new Date().toISOString();
+    const body =
+      `---\ntype: bot-snapshot\nupdated: ${now}\ntotal: ${records.length}\n` +
+      `active_count: ${count("active")}\ncandidate_count: ${count("candidate")}\n` +
+      `rejected_count: ${count("rejected")}\nsuperseded_count: ${count("superseded")}\n` +
+      `pending_proposals: ${pendingProposals.length}\n` +
+      `latest_active: "${latestActive ? String(latestActive.name).replace(/"/g, "") : ""}"\n---\n\n` +
+      `# Strategy Evolution — Registry\n\n` +
+      `_Auto-generated every 5 min. Lifecycle of evolved/candidate strategies: candidate → gate → operator approval → active; auto-deactivated when live WR degrades (25+ trades)._\n\n` +
+      (rows
+        ? `| status | name | type | regime | source | score | note |\n|--------|------|------|--------|--------|-------|------|\n${rows}\n\n`
+        : "_Registry empty — no strategies registered yet._\n\n") +
+      `## Pending operator proposals (${pendingProposals.length})\n\n` +
+      (pendingProposals.length > 0
+        ? pendingProposals.slice(0, 5).map(p =>
+            `- [${p.type}] ${String(p.lesson || "").slice(0, 100)} → /approve_${p.id}`).join("\n") + "\n"
+        : "_None — approve/reject via Telegram when they arrive._\n");
+
+    atomicWriteText(path.join(dir, "_evolution.md"), body);
+  } catch { /* best-effort */ }
+}
+
+/**
  * Create template operator files on first vault intelligence activation.
  * Called once; templates guide the operator on how to write lessons.
  */
@@ -724,5 +802,6 @@ export async function refreshVaultSnapshots() {
     writeStrategyInsights(),
     writeDarwinLearning(),
     writeEngineReality(),
+    writeEvolutionStatus(),
   ]);
 }

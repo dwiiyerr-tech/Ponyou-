@@ -129,12 +129,15 @@ async function analyzeStrategyPerformance() {
 async function analyzeNarrativeHeat() {
   const proposals = [];
   try {
-    const { recordRuggedNarrativesForExit, getNarrativeHeat } = await import("../narrative-contagion.js");
-    const heat = getNarrativeHeat?.();
-    if (!heat?.rugged?.length) return proposals;
+    // narrative-contagion.js never exported getNarrativeHeat — the old import
+    // resolved to undefined and `?.()` made this analyzer a permanent silent
+    // no-op (narrative_block proposals could never fire).
+    const { getRuggedNarratives } = await import("../narrative-contagion.js");
+    const rugged = getRuggedNarratives();
+    if (!rugged.length) return proposals;
 
     // Narrative with multiple rugs
-    for (const n of heat.rugged.slice(0, 3)) {
+    for (const n of rugged.slice(0, 3)) {
       if ((n.rug_count || 0) >= 2) {
         proposals.push({
           type: "narrative_block",
@@ -209,6 +212,8 @@ async function analyzeAdaptiveRisk() {
   } catch {}
   return proposals;
 }
+
+export { analyzeNarrativeHeat as _analyzeNarrativeHeat };
 
 // ─── Engine ───────────────────────────────────────────────────────────────────
 

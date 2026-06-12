@@ -95,6 +95,21 @@ export function filterNarrativeContagion(candidates = [], { nowMs = Date.now(), 
   });
 }
 
+/**
+ * Snapshot of narratives with recent rugs (inside the contagion window).
+ * Consumed by the vault proposal engine to suggest narrative blacklisting.
+ */
+export function getRuggedNarratives({ nowMs = Date.now() } = {}) {
+  pruneStale(nowMs);
+  return [..._ruggedNarratives.entries()]
+    .map(([narrative, entry]) => ({
+      narrative,
+      rug_count: entry.count || 0,
+      last_rug_at: new Date(entry.lastTs).toISOString(),
+    }))
+    .sort((a, b) => b.rug_count - a.rug_count);
+}
+
 export function clearRuggedNarratives() {
   _ruggedNarratives.clear();
 }

@@ -3613,7 +3613,15 @@ TUGAS:
               await recordClose(tokenIn, "LLM Manager Decision", walletAddress);
               _rugMonitor?.detachPosition(llmPosKey);
               await clearPartialTPGuard(llmPosKey);
-              recordRuggedNarrativesForExit({ reason: "LLM Manager Decision", token: {} });
+              // "LLM Manager Decision" never matches isRugExitReason and {} has
+              // no narratives — this call was a permanent double no-op. Use the
+              // tracked position (carries narrative_tags) and flag suspected
+              // rugs from realized PnL so a narrative the LLM bailed on at -60%
+              // or worse still feeds the contagion filter.
+              recordRuggedNarrativesForExit({
+                reason: pnlPct != null && pnlPct <= -60 ? "llm_exit_suspected_rug" : "LLM Manager Decision",
+                token: trackedPos || {},
+              });
               // Lesson effectiveness — this exit path bypassed the main exit
               // loop, so lessons never got credited for LLM-decided sells.
               if (trackedPos?.active_lessons?.length > 0 && pnlPct != null) {

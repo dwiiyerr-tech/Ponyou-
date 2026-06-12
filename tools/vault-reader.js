@@ -396,6 +396,22 @@ export function getVaultIntelligenceContext() {
       if (parts.length > 0) sections.push(`Learning: ${parts.join(" | ")}`);
     } catch { /* skip */ }
 
+    // ── 4c. Strategy evolution (what the bot is evolving right now) ───────────
+    try {
+      const evFm = _readFileFrontmatter(path.join(vaultDir, "60-Learning", "_evolution.md"));
+      const act  = Number(evFm.active_count) || 0;
+      const cand = Number(evFm.candidate_count) || 0;
+      const pend = Number(evFm.pending_proposals) || 0;
+      const parts = [];
+      if (act > 0)  parts.push(`${act} active`);
+      if (cand > 0) parts.push(`${cand} candidate`);
+      if (pend > 0) parts.push(`${pend} proposal awaiting operator`);
+      if (parts.length > 0) {
+        const latest = typeof evFm.latest_active === "string" && evFm.latest_active ? ` | latest: ${evFm.latest_active}` : "";
+        sections.push(`Evolution: ${parts.join(", ")}${latest}`);
+      }
+    } catch { /* skip */ }
+
     // ── 5. Operator config ────────────────────────────────────────────────────
     try {
       const fm = parseFrontmatter(fs.readFileSync(notesFile, "utf8"));

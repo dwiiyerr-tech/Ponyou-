@@ -57,6 +57,9 @@ export default defineConfig({
       // Super Brain — episodic memory + prompt evolution (must not touch live files)
       PONYOU_EPISODIC_FILE: path.join(STATE_TMP, "episodic-memory.json"),
       PONYOU_PROMPT_EVOLUTION_FILE: path.join(STATE_TMP, "prompt-evolution.json"),
+      // Vault proposal queue + evolution registry (must not touch live files)
+      PONYOU_VAULT_PROPOSALS_FILE: path.join(STATE_TMP, "vault-proposals.json"),
+      PONYOU_STRATEGY_REGISTRY_FILE: path.join(STATE_TMP, "strategy-registry.json"),
       // GMGN OpenAPI credential dir — never touch the real ~/.config/gmgn in tests
       PONYOU_GMGN_ENV_DIR: path.join(STATE_TMP, "gmgn"),
       // Pin GMGN OFF by default so the suite is deterministic regardless of the
